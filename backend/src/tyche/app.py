@@ -58,9 +58,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Routes will be added here in Phase 7
-    # from tyche.api.routes import account, candidates, journal, ...
-    # app.include_router(account.router, prefix="/api/v1")
+    from tyche.api.routes import account, events, orders, scanner, system, watchlist
+
+    app.include_router(account.router, prefix="/api/v1")
+    app.include_router(scanner.router, prefix="/api/v1")
+    app.include_router(orders.router, prefix="/api/v1")
+    app.include_router(watchlist.router, prefix="/api/v1")
+    app.include_router(events.router, prefix="/api/v1")
+    app.include_router(system.router, prefix="/api/v1")
 
     @app.get("/health")
     async def health_check() -> dict[str, str]:
