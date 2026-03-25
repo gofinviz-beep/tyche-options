@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from tyche.api.deps import get_broker, get_earnings_client, get_settings
 from tyche.broker.base import BrokerClient
@@ -53,10 +55,48 @@ async def get_watchlist(
         if einfo:
             entry["next_earnings"] = str(einfo.get("earnings_date", ""))
             entry["earnings_time"] = einfo.get("reporting_time", "unknown")
+            entry["earnings_source"] = einfo.get("source", "unknown")
         else:
             entry["next_earnings"] = None
             entry["earnings_time"] = None
+            entry["earnings_source"] = None
 
         result.append(entry)
 
     return result
+
+
+class ManualEarningsRequest(BaseModel):
+    """Set a manual earnings date for a symbol."""
+
+    symbol: str
+    earnings_date: str  # YYYY-MM-DD
+
+
+@router.post("/earnings", response_model=dict[str, str])
+async def set_manual_earnings(
+    req: ManualEarningsRequest,
+    earnings: EarningsCalendarClient | None = Depends(get_earnings_client),
+) -> dict[str, str]:
+    """Manually set an upcoming earnings date for a watchlist symbol.
+
+    Use this when you know a stock's earnings date from your own research
+    and want the risk engine to account for it.
+    """
+    if earnings is None:
+        raise HTTPException(status_code=500, detail="Earnings client not initialized")
+
+    try:
+        parsed_date = datetime.strptime(req.earnings_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="Invalid date format. Use YYYY-MM-DD."
+        )
+
+    earnings.set_manual_date(req.symbol.upper(), parsed_date)
+
+    return {
+        "status": "ok",
+        "symbol": req.symbol.upper(),
+        "earnings_date": parsed_date.isoformat(),
+    }

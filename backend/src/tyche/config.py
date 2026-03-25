@@ -28,6 +28,12 @@ class TycheSettings(BaseSettings):
     gemini_model_deep: str = "gemini-2.5-pro"
 
     # --- Market Data ---
+    # Alpha Vantage free API key (optional — "demo" key works with rate limits)
+    # Get a free key at https://www.alphavantage.co/support/#api-key
+    alpha_vantage_key: str = "demo"
+    # Manual earnings overrides: {"PL": "2026-06-15", "AAPL": "2026-07-25"}
+    earnings_overrides: dict[str, str] = Field(default_factory=dict)
+    # Legacy key (kept for backward compat, maps to alpha_vantage_key)
     earnings_api_key: str = ""
 
     # --- Risk Limits ---

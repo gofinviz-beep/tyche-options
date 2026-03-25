@@ -1,185 +1,230 @@
-"""Earnings calendar client — fetches upcoming earnings dates."""
+"""Earnings calendar — multi-source with graceful degradation.
+
+Sources (tried in order):
+1. Manual overrides from watchlist config
+2. Alpha Vantage free API (no key required for basic use, key gets higher limits)
+3. Cache from previous successful lookups
+4. Empty result (system operates without earnings data)
+"""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import httpx
 import structlog
 
-from tyche.exceptions import EarningsDataUnavailable
-
 logger = structlog.get_logger()
 
-# Normalized earnings entry returned to callers
 EarningsInfo = dict[str, Any]
 
 
 class EarningsCalendarClient:
-    """Fetches earnings calendar data from earningsapi.com (free tier).
+    """Fetches upcoming earnings dates from free sources.
 
-    Falls back to returning empty data if the API is unavailable,
-    allowing the system to operate without earnings data.
+    No paid API subscription required. Uses Alpha Vantage's free tier
+    and supports manual overrides for critical stocks.
     """
 
-    BASE_URL = "https://api.earningsapi.com/v1"
+    ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
 
-    def __init__(self, api_key: str = "", timeout: float = 10.0) -> None:
-        self._api_key = api_key
+    def __init__(
+        self,
+        alpha_vantage_key: str = "demo",
+        manual_overrides: dict[str, str] | None = None,
+        timeout: float = 10.0,
+    ) -> None:
+        self._av_key = alpha_vantage_key or "demo"
+        self._manual: dict[str, date] = {}
         self._timeout = timeout
         self._cache: dict[str, EarningsInfo] = {}
         self._cache_date: date | None = None
+
+        if manual_overrides:
+            for symbol, date_str in manual_overrides.items():
+                try:
+                    self._manual[symbol.upper()] = datetime.strptime(
+                        date_str, "%Y-%m-%d"
+                    ).date()
+                except ValueError:
+                    logger.warning(
+                        "invalid_manual_earnings_date",
+                        symbol=symbol,
+                        date=date_str,
+                    )
+
+    def set_manual_date(self, symbol: str, earnings_date: date) -> None:
+        """Manually set an earnings date for a symbol."""
+        self._manual[symbol.upper()] = earnings_date
+        self._cache[symbol.upper()] = {
+            "symbol": symbol.upper(),
+            "earnings_date": earnings_date,
+            "reporting_time": "unknown",
+            "source": "manual",
+            "confirmed": True,
+        }
+        logger.info(
+            "manual_earnings_set",
+            symbol=symbol,
+            date=earnings_date.isoformat(),
+        )
 
     async def get_upcoming_earnings(
         self, symbols: list[str]
     ) -> dict[str, EarningsInfo]:
         """Get upcoming earnings dates for a list of symbols.
 
-        Returns:
-            Dict mapping symbol -> earnings info (date, time, estimates).
-            Missing symbols are omitted from the result.
+        Priority: manual overrides > API fetch > cache > empty.
         """
         today = date.today()
-
-        if self._cache_date == today and all(s in self._cache for s in symbols):
-            return {s: self._cache[s] for s in symbols if s in self._cache}
-
-        try:
-            result = await self._fetch_earnings(symbols)
-            self._cache.update(result)
-            self._cache_date = today
-            return result
-        except Exception:
-            logger.warning(
-                "earnings_fetch_failed",
-                symbols=symbols,
-                exc_info=True,
-            )
-            return {s: self._cache[s] for s in symbols if s in self._cache}
-
-    async def get_earnings_for_date(
-        self, target_date: date
-    ) -> list[EarningsInfo]:
-        """Get all earnings reports for a specific date."""
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                params: dict[str, str] = {"date": target_date.isoformat()}
-                if self._api_key:
-                    params["apikey"] = self._api_key
-
-                response = await client.get(
-                    f"{self.BASE_URL}/earnings", params=params
-                )
-                if response.status_code != 200:
-                    logger.warning(
-                        "earnings_api_error",
-                        status=response.status_code,
-                        body=response.text[:200],
-                    )
-                    return []
-
-                data = response.json()
-                return self._normalize_date_response(data)
-        except Exception:
-            logger.warning("earnings_date_fetch_failed", exc_info=True)
-            return []
-
-    async def _fetch_earnings(
-        self, symbols: list[str]
-    ) -> dict[str, EarningsInfo]:
-        """Fetch earnings for specific symbols via the API."""
         result: dict[str, EarningsInfo] = {}
+        symbols_to_fetch: list[str] = []
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            for symbol in symbols:
-                try:
-                    params: dict[str, str] = {"symbol": symbol}
-                    if self._api_key:
-                        params["apikey"] = self._api_key
+        for symbol in symbols:
+            sym = symbol.upper()
 
-                    response = await client.get(
-                        f"{self.BASE_URL}/earnings", params=params
-                    )
-                    if response.status_code != 200:
-                        continue
+            # 1. Manual override
+            if sym in self._manual and self._manual[sym] >= today:
+                result[sym] = {
+                    "symbol": sym,
+                    "earnings_date": self._manual[sym],
+                    "reporting_time": "unknown",
+                    "source": "manual",
+                    "confirmed": True,
+                }
+                continue
 
-                    data = response.json()
-                    parsed = self._parse_symbol_earnings(symbol, data)
-                    if parsed:
-                        result[symbol] = parsed
-                except Exception:
-                    logger.debug("earnings_symbol_failed", symbol=symbol)
-                    continue
+            # 2. Fresh cache
+            if (
+                self._cache_date == today
+                and sym in self._cache
+                and self._cache[sym].get("earnings_date", today) >= today
+            ):
+                result[sym] = self._cache[sym]
+                continue
+
+            symbols_to_fetch.append(sym)
+
+        # 3. Fetch from API
+        if symbols_to_fetch:
+            try:
+                fetched = await self._fetch_from_alpha_vantage(symbols_to_fetch)
+                result.update(fetched)
+                self._cache.update(fetched)
+                self._cache_date = today
+            except Exception:
+                logger.warning(
+                    "earnings_fetch_failed",
+                    symbols=symbols_to_fetch,
+                    exc_info=True,
+                )
+                # Fall back to stale cache
+                for sym in symbols_to_fetch:
+                    if sym in self._cache:
+                        result[sym] = self._cache[sym]
 
         return result
 
-    def _parse_symbol_earnings(
-        self, symbol: str, data: Any
-    ) -> EarningsInfo | None:
-        """Parse earnings API response for a single symbol."""
-        if not data:
-            return None
-
-        entries = data if isinstance(data, list) else [data]
+    async def _fetch_from_alpha_vantage(
+        self, symbols: list[str]
+    ) -> dict[str, EarningsInfo]:
+        """Fetch earnings from Alpha Vantage free API."""
+        result: dict[str, EarningsInfo] = {}
         today = date.today()
+        horizon = today + timedelta(days=45)
 
-        for entry in entries:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            # Alpha Vantage EARNINGS_CALENDAR returns CSV for all upcoming
             try:
-                date_str = entry.get("date") or entry.get("reportDate", "")
-                if not date_str:
-                    continue
+                response = await client.get(
+                    self.ALPHA_VANTAGE_URL,
+                    params={
+                        "function": "EARNINGS_CALENDAR",
+                        "horizon": "3month",
+                        "apikey": self._av_key,
+                    },
+                )
+                if response.status_code != 200:
+                    logger.warning(
+                        "alpha_vantage_error",
+                        status=response.status_code,
+                    )
+                    return result
 
-                earnings_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                if earnings_date < today:
-                    continue
+                lines = response.text.strip().split("\n")
+                if len(lines) < 2:
+                    return result
 
-                return {
-                    "symbol": symbol,
-                    "earnings_date": earnings_date,
-                    "reporting_time": entry.get("time", "unknown"),
-                    "eps_estimate": _safe_float(entry.get("epsEstimate")),
-                    "eps_actual": _safe_float(entry.get("epsActual")),
-                    "revenue_estimate": _safe_float(entry.get("revenueEstimate")),
-                    "revenue_actual": _safe_float(entry.get("revenueActual")),
-                    "confirmed": entry.get("confirmed", False),
-                }
-            except (ValueError, KeyError):
-                continue
+                headers = lines[0].split(",")
+                sym_idx = _col_index(headers, "symbol")
+                date_idx = _col_index(headers, "reportDate")
+                time_idx = _col_index(headers, "fiscalDateEnding")
+                est_idx = _col_index(headers, "estimate")
 
-        return None
+                target_symbols = {s.upper() for s in symbols}
 
-    def _normalize_date_response(self, data: Any) -> list[EarningsInfo]:
-        if not data:
-            return []
-        entries = data if isinstance(data, list) else [data]
-        results: list[EarningsInfo] = []
-        for entry in entries:
-            try:
-                date_str = entry.get("date") or entry.get("reportDate", "")
-                if not date_str:
-                    continue
-                results.append({
-                    "symbol": entry.get("symbol", ""),
-                    "earnings_date": datetime.strptime(date_str, "%Y-%m-%d").date(),
-                    "reporting_time": entry.get("time", "unknown"),
-                    "eps_estimate": _safe_float(entry.get("epsEstimate")),
-                    "confirmed": entry.get("confirmed", False),
-                })
-            except (ValueError, KeyError):
-                continue
-        return results
+                for line in lines[1:]:
+                    cols = line.split(",")
+                    if len(cols) <= max(sym_idx, date_idx):
+                        continue
+
+                    sym = cols[sym_idx].strip().upper()
+                    if sym not in target_symbols:
+                        continue
+
+                    try:
+                        earnings_date = datetime.strptime(
+                            cols[date_idx].strip(), "%Y-%m-%d"
+                        ).date()
+                    except ValueError:
+                        continue
+
+                    if earnings_date < today:
+                        continue
+
+                    eps_est = None
+                    if est_idx >= 0 and est_idx < len(cols):
+                        eps_est = _safe_float(cols[est_idx].strip())
+
+                    result[sym] = {
+                        "symbol": sym,
+                        "earnings_date": earnings_date,
+                        "reporting_time": "unknown",
+                        "eps_estimate": eps_est,
+                        "source": "alpha_vantage",
+                        "confirmed": True,
+                    }
+
+            except httpx.TimeoutException:
+                logger.warning("alpha_vantage_timeout")
+            except Exception:
+                logger.warning("alpha_vantage_parse_failed", exc_info=True)
+
+        return result
 
     def get_cached_earnings_date(self, symbol: str) -> date | None:
         """Get cached earnings date for a symbol without making an API call."""
-        info = self._cache.get(symbol)
+        sym = symbol.upper()
+        if sym in self._manual:
+            return self._manual[sym]
+        info = self._cache.get(sym)
         if info:
             return info.get("earnings_date")
         return None
 
 
+def _col_index(headers: list[str], name: str) -> int:
+    """Find column index case-insensitively, returns -1 if not found."""
+    name_lower = name.lower()
+    for i, h in enumerate(headers):
+        if h.strip().lower() == name_lower:
+            return i
+    return -1
+
+
 def _safe_float(val: Any) -> float | None:
-    if val is None:
+    if val is None or val == "":
         return None
     try:
         return float(val)

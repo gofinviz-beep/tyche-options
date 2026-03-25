@@ -113,11 +113,13 @@ def get_risk_engine(
 def get_earnings_client(
     settings: TycheSettings = Depends(get_settings),
 ) -> EarningsCalendarClient | None:
-    """Provide the earnings calendar client."""
+    """Provide the earnings calendar client (free — no paid API needed)."""
     global _earnings_client
     if _earnings_client is None:
+        av_key = settings.alpha_vantage_key or settings.earnings_api_key or "demo"
         _earnings_client = EarningsCalendarClient(
-            api_key=settings.earnings_api_key
+            alpha_vantage_key=av_key,
+            manual_overrides=settings.earnings_overrides or None,
         )
     return _earnings_client
 
