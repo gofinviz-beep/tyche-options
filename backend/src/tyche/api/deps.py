@@ -31,6 +31,7 @@ from tyche.risk.rules import (
     MaxOpenPositionsRule,
     StrategyWhitelistRule,
 )
+from tyche.strategy.allocator import PortfolioAllocator
 from tyche.strategy.engine import StrategyEngine
 from tyche.workflow.scheduler import WorkflowScheduler
 
@@ -49,6 +50,7 @@ _data_store: OHLCVStore | None = None
 _conviction_engine: ConvictionEngine | None = None
 _active_monitor: ActiveMonitor | None = None
 _ticker_meta_store: TickerMetaStore | None = None
+_portfolio_allocator: PortfolioAllocator | None = None
 
 
 def get_broker(settings: TycheSettings = Depends(get_settings)) -> BrokerClient:
@@ -260,13 +262,34 @@ def get_active_monitor(
     return _active_monitor
 
 
+def get_portfolio_allocator(
+    settings: TycheSettings = Depends(get_settings),
+) -> PortfolioAllocator:
+    """Provide the MILP portfolio allocator."""
+    global _portfolio_allocator
+    if _portfolio_allocator is None:
+        _portfolio_allocator = PortfolioAllocator(
+            max_positions=settings.max_open_positions,
+            max_contracts_per_position=settings.max_contracts_per_position,
+            max_concentration_pct=settings.max_concentration_per_ticker_pct,
+            max_extension_pct=settings.max_extension_pct,
+        )
+        logger.info(
+            "portfolio_allocator_initialized",
+            max_positions=settings.max_open_positions,
+            max_contracts=settings.max_contracts_per_position,
+            max_concentration_pct=settings.max_concentration_per_ticker_pct,
+        )
+    return _portfolio_allocator
+
+
 def reset_all() -> None:
     """Reset all singleton instances (for testing)."""
     global _broker_instance, _gemini_instance, _analysis_agent
     global _risk_engine, _earnings_client, _strategy_engine
     global _universe_builder, _scheduler
     global _polygon_client, _data_store, _conviction_engine
-    global _active_monitor, _ticker_meta_store
+    global _active_monitor, _ticker_meta_store, _portfolio_allocator
     _broker_instance = None
     _gemini_instance = None
     _analysis_agent = None
@@ -280,3 +303,4 @@ def reset_all() -> None:
     _conviction_engine = None
     _active_monitor = None
     _ticker_meta_store = None
+    _portfolio_allocator = None

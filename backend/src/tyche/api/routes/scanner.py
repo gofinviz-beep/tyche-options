@@ -13,6 +13,7 @@ from tyche.api.deps import (
     get_conviction_engine,
     get_data_store,
     get_earnings_client,
+    get_portfolio_allocator,
     get_settings,
     get_strategy_engine,
     get_ticker_meta_store,
@@ -26,6 +27,7 @@ from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.earnings import EarningsCalendarClient
 from tyche.market_data.universe import UniverseBuilder
 from tyche.persistence.database import get_session
+from tyche.strategy.allocator import PortfolioAllocator
 from tyche.strategy.engine import StrategyEngine
 from tyche.workflow.intent_builder import create_intents_from_scan
 from tyche.workflow.morning_scan import MorningScanResult, run_morning_scan
@@ -48,6 +50,7 @@ async def trigger_scan(
     conviction: ConvictionEngine = Depends(get_conviction_engine),
     store: OHLCVStore = Depends(get_data_store),
     meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
+    allocator: PortfolioAllocator = Depends(get_portfolio_allocator),
     settings: TycheSettings = Depends(get_settings),
 ) -> dict[str, Any]:
     """Trigger a full morning scan and persist intents from LLM analyses."""
@@ -73,6 +76,7 @@ async def trigger_scan(
         conviction_engine=conviction,
         data_store=store,
         ticker_meta_store=meta_store,
+        portfolio_allocator=allocator,
         top_n=top_n,
         available_capital_override=settings.available_capital,
         min_institutional_pct=settings.min_institutional_pct,
@@ -165,5 +169,24 @@ def _serialize_scan_result(result: MorningScanResult) -> dict[str, Any]:
             ticker: round(pct * 100, 1)
             for ticker, pct in result.institutional_ownership.items()
         },
+        "allocation": result.allocation.summary if result.allocation else None,
+        "allocated_trades": [
+            {
+                "symbol": t.symbol,
+                "option_type": t.option_type,
+                "strike": t.strike,
+                "expiration": t.expiration.isoformat(),
+                "dte": t.dte,
+                "contracts": t.contracts,
+                "bid": t.bid,
+                "total_premium": t.total_premium,
+                "collateral": t.collateral,
+                "annualized_return_pct": t.annualized_return_pct,
+                "conviction": t.conviction,
+                "extension_pct": t.extension_pct,
+                "strategy": t.strategy,
+            }
+            for t in (result.allocation.trades if result.allocation else [])
+        ],
         "errors": result.errors,
     }

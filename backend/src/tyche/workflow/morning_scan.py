@@ -21,6 +21,7 @@ from tyche.market_data.institutional import filter_by_institutional_ownership
 from tyche.market_data.universe import UniverseBuilder
 from tyche.risk.engine import RiskEngine
 from tyche.schemas.analysis import CSPAnalysis
+from tyche.strategy.allocator import AllocatedTrade, AllocationResult, PortfolioAllocator
 from tyche.strategy.engine import StrategyEngine
 from tyche.strategy.strategies.base import ScoredCandidate
 
@@ -40,6 +41,7 @@ class MorningScanResult:
         self.conviction_signals: dict[str, ConvictionSignal] = {}
         self.earnings_context: dict[str, Any] = {}
         self.institutional_ownership: dict[str, float] = {}
+        self.allocation: AllocationResult | None = None
         self.errors: list[str] = []
 
 
@@ -53,6 +55,7 @@ async def run_morning_scan(
     conviction_engine: ConvictionEngine | None = None,
     data_store: OHLCVStore | None = None,
     ticker_meta_store: TickerMetaStore | None = None,
+    portfolio_allocator: PortfolioAllocator | None = None,
     top_n: int = 5,
     available_capital_override: float = 0.0,
     min_institutional_pct: float = 0.40,
@@ -218,6 +221,36 @@ async def run_morning_scan(
     except Exception as exc:
         result.errors.append(f"CC scan failed: {exc}")
         logger.error("morning_scan_cc_failed", exc_info=True)
+
+    # 6b. Run portfolio allocator (MILP optimizer) on combined candidates
+    if portfolio_allocator and (result.csp_candidates or result.cc_candidates):
+        try:
+            held_shares: dict[str, int] = {}
+            for pos in positions:
+                if pos.option_symbol is None and pos.quantity >= 100:
+                    held_shares[pos.symbol] = int(pos.quantity)
+
+            conviction_data_for_alloc = {
+                ticker: sig
+                for ticker, sig in result.conviction_signals.items()
+            }
+
+            result.allocation = portfolio_allocator.optimize(
+                csp_candidates=result.csp_candidates,
+                cc_candidates=result.cc_candidates,
+                available_capital=effective_buying_power,
+                conviction_signals=conviction_data_for_alloc,
+                held_shares=held_shares,
+            )
+            logger.info(
+                "portfolio_allocation_complete",
+                trades=result.allocation.positions_used,
+                total_premium=result.allocation.total_premium,
+                utilization=result.allocation.capital_utilization_pct,
+                solver=result.allocation.solver_status,
+            )
+        except Exception:
+            logger.warning("portfolio_allocation_failed", exc_info=True)
 
     # 7. LLM analysis with conviction context
     if analysis_agent and result.csp_candidates:

@@ -1,0 +1,46 @@
+---
+description: Tyche Options system architecture and module boundaries
+globs:
+  - "backend/src/tyche/**/*.py"
+  - "backend/scripts/*.py"
+---
+
+# System Architecture
+
+Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy (Cash-Secured Puts + Covered Calls). It uses 8/21 EMA conviction-based stock screening followed by MILP portfolio optimization.
+
+## Module Map
+
+- `config.py` — All settings via `TYCHE_*` env vars (pydantic-settings)
+- `api/deps.py` — Dependency injection: singleton providers for all services. Always use `Depends()` in routes.
+- `conviction/engine.py` — 8/21 EMA trend classification + CSP eligibility. The primary screening gate.
+- `strategy/allocator.py` — MILP optimizer (scipy). Maximizes risk-adjusted premium across CSPs and CCs.
+- `strategy/engine.py` — Orchestrates CSP/CC candidate scanning via broker API.
+- `market_data/data_store.py` — OHLCVStore + TickerMetaStore (Parquet files). Used by conviction engine and backtest.
+- `market_data/polygon.py` — Polygon.io client for historical bars and ticker reference. NOT used for live trading.
+- `broker/tradier/client.py` — Tradier API for live quotes, options chains, account ops, and order execution.
+- `workflow/morning_scan.py` — Full morning scan pipeline: universe filter → conviction → options scan → allocator → LLM.
+- `risk/engine.py` + `risk/rules.py` — Deterministic risk rule chain (max positions, concentration, etc.).
+
+## Key Patterns
+
+- **Run from `backend/` directory.** All relative paths (data/, .env) assume backend/ as cwd.
+- **DI via `api/deps.py`.** Never instantiate services directly in routes. Use `Depends(get_xxx)`.
+- **Parquet-first data.** Historical data in Parquet, operational data in SQLite. Do not mix.
+- **Conviction-first filtering.** Stocks must pass ConvictionEngine before any Tradier API calls.
+- **Two data APIs.** Polygon = historical (bootstrap/backtest). Tradier = live (quotes/chains/orders).
+
+## Import Conventions
+
+```
+# Standard library
+from datetime import date
+# Third-party
+import pandas as pd
+import structlog
+# Local
+from tyche.config import TycheSettings
+from tyche.conviction.engine import ConvictionEngine
+```
+
+Always use absolute imports from `tyche.*`. Never relative imports.

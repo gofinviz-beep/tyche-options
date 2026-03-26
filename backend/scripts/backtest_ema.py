@@ -297,6 +297,15 @@ def run_backtest():
     for lo, hi, label in [(15, 30, "$15-30"), (30, 60, "$30-60"), (60, 100, "$60-100"), (100, 200, "$100-200"), (200, 99999, "$200+")]:
         stats([s for s in simulations if lo <= s.entry_price < hi], label)
 
+    # By day of week
+    print(f"\n--- By Entry Day of Week ---")
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    for dow in range(5):
+        stats(
+            [s for s in simulations if s.entry_date.weekday() == dow],
+            day_names[dow],
+        )
+
     # 10 worst trades
     print(f"\n--- 10 Worst Trades ---")
     worst = sorted(simulations, key=lambda s: s.max_drawdown_pct)[:10]
@@ -354,6 +363,240 @@ def run_backtest():
                 f"({s.forward_return_pct:+.1f}%) strike=${s.strike:.2f} [{outcome}] "
                 f"| {s.conviction} ext={s.price_to_8ema_pct:.1f}% cap=${cap_b:.1f}B"
             )
+
+    # Capital-aware portfolio simulation
+    run_capital_simulation(simulations, backtest_dates)
+
+
+def run_capital_simulation(
+    simulations: list[CSPSimulation],
+    backtest_dates: list[date],
+    starting_capital: float = 100_000.0,
+    max_positions: int = 8,
+    max_concentration_pct: float = 25.0,
+) -> None:
+    """Run a capital-aware portfolio simulation using the MILP allocator.
+
+    Tracks a real capital pool across overlapping 8-day CSP positions,
+    compounds returns, and reports equity curve + risk metrics.
+    """
+    from tyche.strategy.allocator import PortfolioAllocator
+    from tyche.strategy.strategies.base import ScoredCandidate
+
+    print("\n" + "=" * 80)
+    print(f"CAPITAL-AWARE PORTFOLIO SIMULATION (${starting_capital:,.0f} starting)")
+    print("=" * 80)
+
+    allocator = PortfolioAllocator(
+        max_positions=max_positions,
+        max_contracts_per_position=40,
+        max_concentration_pct=max_concentration_pct,
+    )
+
+    sims_by_date: dict[date, list[CSPSimulation]] = {}
+    for s in simulations:
+        sims_by_date.setdefault(s.entry_date, []).append(s)
+
+    @dataclass
+    class OpenPosition:
+        symbol: str
+        strike: float
+        contracts: int
+        collateral: float
+        premium: float
+        entry_date: date
+        exit_date: date
+        sim: CSPSimulation
+
+    capital = starting_capital
+    open_positions: list[OpenPosition] = []
+    equity_curve: list[tuple[date, float]] = []
+    daily_returns: list[float] = []
+    total_premium_collected = 0.0
+    total_losses = 0.0
+    trades_executed = 0
+    peak_equity = starting_capital
+    max_drawdown_pct = 0.0
+    utilization_samples: list[float] = []
+
+    prev_equity = starting_capital
+
+    for scan_date in backtest_dates:
+        # Close expired positions
+        newly_closed: list[OpenPosition] = []
+        still_open: list[OpenPosition] = []
+        for pos in open_positions:
+            if scan_date >= pos.exit_date:
+                newly_closed.append(pos)
+            else:
+                still_open.append(pos)
+
+        for pos in newly_closed:
+            if pos.sim.stayed_above_strike:
+                capital += pos.collateral + pos.premium
+                total_premium_collected += pos.premium
+            else:
+                loss_per_share = max(0, pos.strike - pos.sim.min_price_during)
+                total_loss = loss_per_share * 100 * pos.contracts
+                net = pos.collateral + pos.premium - total_loss
+                capital += net
+                total_premium_collected += pos.premium
+                total_losses += total_loss
+
+        open_positions = still_open
+
+        locked_collateral = sum(p.collateral for p in open_positions)
+        available = capital - locked_collateral
+
+        # Build ScoredCandidate objects from today's simulations for the allocator
+        today_sims = sims_by_date.get(scan_date, [])
+        candidates: list[ScoredCandidate] = []
+        sim_map: dict[str, CSPSimulation] = {}
+
+        for sim in today_sims:
+            already_holding = any(p.symbol == sim.symbol for p in open_positions)
+            if already_holding:
+                continue
+
+            collateral_per = sim.strike * 100
+            if collateral_per > available:
+                continue
+
+            premium_per = sim.strike * PREMIUM_PCT * 100
+            ann_return = (PREMIUM_PCT / 1.0) * (365 / DTE) * 100
+            oi_approx = 500
+
+            key = f"{sim.symbol}_{scan_date}"
+            sim_map[key] = sim
+
+            sc = ScoredCandidate(
+                symbol=sim.symbol,
+                option_symbol=key,
+                option_type="put",
+                strike=sim.strike,
+                expiration=sim.exit_date or scan_date,
+                dte=DTE,
+                bid=sim.strike * PREMIUM_PCT,
+                ask=sim.strike * PREMIUM_PCT * 1.1,
+                mid=sim.strike * PREMIUM_PCT * 1.05,
+                volume=100,
+                open_interest=oi_approx,
+                implied_volatility=0.3,
+                underlying_price=sim.entry_price,
+                strategy="csp",
+                premium_per_contract=round(premium_per, 2),
+                total_premium=round(premium_per, 2),
+                collateral_required=round(collateral_per, 2),
+                annualized_return_pct=round(ann_return, 2),
+                score=round(ann_return, 4),
+            )
+            candidates.append(sc)
+
+        if candidates and available > 0:
+            max_new = max_positions - len(open_positions)
+            if max_new > 0:
+                sub_allocator = PortfolioAllocator(
+                    max_positions=max_new,
+                    max_contracts_per_position=40,
+                    max_concentration_pct=max_concentration_pct,
+                )
+                result = sub_allocator.optimize(
+                    csp_candidates=candidates,
+                    available_capital=available,
+                )
+                for trade in result.trades:
+                    sim = sim_map.get(trade.option_symbol)
+                    if not sim:
+                        continue
+                    premium = trade.contracts * trade.premium_per_contract
+                    collateral = trade.contracts * trade.strike * 100
+                    capital -= collateral
+                    capital -= 0  # premium is received, added at exit
+
+                    open_positions.append(OpenPosition(
+                        symbol=sim.symbol,
+                        strike=sim.strike,
+                        contracts=trade.contracts,
+                        collateral=collateral,
+                        premium=premium,
+                        entry_date=scan_date,
+                        exit_date=sim.exit_date or scan_date,
+                        sim=sim,
+                    ))
+                    trades_executed += 1
+
+        total_equity = capital + sum(p.collateral for p in open_positions)
+        equity_curve.append((scan_date, total_equity))
+
+        if total_equity > peak_equity:
+            peak_equity = total_equity
+        dd = (peak_equity - total_equity) / peak_equity * 100
+        if dd > max_drawdown_pct:
+            max_drawdown_pct = dd
+
+        if prev_equity > 0:
+            daily_returns.append((total_equity - prev_equity) / prev_equity)
+        prev_equity = total_equity
+
+        locked = sum(p.collateral for p in open_positions)
+        util = (locked / total_equity * 100) if total_equity > 0 else 0
+        utilization_samples.append(util)
+
+    # Close any remaining positions at end
+    for pos in open_positions:
+        if pos.sim.stayed_above_strike:
+            capital += pos.collateral + pos.premium
+            total_premium_collected += pos.premium
+        else:
+            loss_per_share = max(0, pos.strike - pos.sim.min_price_during)
+            total_loss = loss_per_share * 100 * pos.contracts
+            net = pos.collateral + pos.premium - total_loss
+            capital += net
+            total_premium_collected += pos.premium
+            total_losses += total_loss
+
+    final_equity = capital
+    total_return = (final_equity - starting_capital) / starting_capital * 100
+
+    import math
+    if daily_returns:
+        avg_daily = sum(daily_returns) / len(daily_returns)
+        std_daily = (sum((r - avg_daily) ** 2 for r in daily_returns) / len(daily_returns)) ** 0.5
+        sharpe = (avg_daily / std_daily * math.sqrt(252)) if std_daily > 0 else 0.0
+    else:
+        sharpe = 0.0
+
+    avg_util = sum(utilization_samples) / len(utilization_samples) if utilization_samples else 0
+
+    trading_days = len(backtest_dates)
+    annualized_return = total_return * (252 / trading_days) if trading_days > 0 else 0
+
+    print(f"\nStarting capital:     ${starting_capital:>12,.0f}")
+    print(f"Final equity:         ${final_equity:>12,.2f}")
+    print(f"Total return:         {total_return:>+11.2f}%")
+    print(f"Annualized return:    {annualized_return:>+11.2f}%")
+    print(f"Sharpe ratio:         {sharpe:>11.2f}")
+    print(f"Max drawdown:         {max_drawdown_pct:>11.2f}%")
+    print(f"Trades executed:      {trades_executed:>11}")
+    print(f"Premium collected:    ${total_premium_collected:>12,.2f}")
+    print(f"Assignment losses:    ${total_losses:>12,.2f}")
+    print(f"Net P&L:              ${final_equity - starting_capital:>12,.2f}")
+    print(f"Avg capital util:     {avg_util:>11.1f}%")
+    print(f"Trading days:         {trading_days:>11}")
+
+    # Equity curve milestones
+    if equity_curve:
+        print(f"\n--- Equity Curve (monthly checkpoints) ---")
+        prev_month = None
+        for dt, eq in equity_curve:
+            month_key = (dt.year, dt.month)
+            if prev_month != month_key:
+                ret = (eq - starting_capital) / starting_capital * 100
+                print(f"  {dt.isoformat()}: ${eq:>12,.2f}  ({ret:+.2f}%)")
+                prev_month = month_key
+        last_dt, last_eq = equity_curve[-1]
+        ret = (last_eq - starting_capital) / starting_capital * 100
+        print(f"  {last_dt.isoformat()}: ${last_eq:>12,.2f}  ({ret:+.2f}%)  [final]")
 
 
 if __name__ == "__main__":

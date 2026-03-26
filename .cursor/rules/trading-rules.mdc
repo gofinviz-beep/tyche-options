@@ -1,0 +1,63 @@
+---
+description: Trading policies, risk constraints, and operational rules
+globs:
+  - "backend/src/tyche/**/*.py"
+  - "backend/scripts/*.py"
+---
+
+# Trading Rules & Policies
+
+## Full Filter Pipeline (order matters)
+
+```
+Market cap >= $5B (TickerMetaStore)
+    → Valid exchange (NYSE/NASDAQ)
+    → Price >= $15
+    → Volume >= 500K avg daily
+    → ConvictionEngine: trend state must be uptrend/pullback
+    → Extension <= 3% above 8-EMA
+    → Days above both EMAs: 5-10
+    → Tradier: live quote + options chain
+    → PortfolioAllocator: MILP optimization
+```
+
+## Risk Constraints (enforced by allocator + risk engine)
+
+| Constraint | Value | Notes |
+|---|---|---|
+| Max positions | 8 | Simultaneous open positions |
+| Max contracts per position | 40 | Per-symbol limit |
+| Max concentration | 25% | Single symbol cannot exceed 25% of capital |
+| Max account exposure | 70% | Total collateral as % of available capital |
+| Max risk per trade | 5% | Individual trade risk cap |
+| Max new trades per day | 3 | Prevents overtrading |
+| Preview-only mode | ON by default | Must be explicitly disabled for live orders |
+
+## Options Selection Rules
+
+| Parameter | CSP (Puts) | CC (Calls) |
+|---|---|---|
+| DTE range | 3-14 days | 3-14 days |
+| OTM target | 5% below current price | Above current price AND above cost basis |
+| Strike selection | Highest strike below OTM target with bid > 0 | Highest bid above cost basis |
+| Eligible positions | N/A | Equity with >= 100 shares |
+
+## Day-of-Week Guidance
+
+Backtest data shows Tuesday and Wednesday are the best days for CSP entry. Thursday and Friday entries perform worst. Consider timing entries accordingly.
+
+## MILP Allocator Risk Weights
+
+The optimizer weights candidates by: `conviction * extension_proximity * liquidity`
+
+- **Conviction weights:** high=1.0, medium=0.7, low=0.3, none=0.1
+- **Extension proximity:** 1.0 at 0% extension, 0.7 at max extension (3%)
+- **Liquidity:** min(1.0, open_interest / threshold) where threshold=1000 for CSPs, 500 for CCs
+
+## Safety Rules
+
+- All live orders require explicit human approval (preview-only by default)
+- LLM recommendations are advisory only — cannot override risk rules
+- Kill switch available to halt all trading immediately
+- Earnings proximity rule prevents trades near earnings dates
+- Assignment exposure rule limits per-ticker assignment risk
