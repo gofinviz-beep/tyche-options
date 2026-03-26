@@ -27,14 +27,40 @@ class TycheSettings(BaseSettings):
     gemini_model_fast: str = "gemini-2.5-flash"
     gemini_model_deep: str = "gemini-2.5-pro"
 
-    # --- Market Data ---
+    # --- Market Data (Polygon.io / Massive.com) ---
+    polygon_api_key: str = ""
+    polygon_base_url: str = "https://api.polygon.io"
+    polygon_rate_limit_rpm: int = 100  # Paid plans allow much higher RPM
+
     # Alpha Vantage free API key (optional — "demo" key works with rate limits)
-    # Get a free key at https://www.alphavantage.co/support/#api-key
     alpha_vantage_key: str = "demo"
     # Manual earnings overrides: {"PL": "2026-06-15", "AAPL": "2026-07-25"}
     earnings_overrides: dict[str, str] = Field(default_factory=dict)
     # Legacy key (kept for backward compat, maps to alpha_vantage_key)
     earnings_api_key: str = ""
+
+    # --- Data Storage ---
+    data_dir: str = "data"
+
+    # --- Universe Filtering ---
+    min_market_cap_millions: float = 5000.0
+    min_avg_volume: int = 500_000
+    min_stock_price: float = 15.0
+
+    # --- Institutional Ownership ---
+    min_institutional_pct: float = 0.40  # 40% minimum institutional ownership
+
+    # --- Conviction Engine ---
+    ema_fast_period: int = 8
+    ema_slow_period: int = 21
+    pullback_proximity_pct: float = 2.0
+    max_extension_pct: float = 3.0
+    min_days_above_emas: int = 5
+    max_days_above_emas: int = 10
+    bootstrap_days: int = 120
+
+    # --- Capital ---
+    available_capital: float = 100_000.0  # Available cash for CSP collateral (Fidelity)
 
     # --- Risk Limits ---
     max_risk_per_trade_pct: float = 5.0

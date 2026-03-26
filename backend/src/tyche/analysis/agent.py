@@ -39,18 +39,22 @@ class AnalysisAgent:
         balance: AccountBalance,
         positions: list[BrokerPosition],
         earnings_context: dict[str, Any] | None = None,
+        conviction_signals: dict[str, Any] | None = None,
+        effective_buying_power: float | None = None,
     ) -> list[CSPAnalysis]:
         """Analyze CSP candidates through the LLM for ranking and reasoning."""
         if not candidates:
             return []
 
+        buying_power = effective_buying_power if effective_buying_power is not None else balance.buying_power
+
         candidates_json = json.dumps(
             [_candidate_to_dict(c) for c in candidates], indent=2
         )
         account_summary = (
-            f"Cash: ${balance.cash:,.2f}, "
-            f"Buying Power: ${balance.buying_power:,.2f}, "
-            f"Net Liq: ${balance.net_liquidation_value:,.2f}, "
+            f"Cash: ${buying_power:,.2f}, "
+            f"Buying Power: ${buying_power:,.2f}, "
+            f"Net Liq: ${balance.net_liquidation_value or buying_power:,.2f}, "
             f"Open P&L: ${balance.open_pl:,.2f}"
         )
         positions_summary = json.dumps(
@@ -58,12 +62,14 @@ class AnalysisAgent:
         ) if positions else "No current positions"
 
         earnings_str = json.dumps(earnings_context, indent=2, default=str) if earnings_context else "No earnings data available"
+        conviction_str = json.dumps(conviction_signals, indent=2, default=str) if conviction_signals else "No conviction data available"
 
         prompt = build_csp_analysis_prompt(
             candidates_json=candidates_json,
             account_summary=account_summary,
             positions_summary=positions_summary,
             earnings_context=earnings_str,
+            conviction_context=conviction_str,
         )
 
         try:

@@ -16,6 +16,61 @@ from tyche.persistence.database import create_tables, dispose_engine, init_db
 logger = structlog.get_logger()
 
 
+async def _scheduled_morning_scan() -> None:
+    """Wrapper that runs the morning scan with proper dependency resolution.
+
+    Called by APScheduler — resolves all dependencies at call time so
+    singletons are already initialized by the app lifespan.
+    """
+    from tyche.api.deps import (
+        get_analysis_agent,
+        get_broker,
+        get_conviction_engine,
+        get_data_store,
+        get_earnings_client,
+        get_settings as dep_settings,
+        get_strategy_engine,
+        get_universe_builder,
+    )
+    from tyche.persistence.database import get_session
+    from tyche.workflow.intent_builder import create_intents_from_scan
+    from tyche.workflow.morning_scan import run_morning_scan
+
+    settings = dep_settings()
+    result = await run_morning_scan(
+        broker=get_broker(settings),
+        strategy_engine=get_strategy_engine(settings),
+        analysis_agent=get_analysis_agent(None),
+        earnings_client=get_earnings_client(settings),
+        universe_builder=get_universe_builder(settings),
+        watchlist=settings.watchlist_symbols,
+        conviction_engine=get_conviction_engine(settings),
+        data_store=get_data_store(settings),
+        top_n=5,
+    )
+
+    if result.csp_analyses:
+        try:
+            async with get_session() as session:
+                await create_intents_from_scan(
+                    session=session,
+                    scan_id=result.scan_id,
+                    csp_analyses=result.csp_analyses,
+                    csp_candidates=result.csp_candidates,
+                    conviction_signals=result.conviction_signals,
+                )
+        except Exception:
+            logger.error("scheduled_intent_creation_failed", exc_info=True)
+
+    logger.info(
+        "scheduled_morning_scan_complete",
+        scan_id=result.scan_id,
+        candidates=len(result.csp_candidates),
+        analyses=len(result.csp_analyses),
+        errors=len(result.errors),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
@@ -32,9 +87,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_db(settings.database_url)
     await create_tables()
 
+    from tyche.api.deps import get_scheduler
+
+    scheduler = get_scheduler()
+    scheduler.schedule_morning_scan(_scheduled_morning_scan)
+    scheduler.start()
+
     logger.info("tyche_ready")
     yield
 
+    scheduler.shutdown()
     await dispose_engine()
     logger.info("tyche_shutdown")
 
@@ -58,7 +120,17 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    from tyche.api.routes import account, events, orders, scanner, system, watchlist
+    from tyche.api.routes import (
+        account,
+        conviction,
+        events,
+        intents,
+        monitor,
+        orders,
+        scanner,
+        system,
+        watchlist,
+    )
 
     app.include_router(account.router, prefix="/api/v1")
     app.include_router(scanner.router, prefix="/api/v1")
@@ -66,6 +138,9 @@ def create_app() -> FastAPI:
     app.include_router(watchlist.router, prefix="/api/v1")
     app.include_router(events.router, prefix="/api/v1")
     app.include_router(system.router, prefix="/api/v1")
+    app.include_router(conviction.router, prefix="/api/v1")
+    app.include_router(intents.router, prefix="/api/v1")
+    app.include_router(monitor.router, prefix="/api/v1")
 
     @app.get("/health")
     async def health_check() -> dict[str, str]:

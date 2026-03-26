@@ -38,8 +38,8 @@ class StrategyEngine:
         watchlist: list[str],
         available_cash: float,
         earnings_dates: dict[str, date | None] | None = None,
-        min_oi: int = 100,
-        min_volume: int = 10,
+        min_oi: int = 10,
+        min_volume: int = 5,
         max_spread_pct: float = 15.0,
         top_n: int = 10,
     ) -> list[ScoredCandidate]:
@@ -73,6 +73,9 @@ class StrategyEngine:
                     except Exception:
                         logger.warning("chain_fetch_failed", symbol=symbol, expiration=exp_str)
                         continue
+
+                    if chain.underlying_price == 0:
+                        chain.underlying_price = quote.last
 
                     raw = self.csp.identify_candidates(chain, quote)
                     filtered = self.csp.apply_filters(raw, min_oi, min_volume, max_spread_pct)
@@ -136,6 +139,9 @@ class StrategyEngine:
                         chain = await broker.get_options_chain(pos.symbol, exp_str)
                     except Exception:
                         continue
+
+                    if chain.underlying_price == 0:
+                        chain.underlying_price = quote.last
 
                     raw = self.cc.identify_candidates(
                         chain, quote,

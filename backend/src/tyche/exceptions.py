@@ -95,6 +95,29 @@ class EarningsDataUnavailable(MarketDataError):
     """Could not retrieve earnings calendar data."""
 
 
+class PolygonAPIError(MarketDataError):
+    """Error communicating with Polygon.io / Massive.com API."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        super().__init__(f"Polygon API {status_code}: {message}")
+
+
+class PolygonRateLimitError(PolygonAPIError):
+    """Polygon API rate limit exceeded."""
+
+    def __init__(self) -> None:
+        super().__init__(429, "Rate limit exceeded")
+
+
+class InsufficientDataError(MarketDataError):
+    """Not enough historical data to compute indicators."""
+
+
+class DataStoreError(TycheError):
+    """Error reading/writing local data cache."""
+
+
 # --- Persistence Errors ---
 
 

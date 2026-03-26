@@ -57,15 +57,108 @@ export interface CSPCandidate {
   earnings_date?: string;
 }
 
+export interface ConvictionSignal {
+  ticker: string;
+  trend_state: string;
+  conviction_level: string;
+  csp_eligible: boolean;
+  last_close: number;
+  ema_8: number;
+  ema_21: number;
+  ema_8_slope: number;
+  ema_21_slope: number;
+  price_to_8ema_pct: number;
+  price_to_21ema_pct: number;
+  volume_declining_on_pullback: boolean;
+  avg_volume_20d: number;
+  latest_volume: number;
+  days_above_both_emas: number;
+  as_of_date?: string;
+}
+
 export interface ScanResult {
   scan_id: string;
   scanned_at: string;
   symbols_scanned: number;
+  conviction_signals: Record<string, ConvictionSignal>;
   csp_candidates: CSPCandidate[];
   cc_candidates: CSPCandidate[];
   llm_analyses: CSPAnalysis[];
   earnings_context: Record<string, unknown>;
   errors: string[];
+}
+
+export interface OrderIntent {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  status: string;
+  symbol: string;
+  option_symbol?: string;
+  side: string;
+  strategy: string;
+  strike?: number;
+  expiration?: string;
+  quantity: number;
+  limit_price?: number;
+  estimated_premium: number;
+  collateral_required: number;
+  annualized_return_pct: number;
+  conviction_level: string;
+  trend_state: string;
+  thesis?: string;
+  risks?: string;
+  invalidation?: string;
+  risk_passed: boolean;
+  risk_summary?: string;
+  approved_at?: string;
+  rejected_at?: string;
+  user_note?: string;
+  executed_at?: string;
+  actual_fill_price?: number;
+  actual_quantity?: number;
+  actual_premium?: number;
+  broker_confirmation?: string;
+  scan_id?: string;
+  wheel_cycle_id?: string;
+}
+
+export interface OrderIntentList {
+  intents: OrderIntent[];
+  total: number;
+  pending: number;
+  approved: number;
+  executed: number;
+}
+
+export interface CreateIntentRequest {
+  symbol: string;
+  strike: number;
+  expiration: string;
+  quantity: number;
+  limit_price?: number;
+  strategy?: string;
+  side?: string;
+  conviction_level?: string;
+  trend_state?: string;
+  thesis?: string;
+}
+
+export interface DataStoreStatus {
+  exists: boolean;
+  total_rows: number;
+  ticker_count: number;
+  earliest_date?: string;
+  latest_date?: string;
+  parquet_path: string;
+}
+
+export interface ConvictionScanResult {
+  scan_id: string;
+  scanned_at: string;
+  total_screened: number;
+  eligible_count: number;
+  signals: ConvictionSignal[];
 }
 
 export interface CSPAnalysis {

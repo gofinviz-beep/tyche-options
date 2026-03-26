@@ -1,4 +1,4 @@
-"""Scanner routes — trigger and retrieve morning scans, CSP/CC candidates."""
+"""Scanner routes - trigger and retrieve morning scans, CSP/CC candidates."""
 
 from __future__ import annotations
 
@@ -10,17 +10,24 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from tyche.api.deps import (
     get_analysis_agent,
     get_broker,
+    get_conviction_engine,
+    get_data_store,
     get_earnings_client,
     get_settings,
     get_strategy_engine,
+    get_ticker_meta_store,
     get_universe_builder,
 )
 from tyche.analysis.agent import AnalysisAgent
 from tyche.broker.base import BrokerClient
 from tyche.config import TycheSettings
+from tyche.conviction.engine import ConvictionEngine
+from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.earnings import EarningsCalendarClient
 from tyche.market_data.universe import UniverseBuilder
+from tyche.persistence.database import get_session
 from tyche.strategy.engine import StrategyEngine
+from tyche.workflow.intent_builder import create_intents_from_scan
 from tyche.workflow.morning_scan import MorningScanResult, run_morning_scan
 
 logger = structlog.get_logger()
@@ -38,22 +45,23 @@ async def trigger_scan(
     analysis: AnalysisAgent | None = Depends(get_analysis_agent),
     earnings: EarningsCalendarClient | None = Depends(get_earnings_client),
     universe: UniverseBuilder = Depends(get_universe_builder),
+    conviction: ConvictionEngine = Depends(get_conviction_engine),
+    store: OHLCVStore = Depends(get_data_store),
+    meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
     settings: TycheSettings = Depends(get_settings),
 ) -> dict[str, Any]:
-    """Trigger a full morning scan (can be run on-demand)."""
+    """Trigger a full morning scan and persist intents from LLM analyses."""
     global _latest_scan
 
-    watchlist = (
-        [s.strip().upper() for s in symbols.split(",") if s.strip()]
-        if symbols is not None
-        else settings.watchlist_symbols
-    )
-
-    if not watchlist:
-        raise HTTPException(
-            status_code=400,
-            detail="No watchlist symbols configured. Set TYCHE_WATCHLIST_SYMBOLS or pass ?symbols=",
-        )
+    if symbols is not None:
+        watchlist = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        if not watchlist:
+            raise HTTPException(
+                status_code=400,
+                detail="Empty symbols parameter. Omit ?symbols= for dynamic discovery.",
+            )
+    else:
+        watchlist = settings.watchlist_symbols
 
     result = await run_morning_scan(
         broker=broker,
@@ -62,11 +70,35 @@ async def trigger_scan(
         earnings_client=earnings,
         universe_builder=universe,
         watchlist=watchlist,
+        conviction_engine=conviction,
+        data_store=store,
+        ticker_meta_store=meta_store,
         top_n=top_n,
+        available_capital_override=settings.available_capital,
+        min_institutional_pct=settings.min_institutional_pct,
+        min_market_cap=settings.min_market_cap_millions * 1_000_000,
     )
     _latest_scan = result
 
-    return _serialize_scan_result(result)
+    intents_created = 0
+    if result.csp_analyses:
+        try:
+            async with get_session() as session:
+                intents = await create_intents_from_scan(
+                    session=session,
+                    scan_id=result.scan_id,
+                    csp_analyses=result.csp_analyses,
+                    csp_candidates=result.csp_candidates,
+                    conviction_signals=result.conviction_signals,
+                )
+                intents_created = len(intents)
+        except Exception:
+            logger.error("intent_creation_failed", exc_info=True)
+            result.errors.append("Failed to persist trade intents")
+
+    serialized = _serialize_scan_result(result)
+    serialized["intents_created"] = intents_created
+    return serialized
 
 
 @router.get("/latest", response_model=dict[str, Any])
@@ -82,6 +114,10 @@ def _serialize_scan_result(result: MorningScanResult) -> dict[str, Any]:
         "scan_id": result.scan_id,
         "scanned_at": result.scanned_at.isoformat(),
         "symbols_scanned": result.symbols_scanned,
+        "conviction_signals": {
+            ticker: sig.to_dict()
+            for ticker, sig in result.conviction_signals.items()
+        },
         "csp_candidates": [
             {
                 "symbol": c.symbol,
@@ -124,6 +160,10 @@ def _serialize_scan_result(result: MorningScanResult) -> dict[str, Any]:
         "earnings_context": {
             k: {**v, "earnings_date": str(v.get("earnings_date", ""))}
             for k, v in result.earnings_context.items()
+        },
+        "institutional_ownership": {
+            ticker: round(pct * 100, 1)
+            for ticker, pct in result.institutional_ownership.items()
         },
         "errors": result.errors,
     }

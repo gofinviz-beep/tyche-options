@@ -20,6 +20,9 @@ dependencies = [
     "google-genai>=1.0",
     "sse-starlette>=2.2",
     "python-dotenv>=1.0",
+    "pyarrow>=18.0",
+    "pandas>=2.2",
+    "numpy>=2.0",
 ]
 
 [project.optional-dependencies]

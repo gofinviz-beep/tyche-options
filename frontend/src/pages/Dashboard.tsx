@@ -1,12 +1,14 @@
+import { Link } from "react-router-dom";
 import { Card } from "@/components/Card";
 import { PLValue } from "@/components/PLValue";
 import { StatusBadge } from "@/components/StatusBadge";
-import { useAccountSummary, useOpenOrders, useLatestScan } from "@/hooks/useApi";
+import { useAccountSummary, useOpenOrders, useLatestScan, useOrderIntents } from "@/hooks/useApi";
 
 export function Dashboard() {
   const { data: summary, isLoading } = useAccountSummary();
   const { data: orders } = useOpenOrders();
   const { data: scan } = useLatestScan();
+  const { data: intents } = useOrderIntents("pending");
 
   if (isLoading) {
     return (
@@ -130,6 +132,56 @@ export function Dashboard() {
           )}
         </Card>
       </div>
+
+      {/* Pending intents */}
+      {intents && intents.pending > 0 && (
+        <Card
+          title="Pending Trade Intents"
+          subtitle={`${intents.pending} awaiting your review`}
+        >
+          <div className="space-y-3">
+            {intents.intents.slice(0, 5).map((intent) => (
+              <div
+                key={intent.id}
+                className="flex items-center justify-between rounded-lg bg-gray-800/50 px-4 py-3"
+              >
+                <div>
+                  <span className="font-semibold text-white">{intent.symbol}</span>
+                  <span className="ml-2 text-sm text-gray-500">
+                    {intent.strategy.toUpperCase()} · {intent.quantity} contracts
+                  </span>
+                  {intent.strike && (
+                    <span className="ml-2 text-sm text-gray-500">
+                      @ ${intent.strike.toFixed(2)}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-sm text-emerald-400">
+                    ${intent.estimated_premium.toLocaleString()}
+                  </span>
+                  <StatusBadge
+                    label={intent.conviction_level}
+                    variant={
+                      intent.conviction_level === "high"
+                        ? "success"
+                        : intent.conviction_level === "medium"
+                        ? "warning"
+                        : "neutral"
+                    }
+                  />
+                </div>
+              </div>
+            ))}
+            <Link
+              to="/intents"
+              className="inline-block text-sm font-medium text-blue-400 hover:text-blue-300"
+            >
+              Review all intents &rarr;
+            </Link>
+          </div>
+        </Card>
+      )}
 
       {/* Latest scan summary */}
       {scan && (

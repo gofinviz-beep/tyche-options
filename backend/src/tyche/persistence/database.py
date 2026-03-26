@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -39,8 +40,17 @@ def init_db(database_url: str) -> None:
     )
 
 
+async def get_session_dep() -> AsyncGenerator[AsyncSession, None]:
+    """Yield an async session for FastAPI dependency injection."""
+    if _session_factory is None:
+        raise RuntimeError("Database not initialized. Call init_db() first.")
+    async with _session_factory() as session:
+        yield session
+
+
+@asynccontextmanager
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """Yield an async session for dependency injection."""
+    """Provide an async session as a context manager for direct use."""
     if _session_factory is None:
         raise RuntimeError("Database not initialized. Call init_db() first.")
     async with _session_factory() as session:

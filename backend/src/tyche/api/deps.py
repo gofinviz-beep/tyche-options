@@ -13,9 +13,13 @@ from tyche.analysis.client import GeminiClient
 from tyche.broker.base import BrokerClient
 from tyche.broker.mock import MockBroker
 from tyche.config import TycheSettings, get_settings
+from tyche.conviction.engine import ConvictionEngine
+from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.earnings import EarningsCalendarClient
+from tyche.market_data.polygon import PolygonClient
 from tyche.market_data.universe import UniverseBuilder
 from tyche.risk.engine import RiskEngine
+from tyche.workflow.active_monitor import ActiveMonitor
 from tyche.risk.rules import (
     AssignmentExposureRule,
     CashCollateralRule,
@@ -40,16 +44,24 @@ _earnings_client: EarningsCalendarClient | None = None
 _strategy_engine: StrategyEngine | None = None
 _universe_builder: UniverseBuilder | None = None
 _scheduler: WorkflowScheduler | None = None
+_polygon_client: PolygonClient | None = None
+_data_store: OHLCVStore | None = None
+_conviction_engine: ConvictionEngine | None = None
+_active_monitor: ActiveMonitor | None = None
+_ticker_meta_store: TickerMetaStore | None = None
 
 
 def get_broker(settings: TycheSettings = Depends(get_settings)) -> BrokerClient:
-    """Provide the broker client (Mock for sandbox, Tradier for production)."""
+    """Provide the broker client.
+
+    Hybrid architecture:
+    - Tradier (production): real-time quotes, option chains, account ops
+    - MockBroker: fallback when Tradier not configured (sandbox/dev)
+    - Polygon is used separately for conviction/screening (not wired here)
+    """
     global _broker_instance
     if _broker_instance is None:
-        if settings.tradier_sandbox or not settings.tradier_api_token:
-            _broker_instance = MockBroker()
-            logger.info("broker_initialized", type="mock")
-        else:
+        if not settings.tradier_sandbox and settings.tradier_api_token:
             from tyche.broker.tradier.client import TradierClient
 
             _broker_instance = TradierClient(
@@ -57,7 +69,10 @@ def get_broker(settings: TycheSettings = Depends(get_settings)) -> BrokerClient:
                 account_id=settings.tradier_account_id,
                 base_url=settings.broker_base_url,
             )
-            logger.info("broker_initialized", type="tradier")
+            logger.info("broker_initialized", type="tradier_production")
+        else:
+            _broker_instance = MockBroker()
+            logger.info("broker_initialized", type="mock")
     return _broker_instance
 
 
@@ -152,7 +167,9 @@ def get_universe_builder(
     global _universe_builder
     if _universe_builder is None:
         _universe_builder = UniverseBuilder(
-            min_market_cap_billions=settings.min_market_cap_billions,
+            min_market_cap_millions=settings.min_market_cap_millions,
+            min_avg_volume=settings.min_avg_volume,
+            min_price=settings.min_stock_price,
         )
     return _universe_builder
 
@@ -165,11 +182,91 @@ def get_scheduler() -> WorkflowScheduler:
     return _scheduler
 
 
+def get_polygon(
+    settings: TycheSettings = Depends(get_settings),
+) -> PolygonClient | None:
+    """Provide the Polygon.io / Massive.com client (None if no key)."""
+    global _polygon_client
+    if _polygon_client is None and settings.polygon_api_key:
+        _polygon_client = PolygonClient(
+            api_key=settings.polygon_api_key,
+            base_url=settings.polygon_base_url,
+            rate_limit_rpm=settings.polygon_rate_limit_rpm,
+        )
+        logger.info("polygon_client_initialized")
+    return _polygon_client
+
+
+def get_data_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> OHLCVStore:
+    """Provide the local OHLCV data store."""
+    global _data_store
+    if _data_store is None:
+        _data_store = OHLCVStore(data_dir=settings.data_dir)
+        logger.info(
+            "data_store_initialized",
+            path=str(_data_store.parquet_path),
+            exists=_data_store.exists,
+        )
+    return _data_store
+
+
+def get_ticker_meta_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> TickerMetaStore:
+    """Provide the ticker metadata store (market cap, exchange, type)."""
+    global _ticker_meta_store
+    if _ticker_meta_store is None:
+        _ticker_meta_store = TickerMetaStore(data_dir=settings.data_dir)
+        logger.info(
+            "ticker_meta_store_initialized",
+            path=str(_ticker_meta_store.parquet_path),
+            exists=_ticker_meta_store.exists,
+        )
+    return _ticker_meta_store
+
+
+def get_conviction_engine(
+    settings: TycheSettings = Depends(get_settings),
+) -> ConvictionEngine:
+    """Provide the 8/21 EMA conviction engine."""
+    global _conviction_engine
+    if _conviction_engine is None:
+        _conviction_engine = ConvictionEngine(
+            ema_fast=settings.ema_fast_period,
+            ema_slow=settings.ema_slow_period,
+            pullback_proximity_pct=settings.pullback_proximity_pct,
+            max_extension_pct=settings.max_extension_pct,
+            min_days_above_emas=settings.min_days_above_emas,
+            max_days_above_emas=settings.max_days_above_emas,
+        )
+        logger.info(
+            "conviction_engine_initialized",
+            fast=settings.ema_fast_period,
+            slow=settings.ema_slow_period,
+        )
+    return _conviction_engine
+
+
+def get_active_monitor(
+    broker: BrokerClient = Depends(get_broker),
+) -> ActiveMonitor:
+    """Provide the active position/order monitor."""
+    global _active_monitor
+    if _active_monitor is None:
+        _active_monitor = ActiveMonitor(broker=broker)
+        logger.info("active_monitor_initialized")
+    return _active_monitor
+
+
 def reset_all() -> None:
     """Reset all singleton instances (for testing)."""
     global _broker_instance, _gemini_instance, _analysis_agent
     global _risk_engine, _earnings_client, _strategy_engine
     global _universe_builder, _scheduler
+    global _polygon_client, _data_store, _conviction_engine
+    global _active_monitor, _ticker_meta_store
     _broker_instance = None
     _gemini_instance = None
     _analysis_agent = None
@@ -178,3 +275,8 @@ def reset_all() -> None:
     _strategy_engine = None
     _universe_builder = None
     _scheduler = None
+    _polygon_client = None
+    _data_store = None
+    _conviction_engine = None
+    _active_monitor = None
+    _ticker_meta_store = None

@@ -11,6 +11,7 @@ def test_default_settings_are_safe() -> None:
         tradier_api_token="test",
         tradier_account_id="test",
         gemini_api_key="test",
+        tradier_sandbox=True,
     )
     assert settings.tradier_sandbox is True
     assert settings.preview_only_mode is True

@@ -59,6 +59,73 @@ export const api = {
     get: () => request<import("@/types").WatchlistEntry[]>("/watchlist/"),
   },
 
+  conviction: {
+    getStatus: () =>
+      request<import("@/types").DataStoreStatus>("/conviction/status"),
+    bootstrap: (days = 120) =>
+      request<Record<string, unknown>>("/conviction/bootstrap", {
+        method: "POST",
+        body: JSON.stringify({ days }),
+      }),
+    updateDaily: () =>
+      request<Record<string, unknown>>("/conviction/update", {
+        method: "POST",
+      }),
+    scan: (symbols?: string) => {
+      const params = new URLSearchParams();
+      if (symbols) params.set("symbols", symbols);
+      const qs = params.toString();
+      return request<import("@/types").ConvictionScanResult>(
+        `/conviction/scan${qs ? `?${qs}` : ""}`,
+      );
+    },
+    getSignal: (ticker: string) =>
+      request<import("@/types").ConvictionSignal>(
+        `/conviction/signal/${ticker}`,
+      ),
+  },
+
+  intents: {
+    list: (status?: string) => {
+      const params = new URLSearchParams();
+      if (status) params.set("status", status);
+      const qs = params.toString();
+      return request<import("@/types").OrderIntentList>(
+        `/intents${qs ? `?${qs}` : ""}`,
+      );
+    },
+    create: (data: import("@/types").CreateIntentRequest) =>
+      request<import("@/types").OrderIntent>("/intents", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    get: (id: string) =>
+      request<import("@/types").OrderIntent>(`/intents/${id}`),
+    approve: (id: string, note?: string) =>
+      request<import("@/types").OrderIntent>(`/intents/${id}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ user_note: note }),
+      }),
+    reject: (id: string, reason?: string) =>
+      request<import("@/types").OrderIntent>(`/intents/${id}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      }),
+    recordExecution: (
+      id: string,
+      data: {
+        fill_price: number;
+        quantity: number;
+        premium_received?: number;
+        broker_confirmation?: string;
+      },
+    ) =>
+      request<import("@/types").OrderIntent>(`/intents/${id}/execute`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+  },
+
   system: {
     getConfig: () => request<import("@/types").SystemConfig>("/system/config"),
     getScheduler: () => request<Record<string, unknown>>("/system/scheduler"),

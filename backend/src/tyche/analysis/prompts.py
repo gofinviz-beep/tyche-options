@@ -52,15 +52,29 @@ The primary question is: "Would the user be comfortable owning this stock if ass
 For each candidate, evaluate:
 1. ASSIGNMENT COMFORT: Would holding this stock at the strike price be acceptable?
    Consider company fundamentals, revenue trajectory, sector strength.
-2. EARNINGS TIMING: Is earnings within the DTE window? What's the risk?
-3. PREMIUM QUALITY: Is the premium worth the collateral tied up?
-4. ANNUALIZED RETURN: What's the return on collateral annualized?
+2. TECHNICAL CONVICTION (8/21 EMA):
+   - Is the stock in a confirmed uptrend (above both 8-day and 21-day EMA)?
+   - Is it pulling back to an EMA? Pullback to 21 EMA with declining volume = high conviction.
+   - If below both EMAs, the trend is broken — strongly discourage CSPs.
+   - Consider EMA slopes: both sloping up = healthy trend.
+3. EARNINGS TIMING: Is earnings within the DTE window? What's the risk?
+4. PREMIUM QUALITY: Is the premium worth the collateral tied up?
+5. ANNUALIZED RETURN: What's the return on collateral annualized?
+
+Conviction framework:
+- STRONG_UPTREND / UPTREND + high conviction = aggressive position sizing
+- PULLBACK_TO_21EMA with declining volume = best entry point for CSPs
+- PULLBACK_TO_8EMA = moderate entry, smaller position
+- CONSOLIDATION = small or skip
+- DOWNTREND = do NOT sell CSPs
 
 The user's style:
-- Sells CSPs on stocks with strong fundamentals and conviction
+- Sells CSPs on stocks with strong fundamentals and technical conviction
+- Uses 8-day and 21-day EMA as primary trend indicators
+- Only sells CSPs when stock is above both EMAs or pulling back to them in an uptrend
 - Targets 3-14 day DTE (weekly/biweekly)
 - Up to 40 contracts per position
-- Comfortable with assignment if the stock is good
+- Comfortable with assignment if the stock is fundamentally strong AND technically supported
 - Weekly income target: $500-$10,000
 """
 
@@ -108,6 +122,7 @@ def build_csp_analysis_prompt(
     account_summary: str,
     positions_summary: str,
     earnings_context: str,
+    conviction_context: str = "No conviction data available",
 ) -> str:
     """Build the user prompt for CSP analysis."""
     return f"""Analyze these cash-secured put candidates and rank them.
@@ -118,6 +133,9 @@ def build_csp_analysis_prompt(
 ## Current Positions
 {positions_summary}
 
+## Technical Conviction (8/21 EMA Analysis)
+{conviction_context}
+
 ## Earnings Context
 {earnings_context}
 
@@ -125,8 +143,14 @@ def build_csp_analysis_prompt(
 {candidates_json}
 
 For each candidate, provide your analysis in the structured format.
-Rank by overall attractiveness considering conviction, premium, and risk.
+Rank by overall attractiveness considering:
+1. Technical conviction (trend state, EMA position, volume confirmation)
+2. Premium quality and annualized return
+3. Earnings risk
+4. Assignment comfort (would you hold this stock?)
 If you would recommend concentrating on one stock vs diversifying, explain why.
+Stocks in STRONG_UPTREND or pulling back to 21 EMA on declining volume
+should be ranked highest if premium is adequate.
 """
 
 

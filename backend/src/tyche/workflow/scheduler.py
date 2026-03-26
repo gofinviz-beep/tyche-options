@@ -123,8 +123,9 @@ class WorkflowScheduler:
         for name, job_id in self._jobs.items():
             job = self._scheduler.get_job(job_id)
             if job:
+                next_run = getattr(job, "next_run_time", None)
                 status[name] = {
-                    "next_run": str(job.next_run_time) if job.next_run_time else None,
+                    "next_run": str(next_run) if next_run else None,
                     "pending": job.pending,
                 }
             else:

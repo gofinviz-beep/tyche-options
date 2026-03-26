@@ -6,6 +6,7 @@ from tyche.models.earnings import EarningsEntry
 from tyche.models.journal import TradeJournal
 from tyche.models.memory import BotMemory
 from tyche.models.order import ExecutionDecision, OpenOrder, OrderMonitorSnapshot
+from tyche.models.order_intent import OrderIntent
 from tyche.models.position import Position
 from tyche.models.recommendation import TradeRecommendation
 from tyche.models.watchlist import WatchlistSymbol
@@ -18,6 +19,7 @@ __all__ = [
     "ExecutionDecision",
     "OpenOrder",
     "OptionCandidate",
+    "OrderIntent",
     "OrderMonitorSnapshot",
     "Position",
     "TradeJournal",

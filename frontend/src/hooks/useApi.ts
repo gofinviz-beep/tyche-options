@@ -87,3 +87,130 @@ export function usePreviewOrder() {
     mutationFn: api.orders.preview,
   });
 }
+
+// --- Conviction hooks ---
+
+export function useDataStoreStatus() {
+  return useQuery({
+    queryKey: ["conviction", "status"],
+    queryFn: api.conviction.getStatus,
+  });
+}
+
+export function useBootstrapData() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (days?: number) => api.conviction.bootstrap(days),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["conviction"] });
+    },
+  });
+}
+
+export function useUpdateDailyData() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: api.conviction.updateDaily,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["conviction"] });
+    },
+  });
+}
+
+export function useConvictionScan(symbols?: string) {
+  return useQuery({
+    queryKey: ["conviction", "scan", symbols],
+    queryFn: () => api.conviction.scan(symbols),
+    enabled: false,
+  });
+}
+
+export function useConvictionSignal(ticker: string) {
+  return useQuery({
+    queryKey: ["conviction", "signal", ticker],
+    queryFn: () => api.conviction.getSignal(ticker),
+    enabled: !!ticker,
+  });
+}
+
+export function useTriggerConvictionScan() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (symbols?: string) => api.conviction.scan(symbols),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["conviction", "scan"] });
+    },
+  });
+}
+
+// --- Order Intent hooks ---
+
+export function useOrderIntents(status?: string) {
+  return useQuery({
+    queryKey: ["intents", status],
+    queryFn: () => api.intents.list(status),
+    refetchInterval: 15_000,
+  });
+}
+
+export function useCreateIntent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: import("@/types").CreateIntentRequest) =>
+      api.intents.create(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["intents"] });
+    },
+  });
+}
+
+export function useOrderIntent(id: string) {
+  return useQuery({
+    queryKey: ["intents", id],
+    queryFn: () => api.intents.get(id),
+    enabled: !!id,
+  });
+}
+
+export function useApproveIntent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, note }: { id: string; note?: string }) =>
+      api.intents.approve(id, note),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["intents"] });
+    },
+  });
+}
+
+export function useRejectIntent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason?: string }) =>
+      api.intents.reject(id, reason),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["intents"] });
+    },
+  });
+}
+
+export function useRecordExecution() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: {
+        fill_price: number;
+        quantity: number;
+        premium_received?: number;
+        broker_confirmation?: string;
+      };
+    }) => api.intents.recordExecution(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["intents"] });
+    },
+  });
+}

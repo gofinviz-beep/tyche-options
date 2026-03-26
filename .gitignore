@@ -57,3 +57,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Data files (Parquet, cached market data)
+backend/data/
+*.parquet

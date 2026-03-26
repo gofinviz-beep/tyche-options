@@ -5,6 +5,8 @@ import { Dashboard } from "@/pages/Dashboard";
 import { Scanner } from "@/pages/Scanner";
 import { Orders } from "@/pages/Orders";
 import { Monitor } from "@/pages/Monitor";
+import { Intents } from "@/pages/Intents";
+import { Conviction } from "@/pages/Conviction";
 import { Settings } from "@/pages/Settings";
 
 const queryClient = new QueryClient({
@@ -26,6 +28,8 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/scanner" element={<Scanner />} />
+              <Route path="/intents" element={<Intents />} />
+              <Route path="/conviction" element={<Conviction />} />
               <Route path="/orders" element={<Orders />} />
               <Route path="/monitor" element={<Monitor />} />
               <Route path="/settings" element={<Settings />} />

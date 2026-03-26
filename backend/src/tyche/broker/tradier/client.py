@@ -298,33 +298,33 @@ class TradierClient:
 
         underlying_price = 0.0
         if option_list:
-            underlying_price = float(option_list[0].get("underlying_last_price", 0))
+            underlying_price = _safe_float(option_list[0].get("underlying_last_price"))
 
         contracts: list[OptionContract] = []
         for opt in option_list:
             greeks_data = opt.get("greeks", {}) or {}
-            bid = float(opt.get("bid", 0))
-            ask = float(opt.get("ask", 0))
+            bid = _safe_float(opt.get("bid"))
+            ask = _safe_float(opt.get("ask"))
             contracts.append(
                 OptionContract(
                     option_symbol=opt.get("symbol", ""),
                     option_type=opt.get("option_type", "").lower(),
-                    strike=float(opt.get("strike", 0)),
+                    strike=_safe_float(opt.get("strike")),
                     expiration=exp_date,
                     bid=bid,
                     ask=ask,
                     mid=round((bid + ask) / 2, 4) if (bid + ask) > 0 else 0.0,
-                    last=float(opt.get("last", 0)),
-                    volume=int(opt.get("volume", 0)),
-                    open_interest=int(opt.get("open_interest", 0)),
-                    implied_volatility=float(
-                        greeks_data.get("smv_vol", opt.get("implied_volatility", 0))
+                    last=_safe_float(opt.get("last")),
+                    volume=int(opt.get("volume") or 0),
+                    open_interest=int(opt.get("open_interest") or 0),
+                    implied_volatility=_safe_float(
+                        greeks_data.get("smv_vol") or opt.get("implied_volatility")
                     ),
-                    delta=float(greeks_data.get("delta", 0)),
-                    gamma=float(greeks_data.get("gamma", 0)),
-                    theta=float(greeks_data.get("theta", 0)),
-                    vega=float(greeks_data.get("vega", 0)),
-                    rho=float(greeks_data.get("rho", 0)),
+                    delta=_safe_float(greeks_data.get("delta")),
+                    gamma=_safe_float(greeks_data.get("gamma")),
+                    theta=_safe_float(greeks_data.get("theta")),
+                    vega=_safe_float(greeks_data.get("vega")),
+                    rho=_safe_float(greeks_data.get("rho")),
                 )
             )
 
@@ -431,6 +431,16 @@ class TradierClient:
             broker_order_id=str(order_data.get("id", order_id)),
             status=order_data.get("status", "ok"),
         )
+
+
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    """Convert to float, returning default for None/invalid values."""
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
 
 
 def _float_or_none(val: Any) -> float | None:

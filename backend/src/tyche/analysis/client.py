@@ -1,12 +1,14 @@
-"""Gemini client wrapper with retry and structured output support."""
+"""Gemini client wrapper with retry, backoff, and model fallback."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, TypeVar
 
 import structlog
 from google import genai
+from google.genai.errors import ServerError
 from google.genai.types import GenerateContentConfig
 from pydantic import BaseModel
 
@@ -16,12 +18,21 @@ logger = structlog.get_logger()
 
 T = TypeVar("T", bound=BaseModel)
 
+_FALLBACK_MODELS: dict[str, str] = {
+    "gemini-2.5-flash": "gemini-2.0-flash",
+    "gemini-2.5-pro": "gemini-2.0-flash",
+}
+
+_MAX_RETRIES = 3
+_BASE_DELAY_S = 2.0
+_BACKOFF_FACTOR = 2
+
 
 class GeminiClient:
     """Wraps the google-genai SDK for structured LLM interactions.
 
-    Supports both fast (Flash) and deep (Pro) model tiers.
-    All outputs are parsed into Pydantic models for type safety.
+    Supports both fast (Flash) and deep (Pro) model tiers with
+    automatic retry, exponential backoff, and model fallback on 503.
     """
 
     def __init__(
@@ -33,6 +44,74 @@ class GeminiClient:
         self._client = genai.Client(api_key=api_key)
         self._model_fast = model_fast
         self._model_deep = model_deep
+
+    def _call_model(
+        self,
+        model: str,
+        contents: str,
+        config: GenerateContentConfig,
+    ) -> Any:
+        """Synchronous wrapper around the genai SDK (it is sync internally)."""
+        return self._client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=config,
+        )
+
+    async def _call_with_retry(
+        self,
+        model: str,
+        contents: str,
+        config: GenerateContentConfig,
+    ) -> Any:
+        """Call the model with exponential backoff and model fallback on 503."""
+        models_to_try = [model]
+        fallback = _FALLBACK_MODELS.get(model)
+        if fallback and fallback != model:
+            models_to_try.append(fallback)
+
+        last_exc: Exception | None = None
+
+        for current_model in models_to_try:
+            delay = _BASE_DELAY_S
+            for attempt in range(1, _MAX_RETRIES + 1):
+                try:
+                    response = await asyncio.to_thread(
+                        self._call_model, current_model, contents, config
+                    )
+                    if current_model != model:
+                        logger.info(
+                            "llm_fallback_succeeded",
+                            primary=model,
+                            fallback=current_model,
+                        )
+                    return response
+                except ServerError as exc:
+                    last_exc = exc
+                    status = getattr(exc, "status_code", 0)
+                    if status in (503, 429) and attempt < _MAX_RETRIES:
+                        logger.warning(
+                            "llm_retry",
+                            model=current_model,
+                            attempt=attempt,
+                            delay_s=delay,
+                            status=status,
+                        )
+                        await asyncio.sleep(delay)
+                        delay *= _BACKOFF_FACTOR
+                        continue
+                    logger.warning(
+                        "llm_model_exhausted",
+                        model=current_model,
+                        attempts=attempt,
+                        error=str(exc),
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    break
+
+        raise last_exc or LLMResponseError("All model attempts failed")
 
     async def analyze(
         self,
@@ -64,11 +143,7 @@ class GeminiClient:
         )
 
         try:
-            response = self._client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=config,
-            )
+            response = await self._call_with_retry(model, prompt, config)
 
             if not response.text:
                 raise LLMResponseError("Gemini returned empty response")
