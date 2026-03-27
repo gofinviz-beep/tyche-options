@@ -24,6 +24,7 @@ dependencies = [
     "pandas>=2.2",
     "numpy>=2.0",
     "scipy>=1.12",
+    "click>=8.1",
 ]
 
 [project.optional-dependencies]

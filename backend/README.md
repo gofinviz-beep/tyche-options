@@ -33,29 +33,17 @@ See [docs/configuration.md](../docs/configuration.md) for the full settings refe
 
 ### 3. Bootstrap Data
 
-Fetch 120 days of historical OHLCV data and ticker metadata from Polygon:
+Fetch historical OHLCV data and ticker metadata from Polygon:
 
 ```bash
-# Via API
-uvicorn tyche.app:app --reload
-curl -X POST http://localhost:8000/conviction/bootstrap
+# Full bootstrap (120 days of history + ticker metadata)
+python scripts/ingest_data.py --days 120 --meta
 
-# Or via Python
-python -c "
-import asyncio
-from tyche.market_data.data_store import bootstrap_ohlcv, OHLCVStore, TickerMetaStore
-from tyche.market_data.polygon import PolygonClient
-from tyche.config import get_settings
+# Or fetch just missing days (auto-detects latest date in store)
+python scripts/ingest_data.py
 
-async def main():
-    s = get_settings()
-    p = PolygonClient(api_key=s.polygon_api_key)
-    r = await bootstrap_ohlcv(p, OHLCVStore(data_dir=s.data_dir), meta_store=TickerMetaStore(data_dir=s.data_dir))
-    print(r)
-    await p.close()
-
-asyncio.run(main())
-"
+# Check what's in the store
+python scripts/ingest_data.py --status
 ```
 
 ### 4. Run
@@ -65,6 +53,18 @@ uvicorn tyche.app:app --reload
 ```
 
 ## Scripts
+
+### Data Ingestion
+
+Fetch and manage OHLCV daily bars and ticker metadata from Polygon.io:
+
+```bash
+python scripts/ingest_data.py                             # Fetch missing days
+python scripts/ingest_data.py --from 2026-03-20           # From a specific date
+python scripts/ingest_data.py --from 2026-03-20 --to 2026-03-25  # Specific range
+python scripts/ingest_data.py --days 120 --meta           # Full bootstrap with metadata
+python scripts/ingest_data.py --status                    # Show store status
+```
 
 ### Live Scan
 
