@@ -56,14 +56,16 @@ uvicorn tyche.app:app --reload
 
 ### Data Ingestion
 
-Fetch and manage OHLCV daily bars and ticker metadata from Polygon.io:
+Fetch and manage OHLCV daily bars, 5-minute intraday bars, and ticker metadata from Polygon.io:
 
 ```bash
-python scripts/ingest_data.py                             # Fetch missing days
+python scripts/ingest_data.py                             # Fetch missing daily bars
 python scripts/ingest_data.py --from 2026-03-20           # From a specific date
 python scripts/ingest_data.py --from 2026-03-20 --to 2026-03-25  # Specific range
 python scripts/ingest_data.py --days 120 --meta           # Full bootstrap with metadata
-python scripts/ingest_data.py --status                    # Show store status
+python scripts/ingest_data.py --intraday                  # Also fetch 5-min bars for eligible tickers
+python scripts/ingest_data.py --intraday --intraday-tickers AAPL,MSFT  # Specific tickers
+python scripts/ingest_data.py --status                    # Show all store statuses
 ```
 
 ### Live Scan
@@ -85,6 +87,19 @@ python scripts/backtest_ema.py
 ```
 
 Runs per-trade simulations and a capital-aware portfolio simulation with equity curve and Sharpe ratio.
+
+### Intraday Timing Backtest
+
+Determine the optimal time of day for CSP entries using 5-minute intraday data:
+
+```bash
+python scripts/backtest_intraday.py                       # Run using cached intraday data
+python scripts/backtest_intraday.py --fetch               # Fetch missing intraday data first
+python scripts/backtest_intraday.py --from 2026-01-01     # Limit backtest date range
+python scripts/backtest_intraday.py --status              # Show cached intraday data status
+```
+
+Samples price at 30-minute intervals (9:30 AM to 3:30 PM ET) and simulates CSP outcomes for each time slot.
 
 ## Tests
 

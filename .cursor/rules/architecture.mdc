@@ -16,7 +16,7 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 - `conviction/engine.py` — 8/21 EMA trend classification + CSP eligibility. The primary screening gate.
 - `strategy/allocator.py` — MILP optimizer (scipy). Maximizes risk-adjusted premium across CSPs and CCs.
 - `strategy/engine.py` — Orchestrates CSP/CC candidate scanning via broker API.
-- `market_data/data_store.py` — OHLCVStore + TickerMetaStore (Parquet files). Used by conviction engine and backtest.
+- `market_data/data_store.py` — OHLCVStore + IntradayStore (per-ticker Parquet dirs) + TickerMetaStore. Used by conviction engine and backtests.
 - `market_data/polygon.py` — Polygon.io client for historical bars and ticker reference. NOT used for live trading.
 - `broker/tradier/client.py` — Tradier API for live quotes, options chains, account ops, and order execution.
 - `workflow/morning_scan.py` — Full morning scan pipeline: universe filter → conviction → options scan → allocator → LLM.
@@ -26,7 +26,7 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 
 - **Run from `backend/` directory.** All relative paths (data/, .env) assume backend/ as cwd.
 - **DI via `api/deps.py`.** Never instantiate services directly in routes. Use `Depends(get_xxx)`.
-- **Parquet-first data.** Historical data in Parquet, operational data in SQLite. Do not mix.
+- **Parquet-first data.** Historical data in per-ticker Parquet files (`data/ohlcv_daily/{TICKER}.parquet`, `data/intraday_5min/{TICKER}.parquet`), operational data in SQLite. Do not mix.
 - **Conviction-first filtering.** Stocks must pass ConvictionEngine before any Tradier API calls.
 - **Two data APIs.** Polygon = historical (bootstrap/backtest). Tradier = live (quotes/chains/orders).
 

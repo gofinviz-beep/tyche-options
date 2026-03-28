@@ -39,6 +39,21 @@ class DailyBar:
 
 
 @dataclass(frozen=True)
+class IntradayBar:
+    """Single intraday OHLCV bar from Polygon aggregate endpoint."""
+
+    ticker: str
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+    vwap: float = 0.0
+    num_transactions: int = 0
+
+
+@dataclass(frozen=True)
 class TickerInfo:
     """Ticker reference data from Polygon."""
 
@@ -229,6 +244,88 @@ class PolygonClient:
             tickers=len(bars),
         )
         return bars
+
+    # ── Aggregate Bars (intraday / custom timespan) ────────────────────
+
+    async def get_aggregate_bars(
+        self,
+        ticker: str,
+        from_date: date,
+        to_date: date,
+        multiplier: int = 5,
+        timespan: str = "minute",
+        limit: int = 50000,
+    ) -> list[IntradayBar]:
+        """Fetch aggregate bars for a single ticker over a date range.
+
+        Uses /v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}
+
+        Args:
+            ticker: Stock symbol.
+            from_date: Start date (inclusive).
+            to_date: End date (inclusive).
+            multiplier: Bar size multiplier (e.g., 5 for 5-minute bars).
+            timespan: Bar timespan (minute, hour, day, week, month).
+            limit: Max results per page (Polygon max is 50000).
+
+        Returns:
+            List of IntradayBar sorted by timestamp ascending.
+        """
+        from_str = from_date.strftime("%Y-%m-%d")
+        to_str = to_date.strftime("%Y-%m-%d")
+        path = f"/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from_str}/{to_str}"
+
+        all_bars: list[IntradayBar] = []
+        next_url: str | None = None
+
+        while True:
+            if next_url:
+                await self._throttle()
+                separator = "&" if "?" in next_url else "?"
+                url_with_key = f"{next_url}{separator}apiKey={self._api_key}"
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.get(url_with_key)
+                    data = resp.json()
+            else:
+                data = await self._request(
+                    "GET",
+                    path,
+                    params={"adjusted": "true", "sort": "asc", "limit": limit},
+                )
+
+            for r in data.get("results", []):
+                try:
+                    ts_ms = int(r.get("t", 0))
+                    ts = datetime.fromtimestamp(ts_ms / 1000)
+                    all_bars.append(
+                        IntradayBar(
+                            ticker=ticker,
+                            timestamp=ts,
+                            open=float(r.get("o", 0)),
+                            high=float(r.get("h", 0)),
+                            low=float(r.get("l", 0)),
+                            close=float(r.get("c", 0)),
+                            volume=int(r.get("v", 0)),
+                            vwap=float(r.get("vw", 0)),
+                            num_transactions=int(r.get("n", 0)),
+                        )
+                    )
+                except (KeyError, ValueError, TypeError):
+                    continue
+
+            next_url = data.get("next_url")
+            if not next_url:
+                break
+
+        logger.info(
+            "polygon_aggregate_bars",
+            ticker=ticker,
+            timespan=f"{multiplier}{timespan}",
+            bars=len(all_bars),
+            from_date=from_str,
+            to_date=to_str,
+        )
+        return all_bars
 
     # ── Ticker Reference ────────────────────────────────────────────────
 

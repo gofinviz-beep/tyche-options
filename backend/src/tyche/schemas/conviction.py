@@ -140,7 +140,7 @@ class DataStoreStatusResponse(BaseModel):
     ticker_count: int
     earliest_date: str | None = None
     latest_date: str | None = None
-    parquet_path: str
+    store_path: str
 
 
 class BootstrapRequest(BaseModel):

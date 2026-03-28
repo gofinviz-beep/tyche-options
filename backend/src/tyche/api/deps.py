@@ -208,7 +208,7 @@ def get_data_store(
         _data_store = OHLCVStore(data_dir=settings.data_dir)
         logger.info(
             "data_store_initialized",
-            path=str(_data_store.parquet_path),
+            path=str(_data_store.store_dir),
             exists=_data_store.exists,
         )
     return _data_store

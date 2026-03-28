@@ -38,7 +38,7 @@ async def get_data_store_status(
         ticker_count=store.get_ticker_count(),
         earliest_date=earliest.isoformat() if earliest else None,
         latest_date=latest.isoformat() if latest else None,
-        parquet_path=str(store.parquet_path),
+        store_path=str(store.store_dir),
     )
 
 

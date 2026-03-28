@@ -20,8 +20,6 @@ from dataclasses import dataclass
 from datetime import date
 
 import pandas as pd
-import pyarrow.compute as pc
-import pyarrow.parquet as pq
 
 sys.path.insert(0, "src")
 
@@ -88,11 +86,17 @@ def run_backtest():
     print(f"Tickers passing market cap + exchange filter: {len(qualified_tickers)}")
 
     # Load OHLCV data
-    table = pq.read_table(store.parquet_path)
-    all_dates = sorted(pc.unique(table.column("date")).to_pylist())
+    all_ohlcv_tickers = set(store.get_all_tickers())
+    target_tickers = qualified_tickers & all_ohlcv_tickers
+    ticker_data = store.read_tickers(list(target_tickers))
+
+    all_dates: set[date] = set()
+    for df in ticker_data.values():
+        all_dates.update(df["date"].unique())
+    all_dates_sorted = sorted(all_dates)
 
     warmup = 30
-    backtest_dates = all_dates[warmup:]
+    backtest_dates = all_dates_sorted[warmup:]
 
     print(f"\nBacktest: {backtest_dates[0]} to {backtest_dates[-1]}")
     print(f"Trading days: {len(backtest_dates)}")
@@ -102,16 +106,10 @@ def run_backtest():
     print(f"Top {TOP_N_PER_DAY} picks per day")
     print("=" * 80)
 
-    # Pre-build per-ticker DataFrames (only for qualified tickers)
-    all_ohlcv_tickers = set(pc.unique(table.column("ticker")).to_pylist())
-    target_tickers = qualified_tickers & all_ohlcv_tickers
-
     ticker_frames: dict[str, pd.DataFrame] = {}
-    for ticker in target_tickers:
-        mask = pc.equal(table.column("ticker"), ticker)
-        sub = table.filter(mask).to_pandas().sort_values("date")
-        if len(sub) >= warmup:
-            ticker_frames[ticker] = sub
+    for ticker, df in ticker_data.items():
+        if len(df) >= warmup:
+            ticker_frames[ticker] = df
 
     print(f"Tickers with OHLCV + metadata: {len(ticker_frames)}")
     print()

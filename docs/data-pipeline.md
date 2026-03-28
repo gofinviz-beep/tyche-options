@@ -6,22 +6,37 @@
 
 ## Overview
 
-Tyche uses a Parquet-first local data layer for all historical market data. Two stores serve different purposes:
+Tyche uses a Parquet-first local data layer for all historical market data. Three stores serve different purposes:
 
-- **OHLCVStore** — Daily OHLCV bars for all US equities (used by conviction engine and backtest)
+- **OHLCVStore** — Per-ticker daily OHLCV bars for all US equities (used by conviction engine and backtest)
+- **IntradayStore** — Per-ticker 5-minute intraday bars (used by intraday timing backtest)
 - **TickerMetaStore** — Per-ticker metadata: market cap, exchange, type (used for universe filtering)
 
-Both are populated from Polygon.io during bootstrap and updated incrementally.
+All are populated from Polygon.io during bootstrap and updated incrementally.
+
+### Per-Ticker Partitioning
+
+OHLCVStore and IntradayStore use **per-ticker Parquet files** — one file per symbol. This provides:
+
+- **Zero write contention:** Different tickers can be written in parallel with no locking
+- **Limited blast radius:** A corrupted file only affects one ticker, not the entire universe
+- **O(1) single-ticker reads:** Reading AAPL's data touches only `AAPL.parquet`, not 5M rows
+- **Efficient incremental updates:** Appending to a 100-row file vs. rewriting a 1.5M-row file
+
+TickerMetaStore remains a single file because it is small (~5K rows) and always read in bulk.
+
+### Migration from Legacy Layout
+
+If a legacy single-file store (`ohlcv_daily.parquet` or `intraday_5min.parquet`) is detected, `ingest_data.py` auto-migrates it to per-ticker files on the next run. The old file is renamed to `.parquet.bak`.
 
 ## OHLCVStore
 
-**File:** `data/ohlcv_daily.parquet`
+**Directory:** `data/ohlcv_daily/{TICKER}.parquet`
 
-### Schema
+### Schema (per-ticker file)
 
 | Column | Type | Description |
 |---|---|---|
-| ticker | string | Stock symbol (e.g., "AAPL") |
 | date | date32 | Trading day |
 | open | float64 | Opening price |
 | high | float64 | Day high |
@@ -32,15 +47,16 @@ Both are populated from Polygon.io during bootstrap and updated incrementally.
 
 ### Deduplication
 
-On every write, rows are deduplicated on `(ticker, date)` keeping the last occurrence. This makes incremental updates safe — re-fetching a date simply overwrites stale data.
+On every write, rows are deduplicated on `date` within the ticker's file. Re-fetching a date overwrites stale data.
 
 ### Key Operations
 
-- `write_bars(bars)` — Append daily bars, dedup, sort by (ticker, date), write Parquet with Snappy compression
-- `read_ticker(ticker, start_date, end_date)` — Single-ticker DataFrame, sorted by date ascending
+- `write_bars(bars)` — Group bars by ticker, write each ticker's file independently with dedup
+- `read_ticker(ticker, start_date, end_date)` — Read one ticker's file directly, sorted by date ascending
 - `read_tickers(tickers, start_date, end_date)` — Multi-ticker read, returns `dict[str, DataFrame]`
-- `get_all_tickers()` — List all unique tickers in the store
-- `screen_universe(min_avg_volume, min_price, min_dollar_volume)` — Local screening using stored data (20-day averages)
+- `read_all()` — Combine all ticker files into one DataFrame (for cross-ticker views like screening)
+- `get_all_tickers()` — List directory to get all ticker symbols
+- `screen_universe(min_avg_volume, min_price, min_dollar_volume)` — Local screening using stored data
 
 ## TickerMetaStore
 
@@ -68,6 +84,38 @@ On every write, rows are deduplicated on `(ticker, date)` keeping the last occur
 
 Market cap is critical for filtering "good companies" suitable for the Wheel Strategy. Polygon's bulk ticker endpoint (`/v3/reference/tickers`) does not return market cap on Starter plans, so individual `get_ticker_details` calls are used during bootstrap. Persisting the results avoids repeated API calls and enables backtesting with realistic filters.
 
+## IntradayStore
+
+**Directory:** `data/intraday_5min/{TICKER}.parquet`
+
+Stores 5-minute intraday OHLCV bars, one file per ticker. Used by the intraday timing backtest to determine optimal time-of-day for CSP entries. Populated from Polygon's aggregate bars endpoint.
+
+### Schema (per-ticker file)
+
+| Column | Type | Description |
+|---|---|---|
+| timestamp | timestamp(us) | Bar timestamp (Eastern Time) |
+| date | date32 | Trading day (derived from timestamp) |
+| open | float64 | Bar open price |
+| high | float64 | Bar high |
+| low | float64 | Bar low |
+| close | float64 | Bar close price |
+| volume | int64 | Bar volume |
+| vwap | float64 | Volume-weighted average price |
+| num_transactions | int64 | Number of transactions in bar |
+
+### Deduplication
+
+Rows are deduplicated on `timestamp` within each ticker's file.
+
+### Key Operations
+
+- `write_bars(bars)` — Group bars by ticker, write each ticker's file independently with dedup
+- `read_ticker(ticker, start_date, end_date)` — Read one ticker's file directly, sorted by timestamp
+- `read_tickers(tickers, start_date, end_date)` — Multi-ticker read, returns `dict[str, DataFrame]`
+- `get_tickers()` — List directory to get all ticker symbols with intraday data
+- `get_dates_for_ticker(ticker)` — Sorted list of dates with data for a given ticker
+
 ## Polygon.io Integration
 
 **Source:** `backend/src/tyche/market_data/polygon.py`
@@ -80,6 +128,7 @@ Market cap is critical for filtering "good companies" suitable for the Wheel Str
 | `get_tickers(market, active, type)` | `/v3/reference/tickers` | Paginated ticker reference (name, exchange, type) |
 | `get_ticker_details(ticker)` | `/v3/reference/tickers/{ticker}` | Single ticker details (includes market cap) |
 | `get_batch_market_caps(tickers)` | Individual `get_ticker_details` calls | Batch market cap fetch with rate limiting |
+| `get_aggregate_bars(ticker, from, to)` | `/v2/aggs/ticker/{ticker}/range/5/minute/{from}/{to}` | 5-minute intraday bars for a single ticker |
 
 ### Rate Limiting
 
@@ -134,6 +183,13 @@ All Parquet files live under `backend/data/` (configurable via `TYCHE_DATA_DIR`)
 
 ```
 backend/data/
-├── ohlcv_daily.parquet      # ~50-100MB depending on date range
-└── ticker_meta.parquet      # ~1MB (ticker reference metadata)
+├── ohlcv_daily/             # Per-ticker daily bars
+│   ├── AAPL.parquet         # ~10KB per ticker (120 days of daily bars)
+│   ├── MSFT.parquet
+│   └── ... (~13,000 tickers)
+├── intraday_5min/           # Per-ticker 5-min bars
+│   ├── AAPL.parquet         # ~100-500KB per ticker (90 days of 5-min bars)
+│   ├── MSFT.parquet
+│   └── ... (~881 eligible tickers)
+└── ticker_meta.parquet      # ~1MB (single file, ticker reference metadata)
 ```
