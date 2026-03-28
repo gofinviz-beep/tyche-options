@@ -25,6 +25,9 @@ env/
 .env.local
 .env.production
 
+# Secrets / tokens
+.github_pat_token
+
 # Database
 *.db
 *.db-journal
