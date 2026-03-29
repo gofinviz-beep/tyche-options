@@ -8,6 +8,7 @@ import {
   useRejectIntent,
   useRecordExecution,
   useCreateIntent,
+  useBulkExpireIntents,
 } from "@/hooks/useApi";
 import type { OrderIntent } from "@/types";
 
@@ -23,11 +24,13 @@ export function Intents() {
   );
   const approveIntent = useApproveIntent();
   const rejectIntent = useRejectIntent();
+  const bulkExpire = useBulkExpireIntents();
+  const [expireMsg, setExpireMsg] = useState<string | null>(null);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Trade Intents</h1>
+        <h1 className="text-2xl font-bold text-gray-900">Trade Intents</h1>
         <div className="flex items-center gap-4">
           {data && (
             <div className="flex gap-3 text-sm">
@@ -35,6 +38,20 @@ export function Intents() {
               <StatChip label="Approved" value={data.approved} color="blue" />
               <StatChip label="Executed" value={data.executed} color="emerald" />
             </div>
+          )}
+          {data && data.pending > 0 && (
+            <button
+              onClick={() =>
+                bulkExpire.mutate(48, {
+                  onSuccess: (result) =>
+                    setExpireMsg(`Expired ${result.expired} stale intent(s)`),
+                })
+              }
+              disabled={bulkExpire.isPending}
+              className="rounded-lg bg-gray-100 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200"
+            >
+              {bulkExpire.isPending ? "Expiring..." : "Expire Stale"}
+            </button>
           )}
           <button
             onClick={() => setShowCreate(!showCreate)}
@@ -44,6 +61,18 @@ export function Intents() {
           </button>
         </div>
       </div>
+
+      {expireMsg && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-700">
+          {expireMsg}
+          <button
+            onClick={() => setExpireMsg(null)}
+            className="ml-3 text-blue-600 hover:text-blue-800"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {showCreate && (
         <CreateIntentForm onClose={() => setShowCreate(false)} />
@@ -57,7 +86,7 @@ export function Intents() {
             className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
               filter === s
                 ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+                : "bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-800"
             }`}
           >
             {s.charAt(0).toUpperCase() + s.slice(1)}
@@ -67,7 +96,7 @@ export function Intents() {
 
       {isLoading ? (
         <div className="flex h-32 items-center justify-center">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-600 border-t-white" />
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-blue-600" />
         </div>
       ) : data?.intents.length ? (
         <div className="space-y-4">
@@ -88,7 +117,7 @@ export function Intents() {
         </div>
       ) : (
         <Card title="No Intents">
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-gray-400">
             No trade intents match this filter. Run a scan to generate
             recommendations.
           </p>
@@ -137,13 +166,13 @@ function CreateIntentForm({ onClose }: { onClose: () => void }) {
           <InputField label="Limit Price" value={limitPrice} onChange={setLimitPrice} placeholder="1.80" />
         </div>
         <div>
-          <label className="text-xs text-gray-500">Thesis (optional)</label>
+          <label className="text-xs text-gray-400">Thesis (optional)</label>
           <textarea
             value={thesis}
             onChange={(e) => setThesis(e.target.value)}
             placeholder="Why this trade?"
             rows={2}
-            className="mt-1 w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:border-blue-500 focus:outline-none"
+            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </div>
         <div className="flex gap-3">
@@ -157,13 +186,13 @@ function CreateIntentForm({ onClose }: { onClose: () => void }) {
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg bg-gray-800 px-4 py-2 text-sm font-medium text-gray-300 transition-colors hover:bg-gray-700"
+            className="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200"
           >
             Cancel
           </button>
         </div>
         {createIntent.isError && (
-          <p className="text-sm text-red-400">Error: {createIntent.error.message}</p>
+          <p className="text-sm text-red-600">Error: {createIntent.error.message}</p>
         )}
       </form>
     </Card>
@@ -195,17 +224,23 @@ function IntentCard({
   };
 
   const convictionColor = {
-    high: "text-emerald-400",
-    medium: "text-amber-400",
-    low: "text-red-400",
-    none: "text-gray-500",
+    high: "text-emerald-600",
+    medium: "text-amber-600",
+    low: "text-red-600",
+    none: "text-gray-400",
   };
 
   return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900/80 p-5">
+    <div
+      className={`rounded-xl border p-5 ${
+        !intent.risk_passed
+          ? "border-red-200 bg-red-50"
+          : "border-gray-200 bg-white shadow-sm"
+      }`}
+    >
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
-          <span className="text-xl font-bold text-white">{intent.symbol}</span>
+          <span className="text-xl font-bold text-gray-900">{intent.symbol}</span>
           <StatusBadge
             label={intent.status}
             variant={statusVariant[intent.status as keyof typeof statusVariant] ?? "neutral"}
@@ -214,8 +249,11 @@ function IntentCard({
             label={intent.strategy.toUpperCase()}
             variant="info"
           />
+          {!intent.risk_passed && (
+            <StatusBadge label="RISK FAILED" variant="danger" />
+          )}
         </div>
-        <span className="text-xs text-gray-500">
+        <span className="text-xs text-gray-400">
           {new Date(intent.created_at).toLocaleString()}
         </span>
       </div>
@@ -240,42 +278,70 @@ function IntentCard({
           label="Ann. Return"
           value={<PLValue value={intent.annualized_return_pct} format="percent" />}
         />
-        <Detail
-          label="Conviction"
-          value={
-            <span className={convictionColor[intent.conviction_level as keyof typeof convictionColor] ?? "text-gray-500"}>
-              {intent.conviction_level} ({intent.trend_state?.replace(/_/g, " ")})
+        <div>
+          <p className="text-xs text-gray-400">Conviction</p>
+          <p className="mt-0.5">
+            <span
+              className={`text-sm font-bold ${convictionColor[intent.conviction_level as keyof typeof convictionColor] ?? "text-gray-400"}`}
+            >
+              {intent.conviction_level.toUpperCase()}
             </span>
-          }
-        />
+          </p>
+          <p className="mt-0.5 text-xs text-gray-400">
+            {intent.trend_state?.replace(/_/g, " ")}
+          </p>
+        </div>
       </div>
 
       {intent.thesis && (
-        <div className="mt-3 rounded-lg bg-gray-800/50 p-3">
-          <p className="text-xs font-medium text-gray-500">Thesis</p>
-          <p className="mt-1 text-sm text-gray-300">{intent.thesis}</p>
+        <div className="mt-3 rounded-lg bg-gray-50 p-3">
+          <p className="text-xs font-medium text-gray-400">Thesis</p>
+          <p className="mt-1 text-sm text-gray-700">{intent.thesis}</p>
         </div>
       )}
 
       {intent.risks && (
         <div className="mt-2">
-          <span className="text-xs text-gray-500">Risks: </span>
-          <span className="text-xs text-amber-400">{intent.risks}</span>
+          <span className="text-xs text-gray-400">Risks: </span>
+          <span className="text-xs text-amber-600">{intent.risks}</span>
         </div>
       )}
 
       {intent.risk_summary && (
-        <div className="mt-2 flex items-center gap-2">
-          <StatusBadge
-            label={intent.risk_passed ? "Risk Passed" : "Risk Failed"}
-            variant={intent.risk_passed ? "success" : "danger"}
-          />
-          <span className="text-xs text-gray-500">{intent.risk_summary}</span>
+        <div
+          className={`mt-2 rounded-lg p-2 ${
+            intent.risk_passed
+              ? "border border-emerald-200 bg-emerald-50"
+              : "border border-red-200 bg-red-50"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <StatusBadge
+              label={intent.risk_passed ? "Risk Passed" : "Risk Failed"}
+              variant={intent.risk_passed ? "success" : "danger"}
+            />
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+            {intent.risk_summary.split(" | ").map((reason, i) => (
+              <span
+                key={i}
+                className={`text-xs ${
+                  reason.startsWith("FAIL")
+                    ? "font-medium text-red-600"
+                    : reason.startsWith("WARN")
+                      ? "text-amber-600"
+                      : "text-gray-400"
+                }`}
+              >
+                {reason}
+              </span>
+            ))}
+          </div>
         </div>
       )}
 
       {intent.status === "pending" && (
-        <div className="mt-4 flex gap-3 border-t border-gray-800 pt-4">
+        <div className="mt-4 flex gap-3 border-t border-gray-200 pt-4">
           <button
             onClick={() => onApprove()}
             disabled={isApproving}
@@ -294,7 +360,7 @@ function IntentCard({
       )}
 
       {intent.status === "approved" && (
-        <div className="mt-4 border-t border-gray-800 pt-4">
+        <div className="mt-4 border-t border-gray-200 pt-4">
           {showExecute ? (
             <ExecutionForm
               intent={intent}
@@ -312,7 +378,7 @@ function IntentCard({
       )}
 
       {intent.status === "executed" && intent.actual_fill_price != null && (
-        <div className="mt-4 grid grid-cols-2 gap-4 border-t border-gray-800 pt-4 text-sm sm:grid-cols-4">
+        <div className="mt-4 grid grid-cols-2 gap-4 border-t border-gray-200 pt-4 text-sm sm:grid-cols-4">
           <Detail label="Fill Price" value={`$${intent.actual_fill_price.toFixed(2)}`} />
           <Detail label="Filled Qty" value={String(intent.actual_quantity ?? intent.quantity)} />
           <Detail
@@ -366,7 +432,7 @@ function ExecutionForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-3">
-      <p className="text-sm font-medium text-gray-300">
+      <p className="text-sm font-medium text-gray-700">
         Record execution details from Fidelity:
       </p>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -408,13 +474,13 @@ function ExecutionForm({
         <button
           type="button"
           onClick={onClose}
-          className="rounded-lg bg-gray-800 px-4 py-2 text-sm font-medium text-gray-300 transition-colors hover:bg-gray-700"
+          className="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200"
         >
           Cancel
         </button>
       </div>
       {recordExec.isError && (
-        <p className="text-sm text-red-400">
+        <p className="text-sm text-red-600">
           Error: {recordExec.error.message}
         </p>
       )}
@@ -437,14 +503,14 @@ function InputField({
 }) {
   return (
     <div>
-      <label className="text-xs text-gray-500">{label}</label>
+      <label className="text-xs text-gray-400">{label}</label>
       <input
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         required={required}
-        className="mt-1 w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-sm text-gray-200 placeholder-gray-600 focus:border-blue-500 focus:outline-none"
+        className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
       />
     </div>
   );
@@ -459,8 +525,8 @@ function Detail({
 }) {
   return (
     <div>
-      <p className="text-xs text-gray-500">{label}</p>
-      <p className="mt-0.5 font-mono text-sm text-white">{value}</p>
+      <p className="text-xs text-gray-400">{label}</p>
+      <p className="mt-0.5 font-mono text-sm text-gray-900">{value}</p>
     </div>
   );
 }
@@ -474,11 +540,17 @@ function StatChip({
   value: number;
   color: string;
 }) {
+  const colorMap: Record<string, string> = {
+    amber: "bg-amber-500",
+    blue: "bg-blue-500",
+    emerald: "bg-emerald-500",
+  };
+
   return (
-    <div className="flex items-center gap-1.5 rounded-full bg-gray-800 px-3 py-1 text-xs">
-      <span className={`h-2 w-2 rounded-full bg-${color}-500`} />
-      <span className="text-gray-400">{label}:</span>
-      <span className="font-semibold text-white">{value}</span>
+    <div className="flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 text-xs">
+      <span className={`h-2 w-2 rounded-full ${colorMap[color] ?? "bg-gray-500"}`} />
+      <span className="text-gray-500">{label}:</span>
+      <span className="font-semibold text-gray-900">{value}</span>
     </div>
   );
 }

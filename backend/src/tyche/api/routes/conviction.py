@@ -20,6 +20,7 @@ from tyche.schemas.conviction import (
     ConvictionScanResponse,
     ConvictionSignalResponse,
     DataStoreStatusResponse,
+    GateResultResponse,
 )
 
 logger = structlog.get_logger()
@@ -118,13 +119,17 @@ async def scan_conviction(
         raise HTTPException(status_code=400, detail="No symbols found after screening.")
 
     ticker_data = store.read_tickers(tickers)
-    if not ticker_data:
+
+    signals = engine.analyze_batch(
+        ticker_data,
+        requested_tickers=tickers if symbols else None,
+    )
+
+    if not signals:
         raise HTTPException(
             status_code=404,
             detail="No data found for the requested symbols.",
         )
-
-    signals = engine.analyze_batch(ticker_data)
 
     eligible = [s for s in signals if s.csp_eligible]
     eligible.sort(
@@ -186,4 +191,14 @@ def _signal_to_response(s: ConvictionSignal) -> ConvictionSignalResponse:
         latest_volume=s.latest_volume,
         days_above_both_emas=s.days_above_both_emas,
         as_of_date=s.as_of_date.isoformat() if s.as_of_date else None,
+        gate_results=[
+            GateResultResponse(
+                gate=g.gate,
+                passed=g.passed,
+                actual=g.actual,
+                threshold=g.threshold,
+                reason=g.reason,
+            )
+            for g in (s.gate_results or [])
+        ],
     )

@@ -124,10 +124,35 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
+    bulkExpire: (maxAgeHours = 48) =>
+      request<{ expired: number; cutoff: string }>(
+        `/intents/bulk-expire?max_age_hours=${maxAgeHours}`,
+        { method: "POST" },
+      ),
+  },
+
+  positionMonitor: {
+    getPositions: () =>
+      request<import("@/types").TrackedPositionsResult>("/monitor/positions"),
+    track: (data: import("@/types").TrackPositionRequest) =>
+      request<import("@/types").TrackPositionResponse>("/monitor/track", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    untrack: (optionSymbol: string) =>
+      request<Record<string, string>>(
+        `/monitor/track/${encodeURIComponent(optionSymbol)}`,
+        { method: "DELETE" },
+      ),
   },
 
   system: {
     getConfig: () => request<import("@/types").SystemConfig>("/system/config"),
+    updateConfig: (data: import("@/types").ConfigUpdateRequest) =>
+      request<{ status: string; updated: Record<string, unknown> }>(
+        "/system/config",
+        { method: "PATCH", body: JSON.stringify(data) },
+      ),
     getScheduler: () => request<Record<string, unknown>>("/system/scheduler"),
   },
 };

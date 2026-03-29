@@ -1,0 +1,46 @@
+---
+description: Frontend UI patterns, API hooks, and component conventions
+globs:
+  - "frontend/src/**/*.tsx"
+  - "frontend/src/**/*.ts"
+alwaysApply: false
+---
+
+# Frontend Patterns
+
+## Stack
+
+React + TypeScript, Vite, Tailwind CSS, @tanstack/react-query, react-router-dom.
+
+## API Layer
+
+- `api/client.ts` — typed `request<T>()` wrapper around fetch. All endpoints under `/api/v1`.
+- `hooks/useApi.ts` — react-query hooks wrapping every API call. Mutations invalidate relevant query keys.
+- `types/index.ts` — must match backend response shapes exactly. Update when backend changes.
+
+## Pages
+
+| Page | Purpose | Key hooks |
+|---|---|---|
+| Dashboard | Overview, quick links | `useOrderIntents("pending")` |
+| Scanner | Full scan (broker + LLM) → generates intents | `useTriggerScan` |
+| Conviction | EMA trend analysis only (informational) | `useConvictionScan`, `useTriggerConvictionScan` |
+| Intents | Approve/reject trade recommendations | `useOrderIntents`, `useApproveIntent`, `useRejectIntent` |
+| Orders | Open orders + executed trades | `useOpenOrders`, `useOrderIntents("executed")` |
+| Monitor | Track positions, real-time P&L + alerts | `useTrackedPositions`, `useTrackPosition` |
+| Settings | Editable config (watchlist, capital, risk) | `useSystemConfig`, `useUpdateConfig` |
+
+## UI Conventions
+
+- Risk-failed items: red border (`border-red-500/30 bg-red-950/10`) + "RISK FAILED" badge
+- Conviction colors: high=emerald, medium=amber, low=red, none=gray
+- Alert severity: critical=red, warning=amber, info=gray
+- Risk summary reasons: `FAIL:` prefix=red, `WARN:`=amber, plain=gray
+- Empty states must show explanatory messages, not blank space
+- `StatusBadge` for labels, `PLValue` for P&L numbers, `Card` for sections
+
+## Monitor Page
+
+Tracked positions are **in-memory only** on the backend — lost on restart. The position card shows live data from Tradier (underlying price, option bid/ask, greeks, P&L). When Tradier data is unavailable (market closed), a fallback status is returned with an info alert.
+
+Option symbol matching: first tries exact match, then falls back to strike + option type match (handles format mismatches between user input and Tradier OCC format).

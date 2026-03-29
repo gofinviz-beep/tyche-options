@@ -11,6 +11,16 @@ from pydantic import BaseModel, Field
 # ── Conviction Signals ──────────────────────────────────────────────────
 
 
+class GateResultResponse(BaseModel):
+    """Result of a single CSP eligibility gate check."""
+
+    gate: str
+    passed: bool
+    actual: str
+    threshold: str
+    reason: str
+
+
 class ConvictionSignalResponse(BaseModel):
     """Conviction signal for a single ticker — API response."""
 
@@ -30,6 +40,7 @@ class ConvictionSignalResponse(BaseModel):
     latest_volume: int
     days_above_both_emas: int
     as_of_date: str | None = None
+    gate_results: list[GateResultResponse] = []
 
 
 class ConvictionScanResponse(BaseModel):

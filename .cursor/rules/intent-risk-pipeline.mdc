@@ -1,0 +1,53 @@
+---
+description: Intent risk pipeline — LLM guardrails, numerical validation, conviction combining
+globs:
+  - "backend/src/tyche/workflow/intent_builder.py"
+  - "backend/src/tyche/schemas/analysis.py"
+  - "backend/src/tyche/api/routes/intents.py"
+  - "backend/src/tyche/api/routes/scanner.py"
+alwaysApply: false
+---
+
+# Intent Risk Pipeline
+
+## Core Principle
+
+**LLM = qualitative advisor. Broker = numerical source of truth.** The user bets real money on what's displayed. Every number must be deterministically verified.
+
+## Numerical Field Resolution (`_resolve_numeric`)
+
+All numerical fields prefer broker data (`ScoredCandidate`) over LLM output (`CSPAnalysis`):
+
+| Field | Broker source | LLM source (fallback only) |
+|---|---|---|
+| Strike | `candidate.strike` | `analysis.recommended_strike` |
+| Premium | `candidate.mid` | `analysis.target_premium` |
+| Collateral | `candidate.collateral_required` | `analysis.collateral_required` |
+| Ann. Return | `candidate.annualized_return_pct` | `analysis.annualized_return_pct` |
+| Expiration | `candidate.expiration` | `analysis.recommended_expiration` |
+
+When LLM diverges >5% from broker, log `llm_broker_divergence` warning but still use broker.
+
+## Premium Sanity Check
+
+If `premium_per_share > strike`, it's a unit error (LLM returned per-contract not per-share). Auto-correct by dividing by 100 and log `premium_unit_correction`.
+
+## Combined Conviction
+
+`conviction_level = min(EMA conviction, LLM confidence)` using rank: high=3, medium=2, low=1, none=0. Never show the optimistic signal when the other disagrees.
+
+## Risk Gate (5 checks, all must pass)
+
+1. LLM confidence != "low"
+2. Assignment comfort != "low"
+3. Conviction engine says CSP-eligible
+4. Strike < underlying price (OTM for puts)
+5. Price not >15% above 8-EMA (>10% = warning)
+
+## Intent Sorting
+
+Sort by: risk_passed DESC → conviction (high→low) → created_at DESC
+
+## LLM-Only Fields (no broker alternative)
+
+thesis, risks, invalidation, confidence, assignment_comfort, suggested_contracts

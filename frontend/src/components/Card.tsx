@@ -11,16 +11,16 @@ interface CardProps {
 export function Card({ title, subtitle, children, className = "", action }: CardProps) {
   return (
     <div
-      className={`rounded-xl border border-gray-800 bg-gray-900/80 backdrop-blur-sm ${className}`}
+      className={`rounded-xl border border-gray-200 bg-white shadow-sm ${className}`}
     >
       {(title || action) && (
-        <div className="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
           <div>
             {title && (
-              <h3 className="text-sm font-semibold text-gray-200">{title}</h3>
+              <h3 className="text-sm font-semibold text-gray-800">{title}</h3>
             )}
             {subtitle && (
-              <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p>
+              <p className="mt-0.5 text-xs text-gray-400">{subtitle}</p>
             )}
           </div>
           {action}

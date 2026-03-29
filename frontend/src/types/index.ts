@@ -57,6 +57,14 @@ export interface CSPCandidate {
   earnings_date?: string;
 }
 
+export interface GateResult {
+  gate: string;
+  passed: boolean;
+  actual: string;
+  threshold: string;
+  reason: string;
+}
+
 export interface ConvictionSignal {
   ticker: string;
   trend_state: string;
@@ -74,6 +82,7 @@ export interface ConvictionSignal {
   latest_volume: number;
   days_above_both_emas: number;
   as_of_date?: string;
+  gate_results: GateResult[];
 }
 
 export interface ScanResult {
@@ -235,10 +244,27 @@ export interface SystemConfig {
   broker_configured: boolean;
   llm_configured: boolean;
   earnings_api_configured: boolean;
+  available_capital: number;
   risk_limits: Record<string, number>;
   wheel_params: Record<string, number>;
   workflow_schedule: Record<string, string | number>;
   watchlist: string[];
+}
+
+export interface ConfigUpdateRequest {
+  watchlist?: string[];
+  available_capital?: number;
+  max_risk_per_trade_pct?: number;
+  max_account_exposure_pct?: number;
+  max_concentration_per_ticker_pct?: number;
+  max_open_positions?: number;
+  max_new_trades_per_day?: number;
+  max_contracts_per_position?: number;
+  csp_target_dte_min?: number;
+  csp_target_dte_max?: number;
+  cc_target_dte_min?: number;
+  cc_target_dte_max?: number;
+  min_annualized_return_pct?: number;
 }
 
 export interface OrderPreviewRequest {
@@ -268,4 +294,72 @@ export interface RiskRuleResult {
   passed: boolean;
   reason: string;
   details?: Record<string, unknown>;
+}
+
+// --- Position Monitor ---
+
+export interface TrackPositionRequest {
+  symbol: string;
+  option_symbol: string;
+  position_type?: string;
+  strike: number;
+  expiration: string;
+  entry_price: number;
+  contracts: number;
+  underlying_at_entry: number;
+}
+
+export interface TrackPositionResponse {
+  status: string;
+  option_symbol: string;
+  message: string;
+}
+
+export interface SuggestedAction {
+  action: string;
+  reason: string;
+  details?: Record<string, unknown>;
+}
+
+export interface TrackedPositionAlert {
+  severity: string;
+  alert_type: string;
+  symbol?: string;
+  message: string;
+  suggested_actions?: SuggestedAction[];
+  timestamp?: string;
+}
+
+export interface TrackedPositionStatus {
+  symbol: string;
+  option_symbol: string;
+  position_type: string;
+  strike: number;
+  expiration: string;
+  entry_price: number;
+  contracts: number;
+  underlying_price: number;
+  option_bid: number;
+  option_ask: number;
+  option_mid: number;
+  delta: number;
+  theta: number;
+  pnl_per_contract: number;
+  total_pnl: number;
+  distance_to_strike_pct: number;
+  dte: number;
+  trend: {
+    direction: string;
+    velocity_per_min: number;
+    price_change_pct: number;
+    samples: number;
+    window_minutes: number;
+  };
+  alerts: TrackedPositionAlert[];
+}
+
+export interface TrackedPositionsResult {
+  tracked_count: number;
+  positions: TrackedPositionStatus[];
+  alerts: TrackedPositionAlert[];
 }

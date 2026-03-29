@@ -239,14 +239,45 @@ class ActiveMonitor:
         chain = await self._broker.get_options_chain(
             pos.symbol, pos.expiration.strftime("%Y-%m-%d")
         )
+
+        put_or_call = "put" if "put" in pos.position_type else "call"
         contract = next(
             (c for c in chain.contracts if c.option_symbol == pos.option_symbol), None
         )
         if not contract:
-            return None
+            contract = next(
+                (c for c in chain.contracts
+                 if abs(c.strike - pos.strike) < 0.01
+                 and c.option_type == put_or_call),
+                None,
+            )
 
         today = date.today()
         dte = (pos.expiration - today).days
+
+        if not contract:
+            return PositionStatus(
+                position=pos,
+                underlying_price=quote.last,
+                option_bid=0.0,
+                option_ask=0.0,
+                option_mid=0.0,
+                delta=0.0,
+                theta=0.0,
+                pnl_per_contract=0.0,
+                total_pnl=0.0,
+                distance_to_strike_pct=(
+                    ((quote.last - pos.strike) / pos.strike) * 100
+                    if pos.strike > 0 else 0.0
+                ),
+                dte=dte,
+                trend=trend,
+                alerts=[MonitorAlert(
+                    severity=AlertSeverity.INFO,
+                    alert_type="contract_not_found",
+                    message="Option contract not found in chain (market may be closed)",
+                )],
+            )
 
         if pos.position_type == "short_put":
             pnl_per = (pos.entry_price - contract.mid) * 100
@@ -385,7 +416,11 @@ class ActiveMonitor:
         return alerts
 
     async def check_all_positions(self) -> list[PositionStatus]:
-        """Check all tracked positions and return status updates."""
+        """Check all tracked positions and return status updates.
+
+        When real-time data is unavailable (market closed, API error),
+        returns a minimal status so the position still appears in the UI.
+        """
         results: list[PositionStatus] = []
         for opt_sym in list(self._tracked_positions.keys()):
             try:
@@ -394,6 +429,34 @@ class ActiveMonitor:
                     results.append(status)
             except Exception:
                 logger.warning("position_check_failed", option_symbol=opt_sym, exc_info=True)
+                pos = self._tracked_positions.get(opt_sym)
+                if pos:
+                    dte = (pos.expiration - date.today()).days
+                    results.append(PositionStatus(
+                        position=pos,
+                        underlying_price=pos.underlying_at_entry,
+                        option_bid=0.0,
+                        option_ask=0.0,
+                        option_mid=0.0,
+                        delta=0.0,
+                        theta=0.0,
+                        pnl_per_contract=0.0,
+                        total_pnl=0.0,
+                        distance_to_strike_pct=0.0,
+                        dte=dte,
+                        trend=IntradayTrend(
+                            direction=TrendDirection.FLAT,
+                            velocity_per_min=0.0,
+                            price_change_pct=0.0,
+                            samples=0,
+                            window_minutes=0.0,
+                        ),
+                        alerts=[MonitorAlert(
+                            severity=AlertSeverity.INFO,
+                            alert_type="data_unavailable",
+                            message="Real-time data unavailable (market may be closed)",
+                        )],
+                    ))
         return results
 
     async def check_pending_order(

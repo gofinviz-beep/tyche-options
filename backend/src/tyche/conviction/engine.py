@@ -37,6 +37,26 @@ class TrendState(str, Enum):
 
 
 @dataclass
+class GateResult:
+    """Result of a single eligibility gate check."""
+
+    gate: str
+    passed: bool
+    actual: str
+    threshold: str
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "gate": self.gate,
+            "passed": self.passed,
+            "actual": self.actual,
+            "threshold": self.threshold,
+            "reason": self.reason,
+        }
+
+
+@dataclass
 class ConvictionSignal:
     """Complete conviction assessment for a single ticker."""
 
@@ -65,6 +85,9 @@ class ConvictionSignal:
     days_above_both_emas: int = 0
     as_of_date: date | None = None
 
+    # Gate-level eligibility results
+    gate_results: list[GateResult] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "ticker": self.ticker,
@@ -83,6 +106,7 @@ class ConvictionSignal:
             "latest_volume": self.latest_volume,
             "days_above_both_emas": self.days_above_both_emas,
             "as_of_date": self.as_of_date.isoformat() if self.as_of_date else None,
+            "gate_results": [g.to_dict() for g in self.gate_results] if self.gate_results else [],
         }
 
 
@@ -146,6 +170,17 @@ class ConvictionEngine:
                 trend_state=TrendState.INSUFFICIENT_DATA,
                 conviction_level="none",
                 csp_eligible=False,
+                gate_results=[
+                    GateResult(
+                        gate="Trend State",
+                        passed=False,
+                        actual=f"insufficient_data ({len(df)} bars)",
+                        threshold=f"≥{self._min_bars} bars required",
+                        reason=f"Only {len(df)} bars available, need at least {self._min_bars}",
+                    ),
+                    GateResult(gate="Extension Cap", passed=False, actual="—", threshold=f"≤{self._max_extension_pct}%", reason="Skipped — failed prior gate"),
+                    GateResult(gate="Days Above EMAs", passed=False, actual="—", threshold=f"{self._min_days_above}–{self._max_days_above}d", reason="Skipped — failed prior gate"),
+                ],
             )
 
         close = df["close"].astype(float)
@@ -189,23 +224,63 @@ class ConvictionEngine:
             pullback_declining, streak,
         )
 
-        csp_eligible = trend_state in (
+        eligible_trends = (
             TrendState.STRONG_UPTREND,
             TrendState.UPTREND,
             TrendState.PULLBACK_TO_8EMA,
             TrendState.PULLBACK_TO_21EMA,
         )
+        gates: list[GateResult] = []
 
-        # Over-extended stocks have poor CSP outcomes (backtest-proven).
-        # Price too far above 8-EMA = high snapback risk.
-        if csp_eligible and price_to_8 > self._max_extension_pct:
-            csp_eligible = False
-            conviction = "low"
+        # Gate 1: Trend State
+        trend_passed = trend_state in eligible_trends
+        trend_label = trend_state.value.replace("_", " ")
+        gates.append(GateResult(
+            gate="Trend State",
+            passed=trend_passed,
+            actual=trend_label,
+            threshold="uptrend, strong uptrend, pullback to 8ema, or pullback to 21ema",
+            reason=f"Trend is {trend_label}" if trend_passed else f"{trend_label} is not an eligible trend state",
+        ))
 
-        # Require a confirmed streak above both EMAs (backtest-proven).
-        # <5 days = trend not confirmed, >10 days = overdue for reversal.
-        if csp_eligible and not (self._min_days_above <= streak <= self._max_days_above):
-            csp_eligible = False
+        # Gate 2: Extension Cap
+        if trend_passed:
+            ext_passed = price_to_8 <= self._max_extension_pct
+            gates.append(GateResult(
+                gate="Extension Cap",
+                passed=ext_passed,
+                actual=f"{price_to_8:.2f}%",
+                threshold=f"≤{self._max_extension_pct}%",
+                reason=f"Price is {price_to_8:.2f}% above 8-EMA (limit {self._max_extension_pct}%)"
+                if ext_passed
+                else f"Over-extended at {price_to_8:.2f}% above 8-EMA (max {self._max_extension_pct}%)",
+            ))
+        else:
+            ext_passed = False
+            gates.append(GateResult(gate="Extension Cap", passed=False, actual="—", threshold=f"≤{self._max_extension_pct}%", reason="Skipped — failed prior gate"))
+
+        # Gate 3: Days Above EMAs
+        if trend_passed and ext_passed:
+            streak_passed = self._min_days_above <= streak <= self._max_days_above
+            gates.append(GateResult(
+                gate="Days Above EMAs",
+                passed=streak_passed,
+                actual=f"{streak}d",
+                threshold=f"{self._min_days_above}–{self._max_days_above}d",
+                reason=f"{streak} consecutive days above both EMAs (sweet spot {self._min_days_above}–{self._max_days_above})"
+                if streak_passed
+                else (
+                    f"Only {streak}d above both EMAs — trend not yet confirmed (need ≥{self._min_days_above})"
+                    if streak < self._min_days_above
+                    else f"{streak}d above both EMAs — overdue for reversal (max {self._max_days_above})"
+                ),
+            ))
+        else:
+            streak_passed = False
+            gates.append(GateResult(gate="Days Above EMAs", passed=False, actual="—", threshold=f"{self._min_days_above}–{self._max_days_above}d", reason="Skipped — failed prior gate"))
+
+        csp_eligible = trend_passed and ext_passed and streak_passed
+        if not csp_eligible and trend_passed:
             conviction = "low"
 
         as_of = df["date"].iloc[-1]
@@ -229,20 +304,56 @@ class ConvictionEngine:
             latest_volume=last_volume,
             days_above_both_emas=streak,
             as_of_date=as_of,
+            gate_results=gates,
         )
 
     def analyze_batch(
         self,
         ticker_data: dict[str, pd.DataFrame],
+        requested_tickers: list[str] | None = None,
     ) -> list[ConvictionSignal]:
-        """Analyze multiple tickers and return signals sorted by conviction."""
+        """Analyze multiple tickers and return signals sorted by conviction.
+
+        Args:
+            ticker_data: Dict of ticker -> OHLCV DataFrame.
+            requested_tickers: Original list of requested tickers. Tickers
+                present here but missing from ticker_data are included with
+                a ``no_data`` status so the caller can see them.
+        """
         signals: list[ConvictionSignal] = []
+
+        if requested_tickers:
+            missing = set(t.upper() for t in requested_tickers) - set(ticker_data.keys())
+            for ticker in sorted(missing):
+                signals.append(ConvictionSignal(
+                    ticker=ticker,
+                    trend_state=TrendState.INSUFFICIENT_DATA,
+                    conviction_level="none",
+                    csp_eligible=False,
+                    gate_results=[
+                        GateResult(gate="Trend State", passed=False, actual="no data", threshold="OHLCV data required", reason="No OHLCV data in store — bootstrap or check ticker symbol"),
+                        GateResult(gate="Extension Cap", passed=False, actual="—", threshold="—", reason="Skipped — no data"),
+                        GateResult(gate="Days Above EMAs", passed=False, actual="—", threshold="—", reason="Skipped — no data"),
+                    ],
+                ))
+
         for ticker, df in ticker_data.items():
             try:
                 signal = self.analyze(ticker, df)
                 signals.append(signal)
             except Exception:
                 logger.warning("conviction_analysis_failed", ticker=ticker, exc_info=True)
+                signals.append(ConvictionSignal(
+                    ticker=ticker,
+                    trend_state=TrendState.INSUFFICIENT_DATA,
+                    conviction_level="none",
+                    csp_eligible=False,
+                    gate_results=[
+                        GateResult(gate="Trend State", passed=False, actual="error", threshold="—", reason="Analysis failed — data quality issue"),
+                        GateResult(gate="Extension Cap", passed=False, actual="—", threshold="—", reason="Skipped — analysis error"),
+                        GateResult(gate="Days Above EMAs", passed=False, actual="—", threshold="—", reason="Skipped — analysis error"),
+                    ],
+                ))
 
         conviction_order = {"high": 0, "medium": 1, "low": 2, "none": 3}
         signals.sort(key=lambda s: conviction_order.get(s.conviction_level, 99))

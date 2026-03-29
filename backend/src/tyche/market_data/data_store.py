@@ -16,6 +16,7 @@ Ticker metadata remains a single file because it is small and always read in bul
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -78,6 +79,64 @@ def _ticker_path(base_dir: Path, ticker: str) -> Path:
     return base_dir / f"{safe}.parquet"
 
 
+class _MetadataCache:
+    """Lightweight JSON cache for aggregate store stats.
+
+    Avoids scanning thousands of Parquet files just to answer
+    "how many tickers / what's the date range / how many rows?"
+    Updated on every write; fast to read for API status endpoints.
+    """
+
+    def __init__(self, cache_path: Path) -> None:
+        self._path = cache_path
+
+    def read(self) -> dict:
+        if not self._path.exists():
+            return {}
+        try:
+            return json.loads(self._path.read_text())
+        except Exception:
+            return {}
+
+    def write(self, data: dict) -> None:
+        try:
+            self._path.write_text(json.dumps(data, default=str))
+        except Exception as exc:
+            logger.warning("metadata_cache_write_error", error=str(exc))
+
+    def rebuild(self, store_dir: Path, dedup_col: str = "date") -> dict:
+        """Full scan of all Parquet files to rebuild cache. Slow but accurate."""
+        earliest: date | None = None
+        latest: date | None = None
+        total_rows = 0
+        ticker_count = 0
+
+        for path in store_dir.glob("*.parquet"):
+            try:
+                meta = pq.read_metadata(path)
+                total_rows += meta.num_rows
+                ticker_count += 1
+                table = pq.read_table(path, columns=[dedup_col])
+                if table.num_rows > 0:
+                    dates = table.column(dedup_col).to_pylist()
+                    fmin, fmax = min(dates), max(dates)
+                    if earliest is None or fmin < earliest:
+                        earliest = fmin
+                    if latest is None or fmax > latest:
+                        latest = fmax
+            except Exception:
+                continue
+
+        data = {
+            "ticker_count": ticker_count,
+            "total_rows": total_rows,
+            "earliest_date": earliest.isoformat() if earliest else None,
+            "latest_date": latest.isoformat() if latest else None,
+        }
+        self.write(data)
+        return data
+
+
 class OHLCVStore:
     """Manages per-ticker Parquet files of daily OHLCV data.
 
@@ -90,6 +149,7 @@ class OHLCVStore:
         self._store_dir = self._data_dir / "ohlcv_daily"
         self._store_dir.mkdir(parents=True, exist_ok=True)
         self._legacy_path = self._data_dir / "ohlcv_daily.parquet"
+        self._cache = _MetadataCache(self._store_dir / "_meta.json")
 
     @property
     def store_dir(self) -> Path:
@@ -102,6 +162,19 @@ class OHLCVStore:
     @property
     def has_legacy_file(self) -> bool:
         return self._legacy_path.exists()
+
+    def rebuild_cache(self) -> dict:
+        """Force a full scan and rebuild the metadata cache."""
+        return self._cache.rebuild(self._store_dir, dedup_col="date")
+
+    def _ensure_cache(self) -> dict:
+        """Return cached metadata, rebuilding lazily if missing."""
+        cached = self._cache.read()
+        if cached:
+            return cached
+        if self.exists:
+            return self.rebuild_cache()
+        return {}
 
     def migrate_from_legacy(self) -> int:
         """Split the old single-file store into per-ticker files.
@@ -131,52 +204,34 @@ class OHLCVStore:
 
         self._legacy_path.rename(self._legacy_path.with_suffix(".parquet.bak"))
         logger.info("ohlcv_migrate_complete", tickers=count)
+        self.rebuild_cache()
         return count
 
     def _ticker_path(self, ticker: str) -> Path:
         return _ticker_path(self._store_dir, ticker)
 
     def get_latest_date(self) -> date | None:
-        """Return the most recent date across all ticker files."""
-        if not self.exists:
-            return None
-        latest: date | None = None
-        for path in self._store_dir.glob("*.parquet"):
-            try:
-                table = pq.read_table(path, columns=["date"])
-                if table.num_rows == 0:
-                    continue
-                file_max = max(table.column("date").to_pylist())
-                if latest is None or file_max > latest:
-                    latest = file_max
-            except Exception:
-                continue
-        return latest
+        """Return the most recent date across all ticker files (cached)."""
+        cached = self._ensure_cache()
+        val = cached.get("latest_date")
+        if val:
+            return date.fromisoformat(val) if isinstance(val, str) else val
+        return None
 
     def get_date_range(self) -> tuple[date | None, date | None]:
-        """Return (earliest, latest) dates across all ticker files."""
+        """Return (earliest, latest) dates across all ticker files (cached)."""
         if not self.exists:
             return None, None
-        earliest: date | None = None
-        latest: date | None = None
-        for path in self._store_dir.glob("*.parquet"):
-            try:
-                table = pq.read_table(path, columns=["date"])
-                if table.num_rows == 0:
-                    continue
-                dates = table.column("date").to_pylist()
-                fmin, fmax = min(dates), max(dates)
-                if earliest is None or fmin < earliest:
-                    earliest = fmin
-                if latest is None or fmax > latest:
-                    latest = fmax
-            except Exception:
-                continue
+        cached = self._ensure_cache()
+        e_str, l_str = cached.get("earliest_date"), cached.get("latest_date")
+        earliest = date.fromisoformat(e_str) if e_str else None
+        latest = date.fromisoformat(l_str) if l_str else None
         return earliest, latest
 
     def get_ticker_count(self) -> int:
-        """Return count of ticker files in the store."""
-        return len(list(self._store_dir.glob("*.parquet")))
+        """Return count of ticker files in the store (cached)."""
+        cached = self._ensure_cache()
+        return cached.get("ticker_count", 0)
 
     def write_bars(self, bars: list[DailyBar]) -> int:
         """Write daily bars, grouped by ticker into per-ticker files.
@@ -225,12 +280,39 @@ class OHLCVStore:
             pq.write_table(table, path, compression="snappy")
             total_added += rows_added
 
+        self._update_cache_after_write(bars, total_added, len(by_ticker))
         logger.info(
             "data_store_write",
             rows_added=total_added,
             tickers_touched=len(by_ticker),
         )
         return total_added
+
+    def _update_cache_after_write(
+        self, bars: list[DailyBar], rows_added: int, tickers_touched: int
+    ) -> None:
+        """Incrementally update the metadata cache after a write."""
+        cached = self._cache.read()
+        if not cached:
+            self.rebuild_cache()
+            return
+
+        new_dates = [b.date for b in bars]
+        new_min, new_max = min(new_dates), max(new_dates)
+
+        e_str = cached.get("earliest_date")
+        l_str = cached.get("latest_date")
+        old_earliest = date.fromisoformat(e_str) if e_str else None
+        old_latest = date.fromisoformat(l_str) if l_str else None
+
+        earliest = min(old_earliest, new_min) if old_earliest else new_min
+        latest = max(old_latest, new_max) if old_latest else new_max
+
+        cached["earliest_date"] = earliest.isoformat()
+        cached["latest_date"] = latest.isoformat()
+        cached["total_rows"] = cached.get("total_rows", 0) + rows_added
+        cached["ticker_count"] = len(list(self._store_dir.glob("*.parquet")))
+        self._cache.write(cached)
 
     def read_ticker(
         self,
@@ -278,15 +360,9 @@ class OHLCVStore:
         )
 
     def get_row_count(self) -> int:
-        """Return total number of rows across all ticker files."""
-        total = 0
-        for path in self._store_dir.glob("*.parquet"):
-            try:
-                meta = pq.read_metadata(path)
-                total += meta.num_rows
-            except Exception:
-                continue
-        return total
+        """Return total number of rows across all ticker files (cached)."""
+        cached = self._ensure_cache()
+        return cached.get("total_rows", 0)
 
     def read_all(self) -> pd.DataFrame:
         """Read all tickers into a single DataFrame with a 'ticker' column.
@@ -499,6 +575,7 @@ class IntradayStore:
         self._store_dir = self._data_dir / f"intraday_{multiplier}min"
         self._store_dir.mkdir(parents=True, exist_ok=True)
         self._legacy_path = self._data_dir / f"intraday_{multiplier}min.parquet"
+        self._cache = _MetadataCache(self._store_dir / "_meta.json")
 
     @property
     def store_dir(self) -> Path:
@@ -511,6 +588,19 @@ class IntradayStore:
     @property
     def has_legacy_file(self) -> bool:
         return self._legacy_path.exists()
+
+    def rebuild_cache(self) -> dict:
+        """Force a full scan and rebuild the metadata cache."""
+        return self._cache.rebuild(self._store_dir, dedup_col="date")
+
+    def _ensure_cache(self) -> dict:
+        """Return cached metadata, rebuilding lazily if missing."""
+        cached = self._cache.read()
+        if cached:
+            return cached
+        if self.exists:
+            return self.rebuild_cache()
+        return {}
 
     def migrate_from_legacy(self) -> int:
         """Split the old single-file store into per-ticker files.
@@ -541,51 +631,39 @@ class IntradayStore:
 
         self._legacy_path.rename(self._legacy_path.with_suffix(".parquet.bak"))
         logger.info("intraday_migrate_complete", tickers=count)
+        self.rebuild_cache()
         return count
 
     def _ticker_path(self, ticker: str) -> Path:
         return _ticker_path(self._store_dir, ticker)
 
     def get_date_range(self) -> tuple[date | None, date | None]:
-        """Return (earliest, latest) dates across all ticker files."""
+        """Return (earliest, latest) dates across all ticker files (cached)."""
         if not self.exists:
             return None, None
-        earliest: date | None = None
-        latest: date | None = None
-        for path in self._store_dir.glob("*.parquet"):
-            try:
-                table = pq.read_table(path, columns=["date"])
-                if table.num_rows == 0:
-                    continue
-                dates = table.column("date").to_pylist()
-                fmin, fmax = min(dates), max(dates)
-                if earliest is None or fmin < earliest:
-                    earliest = fmin
-                if latest is None or fmax > latest:
-                    latest = fmax
-            except Exception:
-                continue
+        cached = self._ensure_cache()
+        e_str, l_str = cached.get("earliest_date"), cached.get("latest_date")
+        earliest = date.fromisoformat(e_str) if e_str else None
+        latest = date.fromisoformat(l_str) if l_str else None
         return earliest, latest
 
     def get_latest_date(self) -> date | None:
-        """Return the most recent date in the store, or None."""
-        _, latest = self.get_date_range()
-        return latest
+        """Return the most recent date in the store (cached)."""
+        cached = self._ensure_cache()
+        val = cached.get("latest_date")
+        if val:
+            return date.fromisoformat(val) if isinstance(val, str) else val
+        return None
 
     def get_ticker_count(self) -> int:
-        """Return count of ticker files in the store."""
-        return len(list(self._store_dir.glob("*.parquet")))
+        """Return count of ticker files in the store (cached)."""
+        cached = self._ensure_cache()
+        return cached.get("ticker_count", 0)
 
     def get_row_count(self) -> int:
-        """Return total number of rows across all ticker files."""
-        total = 0
-        for path in self._store_dir.glob("*.parquet"):
-            try:
-                meta = pq.read_metadata(path)
-                total += meta.num_rows
-            except Exception:
-                continue
-        return total
+        """Return total number of rows across all ticker files (cached)."""
+        cached = self._ensure_cache()
+        return cached.get("total_rows", 0)
 
     def get_tickers(self) -> list[str]:
         """Return sorted list of tickers with intraday data."""
@@ -644,12 +722,39 @@ class IntradayStore:
             pq.write_table(table, path, compression="snappy")
             total_added += rows_added
 
+        self._update_cache_after_write(bars, total_added, len(by_ticker))
         logger.info(
             "intraday_store_write",
             rows_added=total_added,
             tickers_touched=len(by_ticker),
         )
         return total_added
+
+    def _update_cache_after_write(
+        self, bars: list[IntradayBar], rows_added: int, tickers_touched: int
+    ) -> None:
+        """Incrementally update the metadata cache after a write."""
+        cached = self._cache.read()
+        if not cached:
+            self.rebuild_cache()
+            return
+
+        new_dates = [b.timestamp.date() for b in bars]
+        new_min, new_max = min(new_dates), max(new_dates)
+
+        e_str = cached.get("earliest_date")
+        l_str = cached.get("latest_date")
+        old_earliest = date.fromisoformat(e_str) if e_str else None
+        old_latest = date.fromisoformat(l_str) if l_str else None
+
+        earliest = min(old_earliest, new_min) if old_earliest else new_min
+        latest = max(old_latest, new_max) if old_latest else new_max
+
+        cached["earliest_date"] = earliest.isoformat()
+        cached["latest_date"] = latest.isoformat()
+        cached["total_rows"] = cached.get("total_rows", 0) + rows_added
+        cached["ticker_count"] = len(list(self._store_dir.glob("*.parquet")))
+        self._cache.write(cached)
 
     def read_ticker(
         self,

@@ -4,6 +4,7 @@ globs:
   - "backend/src/tyche/conviction/**/*.py"
   - "backend/scripts/backtest_ema.py"
   - "backend/scripts/live_scan.py"
+alwaysApply: false
 ---
 
 # Conviction Engine Rules
@@ -20,11 +21,11 @@ A stock must pass ALL three:
 
 ## Why These Thresholds
 
-- **Extension > 3%** — Win rate drops from 69% (1-2% extension) to 44% (5-8%). Over-extended = high snapback risk.
-- **< 5 days above** — Trend not confirmed. Too early for high-confidence CSP entry.
-- **> 10 days above** — Overdue for reversal. Best entries are in the 5-10 day sweet spot.
+- **Extension > 3%** — Win rate drops from 69% (1-2%) to 44% (5-8%). High snapback risk.
+- **< 5 days above** — Trend not confirmed.
+- **> 10 days above** — Overdue for reversal. Best entries in 5-10 day sweet spot.
 
-## Conviction Levels (used by allocator risk weights)
+## Conviction Levels (used by allocator risk weights + combined with LLM confidence)
 
 | Level | Weight | Best States |
 |---|---|---|
@@ -33,18 +34,25 @@ A stock must pass ALL three:
 | low (0.3) | flat slopes, consolidation-adjacent | Marginal |
 | none (0.1) | downtrend, insufficient data | Excluded from CSP |
 
-## Changing Thresholds
+**Combined conviction** shown to user = `min(EMA conviction, LLM confidence)`. See intent-risk-pipeline rule.
 
-If you modify any conviction parameter:
-1. Update `config.py` default or the TYCHE_* env var
-2. Re-run backtest: `cd backend && python scripts/backtest_ema.py`
-3. Compare win rate, P&L, and breakdown metrics against baseline
-4. The backtest uses the same `ConvictionEngine` class — results are production-identical
-
-## Pre-Conviction Filters (applied before EMA analysis)
+## Pre-Conviction Filters
 
 - Market cap >= $5B (from TickerMetaStore)
 - Exchange in {XNYS, XNAS, XNMS, XASE, ARCX, BATS}
 - Price >= $15
 - Average volume >= 500K shares/day
 - Minimum 50 bars of OHLCV data
+
+## Conviction Scan vs Full Scanner
+
+- Conviction scan (`GET /conviction/scan`): local Parquet data only, sub-second, informational
+- Full scanner (`POST /scanner/scan`): calls Tradier API + LLM, creates intents, 30s-2min
+- When conviction scan text field is blank: uses watchlist tickers (NOT full universe unless watchlist is empty)
+- Scanner calls conviction engine internally — no need to run conviction first
+
+## Changing Thresholds
+
+1. Update `config.py` default or `TYCHE_*` env var
+2. Re-run backtest: `cd backend && python scripts/backtest_ema.py`
+3. Compare win rate, P&L, breakdown metrics against baseline

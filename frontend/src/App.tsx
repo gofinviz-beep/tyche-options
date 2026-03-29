@@ -1,6 +1,6 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Navbar } from "@/components/Navbar";
+import { AppLayout } from "@/components/layout/AppLayout";
 import { Dashboard } from "@/pages/Dashboard";
 import { Scanner } from "@/pages/Scanner";
 import { Orders } from "@/pages/Orders";
@@ -8,6 +8,7 @@ import { Monitor } from "@/pages/Monitor";
 import { Intents } from "@/pages/Intents";
 import { Conviction } from "@/pages/Conviction";
 import { Settings } from "@/pages/Settings";
+import { ResearchHome } from "@/pages/research/ResearchHome";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -22,20 +23,32 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <div className="min-h-screen bg-gray-950 text-gray-100">
-          <Navbar />
-          <main className="mx-auto max-w-7xl px-4 py-6">
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/scanner" element={<Scanner />} />
-              <Route path="/intents" element={<Intents />} />
-              <Route path="/conviction" element={<Conviction />} />
-              <Route path="/orders" element={<Orders />} />
-              <Route path="/monitor" element={<Monitor />} />
-              <Route path="/settings" element={<Settings />} />
-            </Routes>
-          </main>
-        </div>
+        <Routes>
+          <Route element={<AppLayout />}>
+            {/* Options module */}
+            <Route path="/options" element={<Dashboard />} />
+            <Route path="/options/scanner" element={<Scanner />} />
+            <Route path="/options/conviction" element={<Conviction />} />
+            <Route path="/options/intents" element={<Intents />} />
+            <Route path="/options/orders" element={<Orders />} />
+            <Route path="/options/monitor" element={<Monitor />} />
+            <Route path="/options/settings" element={<Settings />} />
+
+            {/* Research module */}
+            <Route path="/research" element={<ResearchHome />} />
+
+            {/* Root redirect */}
+            <Route path="/" element={<Navigate to="/options" replace />} />
+
+            {/* Legacy redirects for old bookmarks */}
+            <Route path="/scanner" element={<Navigate to="/options/scanner" replace />} />
+            <Route path="/conviction" element={<Navigate to="/options/conviction" replace />} />
+            <Route path="/intents" element={<Navigate to="/options/intents" replace />} />
+            <Route path="/orders" element={<Navigate to="/options/orders" replace />} />
+            <Route path="/monitor" element={<Navigate to="/options/monitor" replace />} />
+            <Route path="/settings" element={<Navigate to="/options/settings" replace />} />
+          </Route>
+        </Routes>
       </BrowserRouter>
     </QueryClientProvider>
   );

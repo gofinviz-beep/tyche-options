@@ -289,8 +289,8 @@ class TradierClient:
                 "greeks": str(greeks).lower(),
             },
         )
-        options_data = data.get("options", {})
-        option_list = options_data.get("option", [])
+        options_data = data.get("options") or {}
+        option_list = options_data.get("option") or []
         if isinstance(option_list, dict):
             option_list = [option_list]
 

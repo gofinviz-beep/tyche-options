@@ -1,0 +1,25 @@
+---
+description: Known issues, gotchas, and workarounds
+alwaysApply: true
+---
+
+# Known Issues & Gotchas
+
+## Backend
+
+- **`uvicorn --reload` sometimes misses file changes.** If API responses don't reflect code edits, manually restart: `./scripts/stop-backend.sh && ./scripts/start-backend.sh`
+- **Pydantic-settings list parsing:** List fields in `.env` must be JSON arrays (e.g. `TYCHE_WATCHLIST_SYMBOLS=["AAPL","FSLY"]`), NOT comma-separated. The `PATCH /system/config` endpoint handles this via `json.dumps()`.
+- **Do NOT `source .env` in shell scripts.** Pydantic-settings reads `.env` directly. Shell-sourcing mangles JSON arrays.
+- **Tradier `get_options_chain` can return `None` options data** when market is closed. Always use `options_data = data.get("options") or {}` pattern.
+- **Position Monitor is in-memory only.** Tracked positions are lost on backend restart. Future: persist to SQLite.
+
+## Frontend
+
+- **Option symbol format mismatch:** User-entered symbols may not match Tradier's OCC format. The `check_position` method falls back to matching by strike + option type.
+- **Conviction scan "Run Scan" with blank field:** Scans watchlist tickers (not full universe) if watchlist is configured. Only scans full universe when watchlist is empty.
+
+## LLM (Gemini)
+
+- **Premium unit confusion:** LLM sometimes returns per-contract instead of per-share. Sanity check in `intent_builder.py` auto-corrects if `premium > strike`.
+- **LLM numbers are never trusted for display.** All numerical intent fields use broker data via `_resolve_numeric()`. LLM provides thesis, risks, confidence only.
+- **Combined conviction = min(EMA, LLM).** Never show optimistic EMA conviction when LLM confidence is low.

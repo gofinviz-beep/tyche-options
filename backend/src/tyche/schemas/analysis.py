@@ -22,9 +22,17 @@ class CSPAnalysis(BaseModel):
     assignment_comfort: Literal["high", "medium", "low"]
     assignment_comfort_reasoning: str
     thesis: str
-    recommended_strike: float
+    recommended_strike: float = Field(
+        description="The put strike price in dollars (e.g. 29.50)",
+    )
     recommended_expiration: str
-    target_premium: float
+    target_premium: float = Field(
+        description=(
+            "Target option premium PER SHARE in dollars (e.g. 1.35 means $1.35/share). "
+            "This is NOT the per-contract amount. One contract = 100 shares, "
+            "so $1.35/share = $135 per contract."
+        ),
+    )
     annualized_return_pct: float
     earnings_proximity: str | None = None
     earnings_risk_assessment: str | None = None
@@ -33,7 +41,9 @@ class CSPAnalysis(BaseModel):
     risks: list[str]
     would_you_hold_if_assigned: str
     suggested_contracts: int
-    collateral_required: float
+    collateral_required: float = Field(
+        description="Total collateral = strike * contracts * 100",
+    )
     allocation_mode: Literal["concentrated", "diversified"]
 
 

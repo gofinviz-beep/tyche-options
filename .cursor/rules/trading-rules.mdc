@@ -3,6 +3,7 @@ description: Trading policies, risk constraints, and operational rules
 globs:
   - "backend/src/tyche/**/*.py"
   - "backend/scripts/*.py"
+alwaysApply: false
 ---
 
 # Trading Rules & Policies
@@ -19,6 +20,9 @@ Market cap >= $5B (TickerMetaStore)
     → Days above both EMAs: 5-10
     → Tradier: live quote + options chain
     → PortfolioAllocator: MILP optimization
+    → LLM Analysis (Gemini): thesis, risks, confidence
+    → Risk Gate: 5 deterministic checks (see intent-risk-pipeline rule)
+    → OrderIntent created (pending human approval)
 ```
 
 ## Risk Constraints (enforced by allocator + risk engine)
@@ -33,6 +37,14 @@ Market cap >= $5B (TickerMetaStore)
 | Max new trades per day | 3 | Prevents overtrading |
 | Preview-only mode | ON by default | Must be explicitly disabled for live orders |
 
+## Intent Risk Gate (5 checks, all must pass)
+
+1. LLM confidence must be medium or high (low = fail)
+2. Assignment comfort must be medium or high (low = fail)
+3. Conviction engine must mark CSP-eligible (downtrend = fail)
+4. Strike must be OTM — below underlying price for puts (ITM = fail)
+5. Price must not be >15% above 8-EMA (blow-off risk; >10% = warning)
+
 ## Options Selection Rules
 
 | Parameter | CSP (Puts) | CC (Calls) |
@@ -44,31 +56,17 @@ Market cap >= $5B (TickerMetaStore)
 
 ## Day-of-Week Guidance
 
-Backtest data shows Tuesday and Wednesday are the best days for CSP entry. Thursday and Friday entries perform worst. Consider timing entries accordingly.
+Backtest data shows Tuesday and Wednesday are best for CSP entry. Thursday/Friday entries perform worst.
 
-## Time-of-Day Guidance (Empirically Validated)
+## Time-of-Day Guidance
 
-Intraday backtest (43,375 simulations across 881 tickers, 90-day window ending March 2026):
-
-- **Optimal entry window:** 9:30 AM - 1:00 PM ET (6:30 AM - 10:00 AM PT)
-- **Best single slot:** 10:30 AM ET (7:30 AM PT) — $76.64 avg P&L, 77.4% win rate
-- **Avoid after 1:00 PM ET:** Win rate drops to 69-75%, avg P&L turns negative
-- **Why:** By 1:00 PM ET, 99.7% of daily volume has traded. Afternoon = thin liquidity, wider spreads, worse fills
-
-The morning window (9:30 AM - 1:00 PM ET) is uniformly strong with minimal variation. No need to time it precisely within this window — flexibility is fine.
-
-## MILP Allocator Risk Weights
-
-The optimizer weights candidates by: `conviction * extension_proximity * liquidity`
-
-- **Conviction weights:** high=1.0, medium=0.7, low=0.3, none=0.1
-- **Extension proximity:** 1.0 at 0% extension, 0.7 at max extension (3%)
-- **Liquidity:** min(1.0, open_interest / threshold) where threshold=1000 for CSPs, 500 for CCs
+- **Optimal entry:** 9:30 AM - 1:00 PM ET
+- **Best slot:** 10:30 AM ET — $76.64 avg P&L, 77.4% win rate
+- **Avoid after 1:00 PM ET:** Win rate drops, thin liquidity
 
 ## Safety Rules
 
 - All live orders require explicit human approval (preview-only by default)
 - LLM recommendations are advisory only — cannot override risk rules
+- All numerical data on intents comes from broker, not LLM
 - Kill switch available to halt all trading immediately
-- Earnings proximity rule prevents trades near earnings dates
-- Assignment exposure rule limits per-ticker assignment risk

@@ -72,6 +72,17 @@ export function useSystemConfig() {
   });
 }
 
+export function useUpdateConfig() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: import("@/types").ConfigUpdateRequest) =>
+      api.system.updateConfig(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["system", "config"] });
+    },
+  });
+}
+
 export function useCancelOrder() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -117,11 +128,11 @@ export function useUpdateDailyData() {
   });
 }
 
-export function useConvictionScan(symbols?: string) {
+export function useConvictionScan(symbols?: string, autoRun = false) {
   return useQuery({
     queryKey: ["conviction", "scan", symbols],
     queryFn: () => api.conviction.scan(symbols),
-    enabled: false,
+    enabled: autoRun,
   });
 }
 
@@ -139,6 +150,38 @@ export function useTriggerConvictionScan() {
     mutationFn: (symbols?: string) => api.conviction.scan(symbols),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["conviction", "scan"] });
+    },
+  });
+}
+
+// --- Position Monitor hooks ---
+
+export function useTrackedPositions() {
+  return useQuery({
+    queryKey: ["monitor", "positions"],
+    queryFn: api.positionMonitor.getPositions,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useTrackPosition() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: import("@/types").TrackPositionRequest) =>
+      api.positionMonitor.track(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["monitor"] });
+    },
+  });
+}
+
+export function useUntrackPosition() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (optionSymbol: string) =>
+      api.positionMonitor.untrack(optionSymbol),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["monitor"] });
     },
   });
 }
@@ -209,6 +252,17 @@ export function useRecordExecution() {
         broker_confirmation?: string;
       };
     }) => api.intents.recordExecution(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["intents"] });
+    },
+  });
+}
+
+export function useBulkExpireIntents() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (maxAgeHours?: number) =>
+      api.intents.bulkExpire(maxAgeHours),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["intents"] });
     },

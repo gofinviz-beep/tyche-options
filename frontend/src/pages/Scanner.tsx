@@ -17,14 +17,14 @@ export function Scanner() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Scanner</h1>
+        <h1 className="text-2xl font-bold text-gray-900">Scanner</h1>
         <div className="flex items-center gap-3">
           <input
             type="text"
             placeholder="AAPL,PL,MSFT..."
             value={symbols}
             onChange={(e) => setSymbols(e.target.value)}
-            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:border-blue-500 focus:outline-none"
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           <button
             onClick={handleScan}
@@ -37,7 +37,7 @@ export function Scanner() {
       </div>
 
       {triggerScan.isError && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-600">
           Scan failed: {triggerScan.error.message}
         </div>
       )}
@@ -55,7 +55,7 @@ export function Scanner() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-gray-800 text-xs text-gray-500">
+                <tr className="border-b border-gray-200 text-xs text-gray-400">
                   <th className="pb-2 pr-4">Symbol</th>
                   <th className="pb-2 pr-4 text-right">Strike</th>
                   <th className="pb-2 pr-4 text-right">Exp</th>
@@ -77,7 +77,7 @@ export function Scanner() {
             </table>
           </div>
         ) : (
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-gray-400">
             Run a scan to see candidates. Enter symbols above or configure your
             watchlist in Settings.
           </p>
@@ -93,7 +93,7 @@ export function Scanner() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-gray-800 text-xs text-gray-500">
+                <tr className="border-b border-gray-200 text-xs text-gray-400">
                   <th className="pb-2 pr-4">Symbol</th>
                   <th className="pb-2 pr-4 text-right">Strike</th>
                   <th className="pb-2 pr-4 text-right">Exp</th>
@@ -107,9 +107,9 @@ export function Scanner() {
                 {scan.cc_candidates.map((c: CSPCandidate) => (
                   <tr
                     key={c.option_symbol}
-                    className="border-b border-gray-800/50 text-gray-300"
+                    className="border-b border-gray-200 text-gray-700"
                   >
-                    <td className="py-2.5 pr-4 font-semibold text-white">
+                    <td className="py-2.5 pr-4 font-semibold text-gray-900">
                       {c.symbol}
                     </td>
                     <td className="py-2.5 pr-4 text-right font-mono">
@@ -146,10 +146,10 @@ export function Scanner() {
             {scan.llm_analyses.map((a) => (
               <div
                 key={a.ticker}
-                className="rounded-lg border border-gray-800 bg-gray-800/40 p-4"
+                className="rounded-lg border border-gray-200 bg-gray-50 p-4"
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-lg font-bold text-white">
+                  <span className="text-lg font-bold text-gray-900">
                     {a.ticker}
                   </span>
                   <div className="flex gap-2">
@@ -175,25 +175,25 @@ export function Scanner() {
                     />
                   </div>
                 </div>
-                <p className="mt-2 text-sm text-gray-400">{a.thesis}</p>
+                <p className="mt-2 text-sm text-gray-500">{a.thesis}</p>
                 <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
                   <div>
-                    <span className="text-gray-500">Strike: </span>
-                    <span className="text-white">${a.recommended_strike}</span>
+                    <span className="text-gray-400">Strike: </span>
+                    <span className="text-gray-900">${a.recommended_strike}</span>
                   </div>
                   <div>
-                    <span className="text-gray-500">Contracts: </span>
-                    <span className="text-white">{a.suggested_contracts}</span>
+                    <span className="text-gray-400">Contracts: </span>
+                    <span className="text-gray-900">{a.suggested_contracts}</span>
                   </div>
                   <div>
-                    <span className="text-gray-500">Ann. Return: </span>
+                    <span className="text-gray-400">Ann. Return: </span>
                     <PLValue value={a.annualized_return_pct} format="percent" />
                   </div>
                 </div>
                 {a.risks.length > 0 && (
                   <div className="mt-2">
-                    <span className="text-xs text-gray-500">Risks: </span>
-                    <span className="text-xs text-amber-400">
+                    <span className="text-xs text-gray-400">Risks: </span>
+                    <span className="text-xs text-amber-600">
                       {a.risks.join(" · ")}
                     </span>
                   </div>
@@ -209,9 +209,9 @@ export function Scanner() {
 
 function CandidateRow({ candidate: c }: { candidate: CSPCandidate }) {
   return (
-    <tr className="border-b border-gray-800/50 text-gray-300 hover:bg-gray-800/30">
+    <tr className="border-b border-gray-200 text-gray-700 hover:bg-gray-50">
       <td className="py-2.5 pr-4">
-        <span className="font-semibold text-white">{c.symbol}</span>
+        <span className="font-semibold text-gray-900">{c.symbol}</span>
         {c.earnings_within_dte && (
           <StatusBadge label="EARNINGS" variant="warning" />
         )}
@@ -237,7 +237,7 @@ function CandidateRow({ candidate: c }: { candidate: CSPCandidate }) {
       <td className="py-2.5 pr-4 text-right">
         {c.volume.toLocaleString()}
       </td>
-      <td className="py-2.5 text-right font-mono font-semibold text-white">
+      <td className="py-2.5 text-right font-mono font-semibold text-gray-900">
         {c.score.toFixed(1)}
       </td>
     </tr>

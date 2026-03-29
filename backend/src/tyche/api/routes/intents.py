@@ -10,7 +10,7 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import case, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tyche.api.deps import get_settings
@@ -30,15 +30,30 @@ from tyche.workflow.intent_builder import create_manual_intent
 logger = structlog.get_logger()
 router = APIRouter(prefix="/intents", tags=["intents"])
 
+_CONVICTION_SORT = case(
+    (OrderIntent.conviction_level == "high", 1),
+    (OrderIntent.conviction_level == "medium", 2),
+    (OrderIntent.conviction_level == "low", 3),
+    else_=4,
+)
+
+_RISK_SORT = case(
+    (OrderIntent.risk_passed == True, 0),  # noqa: E712
+    else_=1,
+)
+
 
 @router.get("", response_model=OrderIntentListResponse)
 async def list_intents(
     status: str | None = Query(default=None, description="Filter by status"),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> OrderIntentListResponse:
-    """List order intents, optionally filtered by status."""
+    """List order intents sorted by risk-passed first, then conviction (high→low), then newest."""
     async with get_session() as session:
-        stmt = select(OrderIntent).order_by(OrderIntent.created_at.desc())
+        stmt = (
+            select(OrderIntent)
+            .order_by(_RISK_SORT, _CONVICTION_SORT, OrderIntent.created_at.desc())
+        )
         if status:
             stmt = stmt.where(OrderIntent.status == status)
         stmt = stmt.limit(limit)
@@ -77,6 +92,43 @@ async def create_intent(req: CreateIntentRequest) -> OrderIntentResponse:
         )
         logger.info("intent_created_via_api", intent_id=intent.id, symbol=intent.symbol)
         return _intent_to_response(intent)
+
+
+@router.delete("/expired")
+async def delete_expired() -> dict[str, Any]:
+    """Permanently delete all expired intents."""
+    async with get_session() as session:
+        stmt = delete(OrderIntent).where(OrderIntent.status == "expired")
+        result = await session.execute(stmt)
+        await session.commit()
+        count = result.rowcount  # type: ignore[union-attr]
+        logger.info("expired_intents_deleted", count=count)
+        return {"deleted": count}
+
+
+@router.post("/bulk-expire")
+async def bulk_expire_stale(
+    max_age_hours: int = Query(default=48, ge=1, description="Expire pending intents older than N hours"),
+) -> dict[str, Any]:
+    """Expire all pending/approved intents older than the given threshold."""
+    from datetime import timedelta
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    async with get_session() as session:
+        stmt = (
+            update(OrderIntent)
+            .where(
+                OrderIntent.status.in_(["pending", "approved"]),
+                OrderIntent.created_at < cutoff,
+            )
+            .values(status="expired", updated_at=datetime.now(timezone.utc))
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+        expired_count = result.rowcount  # type: ignore[union-attr]
+
+        logger.info("bulk_expire_completed", expired=expired_count, cutoff=cutoff.isoformat())
+        return {"expired": expired_count, "cutoff": cutoff.isoformat()}
 
 
 @router.get("/{intent_id}", response_model=OrderIntentResponse)

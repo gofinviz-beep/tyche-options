@@ -2,18 +2,17 @@ import { Link } from "react-router-dom";
 import { Card } from "@/components/Card";
 import { PLValue } from "@/components/PLValue";
 import { StatusBadge } from "@/components/StatusBadge";
-import { useAccountSummary, useOpenOrders, useLatestScan, useOrderIntents } from "@/hooks/useApi";
+import { useAccountSummary, useOpenOrders, useOrderIntents } from "@/hooks/useApi";
 
 export function Dashboard() {
   const { data: summary, isLoading } = useAccountSummary();
   const { data: orders } = useOpenOrders();
-  const { data: scan } = useLatestScan();
   const { data: intents } = useOrderIntents("pending");
 
   if (isLoading) {
     return (
       <div className="flex h-64 items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-600 border-t-white" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-300 border-t-blue-600" />
       </div>
     );
   }
@@ -23,8 +22,14 @@ export function Dashboard() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Dashboard</h1>
-        <p className="text-sm text-gray-500">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+          <p className="mt-1 text-sm text-gray-500">
+            Options wheel strategy command center — sell CSPs on high-conviction
+            uptrends, manage positions, and track performance.
+          </p>
+        </div>
+        <p className="text-sm text-gray-400">
           {new Date().toLocaleDateString("en-US", {
             weekday: "long",
             year: "numeric",
@@ -65,29 +70,29 @@ export function Dashboard() {
               {summary.positions.map((pos) => (
                 <div
                   key={pos.id}
-                  className="flex items-center justify-between rounded-lg bg-gray-800/50 px-4 py-3"
+                  className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-3"
                 >
                   <div>
-                    <span className="font-semibold text-white">{pos.symbol}</span>
-                    <span className="ml-2 text-sm text-gray-500">
+                    <span className="font-semibold text-gray-900">{pos.symbol}</span>
+                    <span className="ml-2 text-sm text-gray-400">
                       {pos.option_symbol ? `${pos.contracts} contracts` : `${pos.quantity} shares`}
                     </span>
                   </div>
                   <div className="text-right">
                     <PLValue value={pos.unrealized_pl} className="text-sm" />
-                    <p className="text-xs text-gray-500">
+                    <p className="text-xs text-gray-400">
                       <PLValue value={pos.unrealized_pl_pct} format="percent" />
                     </p>
                   </div>
                 </div>
               ))}
-              <div className="flex justify-between border-t border-gray-800 pt-3">
-                <span className="text-sm text-gray-400">Total Unrealized</span>
+              <div className="flex justify-between border-t border-gray-200 pt-3">
+                <span className="text-sm text-gray-500">Total Unrealized</span>
                 <PLValue value={summary.total_unrealized_pl} className="text-sm font-semibold" />
               </div>
             </div>
           ) : (
-            <p className="text-sm text-gray-500">No open positions</p>
+            <p className="text-sm text-gray-400">No open positions</p>
           )}
         </Card>
 
@@ -101,16 +106,16 @@ export function Dashboard() {
               {orders.map((order) => (
                 <div
                   key={order.id}
-                  className="flex items-center justify-between rounded-lg bg-gray-800/50 px-4 py-3"
+                  className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-3"
                 >
                   <div>
-                    <span className="font-semibold text-white">{order.symbol}</span>
-                    <span className="ml-2 text-sm text-gray-500">
+                    <span className="font-semibold text-gray-900">{order.symbol}</span>
+                    <span className="ml-2 text-sm text-gray-400">
                       {order.side.replace(/_/g, " ")} x{order.quantity}
                     </span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="font-mono text-sm text-gray-300">
+                    <span className="font-mono text-sm text-gray-700">
                       ${order.limit_price?.toFixed(2) ?? "MKT"}
                     </span>
                     <StatusBadge
@@ -128,7 +133,7 @@ export function Dashboard() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-gray-500">No open orders</p>
+            <p className="text-sm text-gray-400">No open orders</p>
           )}
         </Card>
       </div>
@@ -143,21 +148,21 @@ export function Dashboard() {
             {intents.intents.slice(0, 5).map((intent) => (
               <div
                 key={intent.id}
-                className="flex items-center justify-between rounded-lg bg-gray-800/50 px-4 py-3"
+                className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-3"
               >
                 <div>
-                  <span className="font-semibold text-white">{intent.symbol}</span>
-                  <span className="ml-2 text-sm text-gray-500">
+                  <span className="font-semibold text-gray-900">{intent.symbol}</span>
+                  <span className="ml-2 text-sm text-gray-400">
                     {intent.strategy.toUpperCase()} · {intent.quantity} contracts
                   </span>
                   {intent.strike && (
-                    <span className="ml-2 text-sm text-gray-500">
+                    <span className="ml-2 text-sm text-gray-400">
                       @ ${intent.strike.toFixed(2)}
                     </span>
                   )}
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="font-mono text-sm text-emerald-400">
+                  <span className="font-mono text-sm text-emerald-600">
                     ${intent.estimated_premium.toLocaleString()}
                   </span>
                   <StatusBadge
@@ -174,8 +179,8 @@ export function Dashboard() {
               </div>
             ))}
             <Link
-              to="/intents"
-              className="inline-block text-sm font-medium text-blue-400 hover:text-blue-300"
+              to="/options/intents"
+              className="inline-block text-sm font-medium text-blue-600 hover:text-blue-700"
             >
               Review all intents &rarr;
             </Link>
@@ -183,27 +188,20 @@ export function Dashboard() {
         </Card>
       )}
 
-      {/* Latest scan summary */}
-      {scan && (
-        <Card
-          title="Latest Scan"
-          subtitle={`${scan.symbols_scanned} symbols · ${new Date(scan.scanned_at).toLocaleTimeString()}`}
-        >
-          <div className="flex gap-6 text-sm">
-            <div>
-              <span className="text-gray-500">CSP Candidates: </span>
-              <span className="font-semibold text-white">{scan.csp_candidates.length}</span>
-            </div>
-            <div>
-              <span className="text-gray-500">CC Candidates: </span>
-              <span className="font-semibold text-white">{scan.cc_candidates.length}</span>
-            </div>
-            {scan.errors.length > 0 && (
-              <div>
-                <span className="text-red-400">Errors: {scan.errors.length}</span>
-              </div>
-            )}
-          </div>
+      {/* Quick links */}
+      {!intents?.pending && (
+        <Card title="Get Started" subtitle="No pending intents">
+          <p className="text-sm text-gray-500">
+            Run a{" "}
+            <Link to="/options/conviction" className="font-medium text-blue-600 hover:text-blue-700">
+              conviction scan
+            </Link>{" "}
+            to find high-conviction tickers, then use the{" "}
+            <Link to="/options/scanner" className="font-medium text-blue-600 hover:text-blue-700">
+              scanner
+            </Link>{" "}
+            to find option contracts with live pricing.
+          </p>
         </Card>
       )}
     </div>
@@ -218,9 +216,9 @@ function MetricCard({
   value: React.ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900/80 p-4">
-      <p className="text-xs font-medium text-gray-500">{label}</p>
-      <p className="mt-1 text-xl font-bold text-white">{value}</p>
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <p className="text-xs font-medium text-gray-400">{label}</p>
+      <p className="mt-1 text-xl font-bold text-gray-900">{value}</p>
     </div>
   );
 }

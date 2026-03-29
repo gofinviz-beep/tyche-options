@@ -1,8 +1,9 @@
 ---
-description: Tyche Options system architecture and module boundaries
+description: Tyche Options system architecture, module boundaries, and scan pipeline
 globs:
   - "backend/src/tyche/**/*.py"
   - "backend/scripts/*.py"
+alwaysApply: false
 ---
 
 # System Architecture
@@ -11,36 +12,46 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 
 ## Module Map
 
-- `config.py` — All settings via `TYCHE_*` env vars (pydantic-settings)
+- `config.py` — All settings via `TYCHE_*` env vars (pydantic-settings). Reads `.env` directly — do NOT `source .env` in shell scripts.
 - `api/deps.py` — Dependency injection: singleton providers for all services. Always use `Depends()` in routes.
 - `conviction/engine.py` — 8/21 EMA trend classification + CSP eligibility. The primary screening gate.
 - `strategy/allocator.py` — MILP optimizer (scipy). Maximizes risk-adjusted premium across CSPs and CCs.
 - `strategy/engine.py` — Orchestrates CSP/CC candidate scanning via broker API.
-- `market_data/data_store.py` — OHLCVStore + IntradayStore (per-ticker Parquet dirs) + TickerMetaStore. Used by conviction engine and backtests.
+- `market_data/data_store.py` — OHLCVStore + IntradayStore (per-ticker Parquet dirs) + TickerMetaStore + `_MetadataCache` for fast status queries.
 - `market_data/polygon.py` — Polygon.io client for historical bars and ticker reference. NOT used for live trading.
-- `broker/tradier/client.py` — Tradier API for live quotes, options chains, account ops, and order execution.
+- `broker/tradier/client.py` — Tradier API for live quotes, options chains, account ops. Handle `None` responses (market closed).
 - `workflow/morning_scan.py` — Full morning scan pipeline: universe filter → conviction → options scan → allocator → LLM.
+- `workflow/intent_builder.py` — Converts scan results to OrderIntents. **Critical: all numerical fields from broker, not LLM.**
+- `workflow/active_monitor.py` — Real-time position monitoring. In-memory only, lost on restart.
 - `risk/engine.py` + `risk/rules.py` — Deterministic risk rule chain (max positions, concentration, etc.).
+
+## Two Scan Types
+
+| | Conviction Scan (`GET /conviction/scan`) | Scanner (`POST /scanner/scan`) |
+|---|---|---|
+| Purpose | EMA trend analysis only (informational) | Full pipeline with intents (actionable) |
+| Data | Local Parquet (no network) | Tradier API + Gemini LLM |
+| Speed | Sub-second | 30s-2min |
+| Creates intents? | No | Yes |
+
+The Scanner calls Conviction Engine internally — no need to run conviction first.
 
 ## Key Patterns
 
 - **Run from `backend/` directory.** All relative paths (data/, .env) assume backend/ as cwd.
-- **DI via `api/deps.py`.** Never instantiate services directly in routes. Use `Depends(get_xxx)`.
-- **Parquet-first data.** Historical data in per-ticker Parquet files (`data/ohlcv_daily/{TICKER}.parquet`, `data/intraday_5min/{TICKER}.parquet`), operational data in SQLite. Do not mix.
+- **DI via `api/deps.py`.** Never instantiate services directly in routes.
+- **Parquet-first data.** Per-ticker Parquet files in `data/ohlcv_daily/{TICKER}.parquet`. Operational data in SQLite.
 - **Conviction-first filtering.** Stocks must pass ConvictionEngine before any Tradier API calls.
 - **Two data APIs.** Polygon = historical (bootstrap/backtest). Tradier = live (quotes/chains/orders).
+- **LLM = qualitative only.** Broker data is source of truth for all numbers. See intent-risk-pipeline rule.
+- **Start scripts:** `./scripts/start-backend.sh`, `./scripts/start-frontend.sh`, `./scripts/start-all.sh`
 
 ## Import Conventions
 
-```
-# Standard library
-from datetime import date
-# Third-party
-import pandas as pd
-import structlog
-# Local
-from tyche.config import TycheSettings
-from tyche.conviction.engine import ConvictionEngine
-```
-
 Always use absolute imports from `tyche.*`. Never relative imports.
+
+```
+from datetime import date          # stdlib
+import structlog                   # third-party
+from tyche.config import TycheSettings  # local
+```
