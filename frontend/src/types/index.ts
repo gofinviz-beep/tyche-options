@@ -93,6 +93,31 @@ export interface PipelineStage {
   detail: string;
 }
 
+export interface AllocatedTrade {
+  symbol: string;
+  option_type: string;
+  strike: number;
+  expiration: string;
+  dte: number;
+  contracts: number;
+  bid: number;
+  total_premium: number;
+  collateral: number;
+  annualized_return_pct: number;
+  conviction: string;
+  extension_pct: number;
+  strategy: string;
+}
+
+export interface AllocationSummary {
+  total_premium: number;
+  capital_utilization_pct: number;
+  solver_status: string;
+  trades?: number;
+  total_collateral?: number;
+  positions_used?: number;
+}
+
 export interface ScanResult {
   scan_id: string;
   scanned_at: string;
@@ -104,7 +129,8 @@ export interface ScanResult {
   llm_analyses: CSPAnalysis[];
   earnings_context: Record<string, unknown>;
   institutional_ownership: Record<string, number>;
-  allocation: Record<string, unknown> | null;
+  allocation: AllocationSummary | null;
+  allocated_trades: AllocatedTrade[];
   intents_created: number;
   errors: string[];
 }

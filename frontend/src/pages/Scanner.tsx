@@ -13,6 +13,8 @@ import {
   Brain,
   Clock,
   History,
+  DollarSign,
+  TrendingUp,
 } from "lucide-react";
 import { Card } from "@/components/Card";
 import { PLValue } from "@/components/PLValue";
@@ -29,6 +31,7 @@ import type {
   ScanHistoryEntry,
   PipelineStage,
   CSPAnalysis,
+  AllocatedTrade,
 } from "@/types";
 
 const TOP_N_LIMIT = 100;
@@ -355,6 +358,14 @@ function ScanResults({ scan }: { scan: ScanResult }) {
       {/* CSP Candidates — grouped by ticker */}
       <CspCandidatesGrouped candidates={scan.csp_candidates} />
 
+      {/* Allocation Summary — optimizer-selected trades */}
+      {(scan.allocated_trades?.length > 0 || scan.allocation) && (
+        <AllocationSummaryCard
+          allocation={scan.allocation}
+          trades={scan.allocated_trades ?? []}
+        />
+      )}
+
       {/* CC Candidates */}
       {scan.cc_candidates.length > 0 && (
         <CcCandidatesCard candidates={scan.cc_candidates} />
@@ -656,6 +667,214 @@ function TickerGroupRow({ group }: { group: TickerGroup }) {
         </div>
       )}
     </div>
+  );
+}
+
+/* ── Allocation Summary Card ───────────────────────────────────── */
+
+const COMMISSION_PER_CONTRACT = 0.65;
+
+function AllocationSummaryCard({
+  allocation,
+  trades,
+}: {
+  allocation: ScanResult["allocation"];
+  trades: AllocatedTrade[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const totalPremium = allocation?.total_premium ?? trades.reduce((s, t) => s + t.total_premium, 0);
+  const totalContracts = trades.reduce((s, t) => s + t.contracts, 0);
+  const totalCollateral = allocation?.total_collateral ?? trades.reduce((s, t) => s + t.collateral, 0);
+  const totalCommission = totalContracts * COMMISSION_PER_CONTRACT;
+  const netPremium = totalPremium - totalCommission;
+  const utilization = allocation?.capital_utilization_pct ?? 0;
+  const solverStatus = allocation?.solver_status ?? "unknown";
+
+  const expirations = [...new Set(trades.map((t) => t.expiration))].sort();
+  const expirationLabel = expirations.length === 1
+    ? expirations[0]
+    : expirations.length > 1
+      ? `${expirations[0]} → ${expirations[expirations.length - 1]}`
+      : null;
+
+  const convictionColor = (c: string) => {
+    if (c === "high") return "text-emerald-600 bg-emerald-50";
+    if (c === "medium") return "text-amber-600 bg-amber-50";
+    return "text-red-600 bg-red-50";
+  };
+
+  if (trades.length === 0 && !allocation) return null;
+
+  return (
+    <Card
+      title={
+        <span className="flex items-center gap-2">
+          <TrendingUp className="h-4 w-4 text-blue-500" />
+          Portfolio Allocation
+        </span>
+      }
+      subtitle={
+        trades.length > 0
+          ? `Optimizer selected ${trades.length} trade${trades.length !== 1 ? "s" : ""} across ${new Set(trades.map((t) => t.symbol)).size} ticker${new Set(trades.map((t) => t.symbol)).size !== 1 ? "s" : ""}${expirationLabel ? ` · Exp ${expirationLabel}` : ""}`
+          : "No trades allocated"
+      }
+    >
+      {/* Summary metrics */}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="rounded-lg border border-emerald-100 bg-emerald-50/50 p-3">
+          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-emerald-600">
+            <DollarSign className="h-3 w-3" />
+            Gross Premium
+          </div>
+          <div className="mt-1 font-mono text-lg font-bold text-emerald-700">
+            ${totalPremium.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-red-100 bg-red-50/50 p-3">
+          <div className="text-[10px] uppercase tracking-wide text-red-500">
+            Est. Commission
+          </div>
+          <div className="mt-1 font-mono text-lg font-bold text-red-600">
+            -${totalCommission.toFixed(2)}
+          </div>
+          <div className="mt-0.5 text-[10px] text-red-400">
+            {totalContracts} contract{totalContracts !== 1 ? "s" : ""} x ${COMMISSION_PER_CONTRACT}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+          <div className="text-[10px] uppercase tracking-wide text-blue-600">
+            Net Premium
+          </div>
+          <div className="mt-1 font-mono text-lg font-bold text-blue-700">
+            ${netPremium.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-gray-200 bg-gray-50/50 p-3">
+          <div className="text-[10px] uppercase tracking-wide text-gray-500">
+            Capital Deployed
+          </div>
+          <div className="mt-1 font-mono text-lg font-bold text-gray-800">
+            ${totalCollateral.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+          </div>
+          <div className="mt-0.5 text-[10px] text-gray-400">
+            {utilization.toFixed(1)}% utilized · {solverStatus}
+          </div>
+        </div>
+      </div>
+
+      {/* Trade details (collapsible) */}
+      {trades.length > 0 && (
+        <div className="mt-4">
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-1.5 text-xs font-medium text-gray-500 transition-colors hover:text-gray-700"
+          >
+            {expanded ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+            {expanded ? "Hide" : "Show"} trade details
+          </button>
+
+          {expanded && (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-gray-200 text-[10px] uppercase tracking-wide text-gray-400">
+                    <th className="pb-2 pr-3">Symbol</th>
+                    <th className="pb-2 pr-3">Type</th>
+                    <th className="pb-2 pr-3 text-right">Strike</th>
+                    <th className="pb-2 pr-3 text-right">Exp</th>
+                    <th className="pb-2 pr-3 text-right">DTE</th>
+                    <th className="pb-2 pr-3 text-right">Contracts</th>
+                    <th className="pb-2 pr-3 text-right">Premium</th>
+                    <th className="pb-2 pr-3 text-right">Commission</th>
+                    <th className="pb-2 pr-3 text-right">Net</th>
+                    <th className="pb-2 pr-3 text-right">Collateral</th>
+                    <th className="pb-2 pr-3 text-right">Ann. Ret</th>
+                    <th className="pb-2 text-right">Conviction</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trades.map((t, i) => {
+                    const comm = t.contracts * COMMISSION_PER_CONTRACT;
+                    const net = t.total_premium - comm;
+                    return (
+                      <tr
+                        key={`${t.symbol}-${t.strike}-${i}`}
+                        className="border-b border-gray-100 text-gray-600"
+                      >
+                        <td className="py-2 pr-3 font-semibold text-gray-900">
+                          {t.symbol}
+                        </td>
+                        <td className="py-2 pr-3 uppercase">{t.strategy || t.option_type}</td>
+                        <td className="py-2 pr-3 text-right font-mono">
+                          ${t.strike.toFixed(2)}
+                        </td>
+                        <td className="py-2 pr-3 text-right">{t.expiration}</td>
+                        <td className="py-2 pr-3 text-right">{t.dte}d</td>
+                        <td className="py-2 pr-3 text-right font-mono">
+                          {t.contracts}
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono text-emerald-600">
+                          ${t.total_premium.toFixed(0)}
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono text-red-500">
+                          -${comm.toFixed(2)}
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono font-medium text-blue-600">
+                          ${net.toFixed(0)}
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono">
+                          ${t.collateral.toLocaleString()}
+                        </td>
+                        <td className="py-2 pr-3 text-right">
+                          <PLValue value={t.annualized_return_pct} format="percent" />
+                        </td>
+                        <td className="py-2 text-right">
+                          {t.conviction && (
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${convictionColor(t.conviction)}`}
+                            >
+                              {t.conviction.toUpperCase()}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-gray-300 font-semibold text-gray-900">
+                    <td className="pt-2 pr-3" colSpan={5}>
+                      Totals
+                    </td>
+                    <td className="pt-2 pr-3 text-right font-mono">
+                      {totalContracts}
+                    </td>
+                    <td className="pt-2 pr-3 text-right font-mono text-emerald-600">
+                      ${totalPremium.toFixed(0)}
+                    </td>
+                    <td className="pt-2 pr-3 text-right font-mono text-red-500">
+                      -${totalCommission.toFixed(2)}
+                    </td>
+                    <td className="pt-2 pr-3 text-right font-mono text-blue-600">
+                      ${netPremium.toFixed(0)}
+                    </td>
+                    <td className="pt-2 pr-3" colSpan={3}></td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 
