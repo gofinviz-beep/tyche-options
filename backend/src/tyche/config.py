@@ -24,8 +24,8 @@ class TycheSettings(BaseSettings):
 
     # --- LLM ---
     gemini_api_key: str = ""
-    gemini_model_fast: str = "gemini-2.5-flash"
-    gemini_model_deep: str = "gemini-2.5-pro"
+    gemini_model_fast: str = "gemini-3-flash-preview"
+    gemini_model_deep: str = "gemini-3.1-pro-preview"
 
     # --- Market Data (Polygon.io / Massive.com) ---
     polygon_api_key: str = ""

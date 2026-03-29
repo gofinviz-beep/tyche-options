@@ -19,8 +19,8 @@ logger = structlog.get_logger()
 T = TypeVar("T", bound=BaseModel)
 
 _FALLBACK_MODELS: dict[str, str] = {
-    "gemini-2.5-flash": "gemini-2.0-flash",
-    "gemini-2.5-pro": "gemini-2.0-flash",
+    "gemini-3-flash-preview": "gemini-2.5-flash",
+    "gemini-3.1-pro-preview": "gemini-2.5-flash",
 }
 
 _MAX_RETRIES = 3
@@ -38,8 +38,8 @@ class GeminiClient:
     def __init__(
         self,
         api_key: str,
-        model_fast: str = "gemini-2.5-flash",
-        model_deep: str = "gemini-2.5-pro",
+        model_fast: str = "gemini-3-flash-preview",
+        model_deep: str = "gemini-3.1-pro-preview",
     ) -> None:
         self._client = genai.Client(api_key=api_key)
         self._model_fast = model_fast

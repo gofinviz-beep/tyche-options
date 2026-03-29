@@ -20,8 +20,8 @@ When `TRADIER_SANDBOX=true` (default), the base URL is `https://sandbox.tradier.
 | Env Var | Type | Default | Description |
 |---|---|---|---|
 | `TYCHE_GEMINI_API_KEY` | str | `""` | Google Gemini API key. If empty, LLM analysis is disabled. |
-| `TYCHE_GEMINI_MODEL_FAST` | str | `gemini-2.5-flash` | Fast model for quick analysis |
-| `TYCHE_GEMINI_MODEL_DEEP` | str | `gemini-2.5-pro` | Deep model for detailed reasoning |
+| `TYCHE_GEMINI_MODEL_FAST` | str | `gemini-3-flash-preview` | Fast model for quick analysis (fallback: gemini-2.5-flash) |
+| `TYCHE_GEMINI_MODEL_DEEP` | str | `gemini-3.1-pro-preview` | Deep model for detailed reasoning (fallback: gemini-2.5-flash) |
 
 ## Market Data (Polygon.io)
 

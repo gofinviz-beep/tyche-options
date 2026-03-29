@@ -16,7 +16,7 @@ Tyche Options is a laptop-based options trading copilot that combines determinis
 | Data stores | Apache Parquet via PyArrow (OHLCVStore, TickerMetaStore) |
 | Conviction engine | pandas, numpy — 8/21 EMA trend classification |
 | Portfolio optimization | scipy.optimize.milp (HiGHS MILP solver) |
-| LLM analysis | Google Gemini (gemini-2.5-flash / gemini-2.5-pro) via google-genai |
+| LLM analysis | Google Gemini (gemini-3-flash-preview / gemini-3.1-pro-preview) via google-genai |
 | Database (operational) | SQLite + SQLAlchemy 2.0 async + Alembic |
 | Scheduling | APScheduler |
 | Logging | structlog (JSON structured logging) |
@@ -160,9 +160,54 @@ Historical data is stored in local Parquet files rather than a database. This en
 - No database migration needed for schema changes to analytical data
 - Incremental bootstrap (only fetch missing dates)
 
+## Scanner vs Conviction Engine
+
+These are two distinct scans that serve different purposes in the pipeline:
+
+### Conviction Engine Scan (`GET /conviction/scan`)
+
+**Purpose:** EMA-based trend analysis only — no broker calls, no options chains, no LLM.
+
+- Reads from local OHLCV Parquet data (no network calls)
+- Computes 8/21 EMAs and classifies trend states
+- Returns CSP-eligible tickers with conviction levels
+- Fast (sub-second for full universe of 13K+ tickers)
+- Input: watchlist symbols, or blank for full universe screen
+- Output: trend state, conviction level, EMA values, eligibility flag
+
+**When to use:** To check which stocks currently have strong technicals before deciding what to scan with the full Scanner.
+
+### Scanner (`POST /scanner/scan`)
+
+**Purpose:** Full end-to-end scan pipeline — broker calls, options chains, LLM analysis, intent creation.
+
+- Calls Tradier API for live quotes and options chains (network-dependent)
+- Runs the conviction engine internally as a filter
+- Fetches real option contracts with bid/ask/greeks
+- Sends candidates to LLM (Gemini) for thesis/risk analysis
+- Runs the intent risk pipeline (deterministic risk gate)
+- Creates OrderIntent records in the database
+- Slow (30s–2min depending on universe size and API latency)
+- Input: watchlist symbols, or blank for dynamic universe discovery
+- Output: scored candidates, LLM analyses, created intents
+
+**When to use:** To generate actionable trade recommendations with real pricing that you can approve/reject on the Intents page.
+
+### Pipeline Relationship
+
+```
+Conviction Scan ──► trend signals (informational)
+
+Scanner ──► conviction filter ──► broker quotes ──► options chains
+        ──► LLM analysis ──► risk gate ──► OrderIntents (actionable)
+```
+
+The Scanner calls the Conviction Engine internally — you don't need to run conviction first.
+
 ## Related Documentation
 
 - [Conviction Engine Rules](conviction-engine.md)
+- [Intent Risk Pipeline](intent-risk-pipeline.md)
 - [Portfolio Allocator](portfolio-allocator.md)
 - [Data Pipeline](data-pipeline.md)
 - [Live Scan Workflow](live-scan.md)
