@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, timezone
+from typing import Any
 
 import structlog
 
@@ -38,10 +39,13 @@ class StrategyEngine:
         watchlist: list[str],
         available_cash: float,
         earnings_dates: dict[str, date | None] | None = None,
+        conviction_signals: dict[str, Any] | None = None,
         min_oi: int = 10,
         min_volume: int = 5,
         max_spread_pct: float = 15.0,
         top_n: int = 10,
+        max_expirations: int = 2,
+        strike_range_pct: float = 15.0,
     ) -> list[ScoredCandidate]:
         """Scan the watchlist for CSP opportunities.
 
@@ -50,24 +54,34 @@ class StrategyEngine:
             watchlist: List of ticker symbols to scan.
             available_cash: Cash available for collateral.
             earnings_dates: Map of symbol -> next earnings date (or None).
+            conviction_signals: EMA conviction data keyed by ticker.
             min_oi: Minimum open interest filter.
             min_volume: Minimum volume filter.
             max_spread_pct: Maximum bid-ask spread percentage.
             top_n: Return top N candidates.
+            max_expirations: Max expiration dates to scan per ticker.
+            strike_range_pct: Only consider strikes within this % below the 8-EMA.
 
         Returns:
             Scored and ranked CSP candidates.
         """
         earnings_dates = earnings_dates or {}
+        conviction_signals = conviction_signals or {}
         all_scored: list[ScoredCandidate] = []
-        scan_id = str(uuid.uuid4())
 
         for symbol in watchlist:
             try:
                 quote = await broker.get_quote(symbol)
                 expirations = await broker.get_options_expirations(symbol)
 
-                for exp_str in expirations[:4]:
+                # Compute strike floor from 8-EMA or current price
+                sig = conviction_signals.get(symbol)
+                reference_price = quote.last
+                if sig and hasattr(sig, "ema_8") and sig.ema_8 > 0:
+                    reference_price = sig.ema_8
+                strike_floor = reference_price * (1 - strike_range_pct / 100)
+
+                for exp_str in expirations[:max_expirations]:
                     try:
                         chain = await broker.get_options_chain(symbol, exp_str)
                     except Exception:
@@ -77,11 +91,12 @@ class StrategyEngine:
                     if chain.underlying_price == 0:
                         chain.underlying_price = quote.last
 
-                    raw = self.csp.identify_candidates(chain, quote)
+                    raw = self.csp.identify_candidates(
+                        chain, quote, strike_floor=strike_floor
+                    )
                     filtered = self.csp.apply_filters(raw, min_oi, min_volume, max_spread_pct)
                     scored = self.csp.score(filtered, available_cash)
 
-                    # Tag with earnings context
                     earnings_date = earnings_dates.get(symbol)
                     for sc in scored:
                         if earnings_date and sc.dte > 0:
@@ -102,6 +117,8 @@ class StrategyEngine:
             symbols_scanned=len(watchlist),
             candidates_found=len(all_scored),
             top_n=top_n,
+            max_expirations=max_expirations,
+            strike_range_pct=strike_range_pct,
         )
         return all_scored[:top_n]
 

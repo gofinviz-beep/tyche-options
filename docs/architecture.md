@@ -17,7 +17,7 @@ Tyche Options is a laptop-based options trading copilot that combines determinis
 | Conviction engine | pandas, numpy — 8/21 EMA trend classification |
 | Portfolio optimization | scipy.optimize.milp (HiGHS MILP solver) |
 | LLM analysis | Google Gemini (gemini-3-flash-preview / gemini-3.1-pro-preview) via google-genai |
-| Database (operational) | SQLite + SQLAlchemy 2.0 async + Alembic |
+| Database (operational) | Distributed SQLite (per-domain files) + SQLAlchemy 2.0 async + Alembic |
 | Scheduling | APScheduler |
 | Logging | structlog (JSON structured logging) |
 | Language | Python 3.12+ |
@@ -42,9 +42,15 @@ flowchart TB
         Allocator -->|"optimal allocation"| Output["Trade Recommendations"]
     end
 
-    subgraph analysis [LLM Analysis — optional]
-        Output --> Gemini["Google Gemini\nRanking + Rationale"]
+    subgraph analysis [LLM Analysis — per-ticker parallel]
+        Output --> Gemini["Google Gemini\nPer-ticker parallel\n(semaphore-controlled)"]
         Gemini --> Approval["Human Approval"]
+    end
+
+    subgraph persist [Persistence — distributed SQLite]
+        Output --> ScansDB["scans.db\nscan_runs"]
+        Output --> CandDB["candidates.db\nscan_candidates"]
+        Gemini --> AnalDB["analyses.db\nllm_analyses"]
     end
 ```
 
@@ -70,7 +76,7 @@ backend/
 │   │       ├── intents.py       # POST /intents/generate (order intent generation)
 │   │       ├── monitor.py       # GET /monitor/status (active position monitor)
 │   │       ├── orders.py        # POST /orders/preview, /orders/place
-│   │       ├── scanner.py       # POST /scanner/scan (morning scan trigger)
+│   │       ├── scanner.py       # POST /scanner/scan, GET /latest, /history, /{scan_id}
 │   │       ├── system.py        # GET /health, /system/status
 │   │       └── watchlist.py     # GET/PUT /watchlist
 │   │
@@ -98,8 +104,15 @@ backend/
 │   │   ├── polygon.py           # PolygonClient — grouped daily, ticker reference, market caps
 │   │   └── universe.py          # UniverseBuilder — watchlist screening
 │   │
-│   ├── models/                  # SQLAlchemy ORM models (account, candidate, journal, etc.)
-│   ├── persistence/             # Database session management
+│   ├── models/
+│   │   ├── order_intent.py      # OrderIntent ORM model (intents for human approval)
+│   │   ├── scan.py              # ScanRun, ScanCandidate, LLMAnalysisRecord ORM models
+│   │   └── ...                  # Account, candidate, journal, etc.
+│   │
+│   ├── persistence/
+│   │   ├── database.py          # Multi-engine registry (named engines per SQLite file)
+│   │   └── scan_repository.py   # Save/load/cleanup scan results across distributed DBs
+│   │
 │   ├── schemas/                 # Pydantic request/response schemas
 │   │
 │   ├── risk/
@@ -125,11 +138,40 @@ backend/
 │       └── wheel_tracker.py     # Wheel strategy lifecycle tracking
 │
 ├── tests/unit/                  # pytest unit tests for all major components
-├── data/
-│   ├── ohlcv_daily.parquet      # Cached OHLCV daily bars (gitignored)
-│   └── ticker_meta.parquet      # Cached ticker metadata (gitignored)
+├── data/                        # Raw market data (Parquet files, gitignored)
+│   ├── ohlcv_daily/             # Per-ticker daily OHLCV bars
+│   ├── intraday_5min/           # Per-ticker 5-minute intraday bars
+│   └── ticker_meta.parquet      # Ticker reference metadata
+├── db/                          # SQLite databases (gitignored)
+│   ├── tyche.db                 # Default — order_intents table
+│   ├── scans.db                 # Scan runs + pipeline stages + allocation
+│   ├── candidates.db            # Scored option candidates per scan
+│   └── analyses.db              # LLM analysis records per ticker per scan
 └── pyproject.toml               # Dependencies and project metadata
 ```
+
+## Distributed SQLite Persistence
+
+Tyche uses **separate SQLite files per domain** rather than one monolithic database. This reduces blast radius and maps cleanly to PostgreSQL schemas on migration.
+
+| Database | Tables | Domain |
+|---|---|---|
+| `db/tyche.db` | `order_intents` | Trade intents awaiting human approval |
+| `db/scans.db` | `scan_runs` | Scan metadata, pipeline stages, allocation summary |
+| `db/candidates.db` | `scan_candidates` | One row per scored option contract per scan |
+| `db/analyses.db` | `llm_analyses` | One row per ticker per scan (LLM reasoning + status) |
+
+The multi-engine registry in `persistence/database.py` manages named engines:
+
+```python
+register_engine("scans", "sqlite+aiosqlite:///db/scans.db")
+async with get_session("scans") as session:
+    ...
+```
+
+**Scan retention:** The last N scans are kept (default 5, configurable via `scan_retention_count`). After each new scan, older scans are cleaned up across all three scanner DBs.
+
+**PostgreSQL migration path:** Replace `init_scanner_dbs()` with a single `init_db(postgres_url)`. All `get_session("scans")` calls become `get_session()` pointing at the single PG connection pool. Table schemas are PostgreSQL-compatible.
 
 ## Key Architectural Patterns
 
@@ -184,12 +226,15 @@ These are two distinct scans that serve different purposes in the pipeline:
 - Calls Tradier API for live quotes and options chains (network-dependent)
 - Runs the conviction engine internally as a filter
 - Fetches real option contracts with bid/ask/greeks
-- Sends candidates to LLM (Gemini) for thesis/risk analysis
+- Filters option strikes to within `strike_range_pct` (default 15%) below the 8-EMA
+- Limits to `max_expiration_dates` (default 2) nearest valid expirations
+- Sends candidates to LLM (Gemini) for thesis/risk analysis — **per-ticker parallel** with configurable concurrency
 - Runs the intent risk pipeline (deterministic risk gate)
 - Creates OrderIntent records in the database
+- **Persists all results** to distributed SQLite (scan runs, candidates, analyses) — survives restarts
 - Slow (30s–2min depending on universe size and API latency)
 - Input: watchlist symbols, or blank for dynamic universe discovery
-- Output: scored candidates, LLM analyses, created intents
+- Output: scored candidates, LLM analyses, created intents, scan history
 
 **When to use:** To generate actionable trade recommendations with real pricing that you can approve/reject on the Intents page.
 

@@ -85,16 +85,40 @@ export interface ConvictionSignal {
   gate_results: GateResult[];
 }
 
+export interface PipelineStage {
+  name: string;
+  input: number;
+  output: number;
+  dropped: number;
+  detail: string;
+}
+
 export interface ScanResult {
   scan_id: string;
   scanned_at: string;
   symbols_scanned: number;
+  pipeline_stages: PipelineStage[];
   conviction_signals: Record<string, ConvictionSignal>;
   csp_candidates: CSPCandidate[];
   cc_candidates: CSPCandidate[];
   llm_analyses: CSPAnalysis[];
   earnings_context: Record<string, unknown>;
+  institutional_ownership: Record<string, number>;
+  allocation: Record<string, unknown> | null;
+  intents_created: number;
   errors: string[];
+}
+
+export interface ScanHistoryEntry {
+  scan_id: string;
+  scanned_at: string;
+  trigger: string;
+  symbols_scanned: number;
+  csp_candidate_count: number;
+  cc_candidate_count: number;
+  llm_analysis_count: number;
+  intents_created: number;
+  errors_count: number;
 }
 
 export interface OrderIntent {
@@ -247,6 +271,8 @@ export interface SystemConfig {
   available_capital: number;
   risk_limits: Record<string, number>;
   wheel_params: Record<string, number>;
+  universe_filters: Record<string, number>;
+  options_scan: Record<string, number>;
   workflow_schedule: Record<string, string | number>;
   watchlist: string[];
 }
@@ -265,6 +291,13 @@ export interface ConfigUpdateRequest {
   cc_target_dte_min?: number;
   cc_target_dte_max?: number;
   min_annualized_return_pct?: number;
+  min_market_cap_millions?: number;
+  min_institutional_pct?: number;
+  min_avg_volume?: number;
+  min_stock_price?: number;
+  max_expiration_dates?: number;
+  strike_range_pct?: number;
+  llm_concurrency?: number;
 }
 
 export interface OrderPreviewRequest {

@@ -64,3 +64,6 @@ Thumbs.db
 # Data files (Parquet, cached market data)
 backend/data/
 *.parquet
+
+# Database files (SQLite)
+backend/db/

@@ -34,9 +34,16 @@ class CashSecuredPutStrategy:
         self._min_delta = min_delta  # Deeper ITM
 
     def identify_candidates(
-        self, chain: OptionsChain, quote: Quote
+        self, chain: OptionsChain, quote: Quote, strike_floor: float = 0.0
     ) -> list[RawCandidate]:
-        """Extract put contracts in the target DTE range that are OTM or near-ATM."""
+        """Extract put contracts in the target DTE range that are OTM or near-ATM.
+
+        Args:
+            chain: Options chain data from broker.
+            quote: Current quote for the underlying.
+            strike_floor: Minimum strike price (e.g. EMA-based floor).
+                          Strikes below this are considered too deep OTM.
+        """
         today = date.today()
         candidates: list[RawCandidate] = []
 
@@ -45,8 +52,10 @@ class CashSecuredPutStrategy:
             if not (self._dte_min <= dte <= self._dte_max):
                 continue
 
-            # CSP targets OTM puts (strike below current price)
             if contract.strike >= quote.last:
+                continue
+
+            if strike_floor > 0 and contract.strike < strike_floor:
                 continue
 
             if contract.bid <= 0:

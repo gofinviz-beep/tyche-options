@@ -12,6 +12,12 @@ alwaysApply: true
 - **Do NOT `source .env` in shell scripts.** Pydantic-settings reads `.env` directly. Shell-sourcing mangles JSON arrays.
 - **Tradier `get_options_chain` can return `None` options data** when market is closed. Always use `options_data = data.get("options") or {}` pattern.
 - **Position Monitor is in-memory only.** Tracked positions are lost on backend restart. Future: persist to SQLite.
+- **Scanner results are now persisted** to distributed SQLite (`db/scans.db`, `db/candidates.db`, `db/analyses.db`). Results survive restarts. Last 5 scans retained by default (`scan_retention_count`).
+- **`GET /scanner/latest` returns 200 + null** when no scan exists (not 404). Frontend handles this gracefully.
+- **Market cap filter passes tickers with missing data.** Tickers without market cap in `TickerMetaStore` are NOT dropped — only tickers with valid data below the threshold are excluded. Pipeline stage detail reports which passed with "no data".
+- **LLM token overflow fixed.** Scanner now runs per-ticker parallel LLM analysis (max `llm_concurrency=5` concurrent calls) instead of sending all candidates in one batch. Each call receives only that ticker's contracts, conviction signal, and earnings context.
+- **Strike range filtering.** Scanner only considers put strikes within `strike_range_pct` (default 15%) below the 8-EMA, capping irrelevant deep OTM contracts. Controlled by `TYCHE_STRIKE_RANGE_PCT`.
+- **Max expiration dates.** Scanner limits option chain fetches to `max_expiration_dates` (default 2) nearest valid expirations per ticker. Controlled by `TYCHE_MAX_EXPIRATION_DATES`.
 
 ## Frontend
 

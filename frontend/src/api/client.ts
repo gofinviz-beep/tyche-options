@@ -11,7 +11,19 @@ async function request<T>(
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(error.detail || `Request failed: ${response.status}`);
+    let message: string;
+    if (typeof error.detail === "string") {
+      message = error.detail;
+    } else if (Array.isArray(error.detail)) {
+      message = error.detail
+        .map((e: { msg?: string; loc?: string[] }) =>
+          e.msg ? `${(e.loc ?? []).slice(-1).join(".")}: ${e.msg}` : JSON.stringify(e),
+        )
+        .join("; ");
+    } else {
+      message = `Request failed: ${response.status}`;
+    }
+    throw new Error(message);
   }
 
   return response.json();
@@ -32,7 +44,11 @@ export const api = {
         method: "POST",
       });
     },
-    getLatest: () => request<import("@/types").ScanResult>("/scanner/latest"),
+    getLatest: () => request<import("@/types").ScanResult | null>("/scanner/latest"),
+    getHistory: (limit = 5) =>
+      request<import("@/types").ScanHistoryEntry[]>(`/scanner/history?limit=${limit}`),
+    getById: (scanId: string) =>
+      request<import("@/types").ScanResult>(`/scanner/${scanId}`),
   },
 
   orders: {

@@ -45,6 +45,17 @@ async def get_config(
             "cc_target_dte_max": settings.cc_target_dte_max,
             "min_annualized_return_pct": settings.min_annualized_return_pct,
         },
+        "universe_filters": {
+            "min_market_cap_millions": settings.min_market_cap_millions,
+            "min_institutional_pct": settings.min_institutional_pct,
+            "min_avg_volume": settings.min_avg_volume,
+            "min_stock_price": settings.min_stock_price,
+        },
+        "options_scan": {
+            "max_expiration_dates": settings.max_expiration_dates,
+            "strike_range_pct": settings.strike_range_pct,
+            "llm_concurrency": settings.llm_concurrency,
+        },
         "workflow_schedule": {
             "morning_scan": settings.morning_scan_time,
             "order_monitor_interval_min": settings.order_monitor_interval_min,
@@ -71,6 +82,13 @@ class ConfigUpdate(BaseModel):
     cc_target_dte_min: int | None = None
     cc_target_dte_max: int | None = None
     min_annualized_return_pct: float | None = None
+    min_market_cap_millions: float | None = None
+    min_institutional_pct: float | None = None
+    min_avg_volume: int | None = None
+    min_stock_price: float | None = None
+    max_expiration_dates: int | None = None
+    strike_range_pct: float | None = None
+    llm_concurrency: int | None = None
 
 
 _CONFIG_ENV_MAP: dict[str, str] = {
@@ -87,6 +105,13 @@ _CONFIG_ENV_MAP: dict[str, str] = {
     "cc_target_dte_min": "TYCHE_CC_TARGET_DTE_MIN",
     "cc_target_dte_max": "TYCHE_CC_TARGET_DTE_MAX",
     "min_annualized_return_pct": "TYCHE_MIN_ANNUALIZED_RETURN_PCT",
+    "min_market_cap_millions": "TYCHE_MIN_MARKET_CAP_MILLIONS",
+    "min_institutional_pct": "TYCHE_MIN_INSTITUTIONAL_PCT",
+    "min_avg_volume": "TYCHE_MIN_AVG_VOLUME",
+    "min_stock_price": "TYCHE_MIN_STOCK_PRICE",
+    "max_expiration_dates": "TYCHE_MAX_EXPIRATION_DATES",
+    "strike_range_pct": "TYCHE_STRIKE_RANGE_PCT",
+    "llm_concurrency": "TYCHE_LLM_CONCURRENCY",
 }
 
 

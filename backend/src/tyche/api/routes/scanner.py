@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import structlog
@@ -27,6 +28,13 @@ from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.earnings import EarningsCalendarClient
 from tyche.market_data.universe import UniverseBuilder
 from tyche.persistence.database import get_session
+from tyche.persistence.scan_repository import (
+    cleanup_old_scans,
+    load_history,
+    load_latest,
+    load_scan,
+    save_scan,
+)
 from tyche.strategy.allocator import PortfolioAllocator
 from tyche.strategy.engine import StrategyEngine
 from tyche.workflow.intent_builder import create_intents_from_scan
@@ -35,12 +43,10 @@ from tyche.workflow.morning_scan import MorningScanResult, run_morning_scan
 logger = structlog.get_logger()
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 
-_latest_scan: MorningScanResult | None = None
-
 
 @router.post("/scan", response_model=dict[str, Any])
 async def trigger_scan(
-    top_n: int = Query(default=5, ge=1, le=20),
+    top_n: int = Query(default=10, ge=1, le=200),
     symbols: str | None = Query(default=None, description="Comma-separated symbols override"),
     broker: BrokerClient = Depends(get_broker),
     strategy: StrategyEngine = Depends(get_strategy_engine),
@@ -53,9 +59,7 @@ async def trigger_scan(
     allocator: PortfolioAllocator = Depends(get_portfolio_allocator),
     settings: TycheSettings = Depends(get_settings),
 ) -> dict[str, Any]:
-    """Trigger a full morning scan and persist intents from LLM analyses."""
-    global _latest_scan
-
+    """Trigger a full morning scan, persist results, and create trade intents."""
     if symbols is not None:
         watchlist = [s.strip().upper() for s in symbols.split(",") if s.strip()]
         if not watchlist:
@@ -81,8 +85,10 @@ async def trigger_scan(
         available_capital_override=settings.available_capital,
         min_institutional_pct=settings.min_institutional_pct,
         min_market_cap=settings.min_market_cap_millions * 1_000_000,
+        max_expiration_dates=settings.max_expiration_dates,
+        strike_range_pct=settings.strike_range_pct,
+        llm_concurrency=settings.llm_concurrency,
     )
-    _latest_scan = result
 
     intents_created = 0
     if result.csp_analyses:
@@ -100,17 +106,63 @@ async def trigger_scan(
             logger.error("intent_creation_failed", exc_info=True)
             result.errors.append("Failed to persist trade intents")
 
+    config_snapshot = {
+        "top_n": top_n,
+        "strike_range_pct": settings.strike_range_pct,
+        "max_expiration_dates": settings.max_expiration_dates,
+        "llm_concurrency": settings.llm_concurrency,
+        "min_market_cap_millions": settings.min_market_cap_millions,
+        "min_institutional_pct": settings.min_institutional_pct,
+    }
+
+    try:
+        await save_scan(
+            result,
+            intents_created=intents_created,
+            trigger="manual",
+            config_snapshot=config_snapshot,
+        )
+        asyncio.create_task(
+            cleanup_old_scans(settings.scan_retention_count)
+        )
+    except Exception:
+        logger.error("scan_persistence_failed", exc_info=True)
+
     serialized = _serialize_scan_result(result)
     serialized["intents_created"] = intents_created
     return serialized
 
 
-@router.get("/latest", response_model=dict[str, Any])
-async def get_latest_scan() -> dict[str, Any]:
-    """Retrieve the most recent scan results."""
-    if _latest_scan is None:
-        raise HTTPException(status_code=404, detail="No scan has been run yet")
-    return _serialize_scan_result(_latest_scan)
+@router.get("/latest")
+async def get_latest_scan() -> dict[str, Any] | None:
+    """Retrieve the most recent scan results from the database."""
+    try:
+        return await load_latest()
+    except RuntimeError:
+        return None
+
+
+@router.get("/history")
+async def get_scan_history(
+    limit: int = Query(default=5, ge=1, le=20),
+) -> list[dict[str, Any]]:
+    """Return summary info for the last N scans."""
+    try:
+        return await load_history(limit=limit)
+    except RuntimeError:
+        return []
+
+
+@router.get("/{scan_id}")
+async def get_scan_by_id(scan_id: str) -> dict[str, Any]:
+    """Load a specific scan by ID."""
+    try:
+        result = await load_scan(scan_id)
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Scan database not initialized")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return result
 
 
 def _serialize_scan_result(result: MorningScanResult) -> dict[str, Any]:
@@ -118,6 +170,7 @@ def _serialize_scan_result(result: MorningScanResult) -> dict[str, Any]:
         "scan_id": result.scan_id,
         "scanned_at": result.scanned_at.isoformat(),
         "symbols_scanned": result.symbols_scanned,
+        "pipeline_stages": [s.to_dict() for s in result.pipeline_stages],
         "conviction_signals": {
             ticker: sig.to_dict()
             for ticker, sig in result.conviction_signals.items()

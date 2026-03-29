@@ -21,6 +21,7 @@ def settings() -> TycheSettings:
         tradier_sandbox=True,
         gemini_api_key="test-gemini-key",
         database_url="sqlite+aiosqlite:///:memory:",
+        db_dir=":memory:",
         preview_only_mode=True,
     )
 

@@ -156,6 +156,65 @@ export function Settings() {
           />
         )}
 
+        {/* Universe filters */}
+        {config && (
+          <EditableSettingsCard
+            title="Universe Filters"
+            subtitle="Scanner pipeline filter thresholds"
+            fields={[
+              {
+                key: "min_market_cap_millions",
+                label: "Min market cap ($M)",
+                value: config.universe_filters.min_market_cap_millions,
+              },
+              {
+                key: "min_institutional_pct",
+                label: "Min institutional ownership (0–1)",
+                value: config.universe_filters.min_institutional_pct,
+              },
+              {
+                key: "min_avg_volume",
+                label: "Min avg daily volume",
+                value: config.universe_filters.min_avg_volume,
+              },
+              {
+                key: "min_stock_price",
+                label: "Min stock price ($)",
+                value: config.universe_filters.min_stock_price,
+              },
+            ]}
+            onSave={(updates) => updateConfig.mutate(updates)}
+            isPending={updateConfig.isPending}
+          />
+        )}
+
+        {/* Options scan */}
+        {config && (
+          <EditableSettingsCard
+            title="Options Scan"
+            subtitle="Strike range, expiration depth, LLM parallelism"
+            fields={[
+              {
+                key: "max_expiration_dates",
+                label: "Max expiration dates",
+                value: config.options_scan.max_expiration_dates,
+              },
+              {
+                key: "strike_range_pct",
+                label: "Strike range below EMA (%)",
+                value: config.options_scan.strike_range_pct,
+              },
+              {
+                key: "llm_concurrency",
+                label: "LLM parallel calls",
+                value: config.options_scan.llm_concurrency,
+              },
+            ]}
+            onSave={(updates) => updateConfig.mutate(updates)}
+            isPending={updateConfig.isPending}
+          />
+        )}
+
         {/* Wheel params */}
         {config && (
           <EditableSettingsCard
@@ -314,11 +373,13 @@ function EditableNumberCard({
 
 function EditableSettingsCard({
   title,
+  subtitle,
   fields,
   onSave,
   isPending,
 }: {
   title: string;
+  subtitle?: string;
   fields: { key: string; label: string; value: number }[];
   onSave: (updates: Record<string, number>) => void;
   isPending: boolean;
@@ -349,7 +410,7 @@ function EditableSettingsCard({
   };
 
   return (
-    <Card title={title}>
+    <Card title={title} subtitle={subtitle}>
       <div className="space-y-2 text-sm">
         {fields.map((f) => (
           <div

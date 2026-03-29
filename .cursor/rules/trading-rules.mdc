@@ -11,18 +11,20 @@ alwaysApply: false
 ## Full Filter Pipeline (order matters)
 
 ```
-Market cap >= $5B (TickerMetaStore)
+Market cap >= $5B (TickerMetaStore, tickers with no data pass through)
     → Valid exchange (NYSE/NASDAQ)
     → Price >= $15
     → Volume >= 500K avg daily
     → ConvictionEngine: trend state must be uptrend/pullback
     → Extension <= 3% above 8-EMA
     → Days above both EMAs: 5-10
-    → Tradier: live quote + options chain
+    → Institutional ownership >= 40%
+    → Tradier: live quote + options chain (max 2 expirations, strikes within 15% of 8-EMA)
     → PortfolioAllocator: MILP optimization
-    → LLM Analysis (Gemini): thesis, risks, confidence
+    → LLM Analysis (Gemini): per-ticker parallel (max 5 concurrent)
     → Risk Gate: 5 deterministic checks (see intent-risk-pipeline rule)
     → OrderIntent created (pending human approval)
+    → Results persisted to distributed SQLite (scans.db, candidates.db, analyses.db)
 ```
 
 ## Risk Constraints (enforced by allocator + risk engine)
@@ -50,9 +52,15 @@ Market cap >= $5B (TickerMetaStore)
 | Parameter | CSP (Puts) | CC (Calls) |
 |---|---|---|
 | DTE range | 3-14 days | 3-14 days |
+| Max expirations | 2 nearest valid (`TYCHE_MAX_EXPIRATION_DATES`) | 2 nearest valid |
 | OTM target | 5% below current price | Above current price AND above cost basis |
+| Strike range filter | Within `strike_range_pct` (15%) below 8-EMA | N/A |
 | Strike selection | Highest strike below OTM target with bid > 0 | Highest bid above cost basis |
 | Eligible positions | N/A | Equity with >= 100 shares |
+
+### Strike Range Filtering
+
+For CSP candidates, strikes are filtered to be within `strike_range_pct` (default 15%) below the 8-day EMA. This prevents scanning deep OTM strikes that are irrelevant. Example: if 8-EMA = $100 and `strike_range_pct = 15`, only strikes >= $85 are considered.
 
 ## Day-of-Week Guidance
 

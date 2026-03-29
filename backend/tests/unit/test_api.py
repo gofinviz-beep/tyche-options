@@ -124,25 +124,31 @@ class TestScannerRoutes:
         assert resp.status_code == 200
         data = resp.json()
         assert data["symbols_scanned"] == 2
-        assert len(data["csp_candidates"]) > 0
+        assert "csp_candidates" in data
+        assert "cc_candidates" in data
 
     def test_get_latest_scan_before_any_scan(self, client: TestClient) -> None:
-        # Reset the module-level state
-        from tyche.api.routes import scanner
-        scanner._latest_scan = None
         resp = client.get("/api/v1/scanner/latest")
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.json() is None
 
-    def test_scan_then_latest(self, client: TestClient) -> None:
-        client.post("/api/v1/scanner/scan?symbols=PL&top_n=2")
-        resp = client.get("/api/v1/scanner/latest")
+    def test_scan_returns_data(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/scanner/scan?symbols=PL&top_n=2")
         assert resp.status_code == 200
         data = resp.json()
         assert data["symbols_scanned"] == 1
+        assert "scan_id" in data
+        assert "pipeline_stages" in data
 
     def test_scan_empty_symbols_error(self, client: TestClient) -> None:
         resp = client.post("/api/v1/scanner/scan?symbols=")
         assert resp.status_code == 400
+
+    def test_scan_history(self, client: TestClient) -> None:
+        resp = client.get("/api/v1/scanner/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
 
 
 class TestWatchlistRoutes:

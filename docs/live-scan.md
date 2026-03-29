@@ -51,9 +51,11 @@ For each eligible ticker with a live price >= $15:
 
 1. Fetch available option expirations from Tradier
 2. Filter to expirations within DTE range (default: 3-14 days)
-3. Fetch the options chain for the nearest valid expiration
-4. Find the best put strike: `strike <= price * (1 - OTM_PCT)` with `bid > 0`, pick the highest strike below the OTM threshold
-5. Build a `ScoredCandidate` with premium, collateral, and annualized return
+3. **Limit to nearest N expirations** (`max_expiration_dates`, default: 2) to cap API calls
+4. Fetch the options chain for each valid expiration
+5. **Filter strikes by EMA range**: only consider puts with `strike >= 8-EMA * (1 - strike_range_pct/100)`. For example, if the 8-EMA is $100 and `strike_range_pct=15`, only strikes >= $85 are scanned.
+6. Find the best put strike: `strike <= price * (1 - OTM_PCT)` with `bid > 0`, pick the highest strike below the OTM threshold
+7. Build a `ScoredCandidate` with premium, collateral, and annualized return
 
 ### 5. Scan CC Candidates (Broker Positions)
 
@@ -87,6 +89,9 @@ The optimizer returns the optimal trade allocation respecting all constraints.
 | `DTE_MIN` | 3 | Minimum days to expiration |
 | `DTE_MAX` | 14 | Maximum days to expiration |
 | `OTM_PCT` | 5% | Out-of-the-money target for strike selection |
+| `MAX_EXPIRATION_DATES` | 2 | Max number of nearest expiration dates to scan per ticker |
+| `STRIKE_RANGE_PCT` | 15% | Only consider strikes within this % below 8-EMA |
+| `LLM_CONCURRENCY` | 5 | Max parallel LLM (Gemini) calls during analysis |
 
 ## Running the Live Scan
 
@@ -118,5 +123,18 @@ The same pipeline runs via the API endpoint `POST /scanner/scan`, orchestrated b
 - Loads account balances from the broker (uses actual buying power)
 - Applies institutional ownership filters
 - Fetches earnings dates
-- Runs LLM analysis on top candidates (if Gemini configured)
+- Runs **per-ticker parallel LLM analysis** (Gemini) with `llm_concurrency` semaphore — avoids token overflow for large universes
+- **Persists results** to distributed SQLite (scan runs, candidates, LLM analyses) — results survive backend restarts
+- Enforces `scan_retention_count` (default 5), cleaning up older scans after each run
 - Returns results as JSON via the REST API
+
+### Scanner API Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/scanner/scan` | Trigger a new scan. Accepts `tickers` (optional), `top_n` (default 50). |
+| `GET` | `/scanner/latest` | Returns the most recent scan result, or `null` (200 OK) if none exists. |
+| `GET` | `/scanner/history?limit=5` | Returns summary metadata for the last N scans. |
+| `GET` | `/scanner/{scan_id}` | Returns full details for a specific scan by ID. |
+
+The `GET /scanner/latest` endpoint returns `200 OK` with `null` when no scan has been persisted (e.g., after a fresh backend restart). It does **not** return a 404.

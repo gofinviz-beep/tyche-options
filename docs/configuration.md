@@ -44,7 +44,17 @@ When `TRADIER_SANDBOX=true` (default), the base URL is `https://sandbox.tradier.
 | Env Var | Type | Default | Description |
 |---|---|---|---|
 | `TYCHE_DATA_DIR` | str | `data` | Directory for Parquet data files (relative to backend/) |
-| `TYCHE_DATABASE_URL` | str | `sqlite+aiosqlite:///tyche.db` | SQLAlchemy async database URL |
+| `TYCHE_DB_DIR` | str | `db` | Directory for all SQLite database files (relative to backend/) |
+| `TYCHE_DATABASE_URL` | str | `""` | SQLAlchemy async database URL. If empty, auto-resolves to `sqlite+aiosqlite:///{db_dir}/tyche.db` |
+| `TYCHE_SCAN_RETENTION_COUNT` | int | `5` | Number of recent scans to retain. Older scans are cleaned up after each new scan. |
+
+The `db/` directory contains all SQLite files:
+- `tyche.db` — order intents
+- `scans.db` — scan runs + pipeline stages
+- `candidates.db` — scored option candidates
+- `analyses.db` — LLM analysis records
+
+The `data/` directory contains raw market data (Parquet files only).
 
 ## Universe Filtering
 
@@ -90,6 +100,9 @@ When `TRADIER_SANDBOX=true` (default), the base URL is `https://sandbox.tradier.
 | `TYCHE_CC_TARGET_DTE_MIN` | int | `3` | Minimum DTE for CC candidates |
 | `TYCHE_CC_TARGET_DTE_MAX` | int | `14` | Maximum DTE for CC candidates |
 | `TYCHE_MIN_ANNUALIZED_RETURN_PCT` | float | `15.0` | Minimum annualized return threshold |
+| `TYCHE_MAX_EXPIRATION_DATES` | int | `2` | Maximum number of expiration dates to scan per ticker. Limits API calls and irrelevant data. |
+| `TYCHE_STRIKE_RANGE_PCT` | float | `15.0` | Only consider put strikes within this % below the 8-EMA. E.g., 15% means for a stock with 8-EMA at $100, only strikes >= $85 are scanned. |
+| `TYCHE_LLM_CONCURRENCY` | int | `5` | Maximum parallel LLM analysis calls during scanner pipeline. Controls Gemini API rate. |
 
 ## Workflow Scheduling
 
@@ -120,6 +133,10 @@ TYCHE_POLYGON_API_KEY=your_polygon_key_here
 # LLM (optional)
 TYCHE_GEMINI_API_KEY=your_gemini_key_here
 
+# Storage (auto-resolves; override only if needed)
+TYCHE_DB_DIR=db
+TYCHE_DATABASE_URL=
+
 # Risk
 TYCHE_AVAILABLE_CAPITAL=100000.0
 TYCHE_MAX_OPEN_POSITIONS=8
@@ -130,4 +147,10 @@ TYCHE_PREVIEW_ONLY_MODE=true
 TYCHE_MAX_EXTENSION_PCT=3.0
 TYCHE_MIN_DAYS_ABOVE_EMAS=5
 TYCHE_MAX_DAYS_ABOVE_EMAS=10
+
+# Scanner Options
+TYCHE_MAX_EXPIRATION_DATES=2
+TYCHE_STRIKE_RANGE_PCT=15.0
+TYCHE_LLM_CONCURRENCY=5
+TYCHE_SCAN_RETENTION_COUNT=5
 ```

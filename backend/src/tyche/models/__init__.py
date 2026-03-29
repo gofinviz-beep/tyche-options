@@ -9,6 +9,7 @@ from tyche.models.order import ExecutionDecision, OpenOrder, OrderMonitorSnapsho
 from tyche.models.order_intent import OrderIntent
 from tyche.models.position import Position
 from tyche.models.recommendation import TradeRecommendation
+from tyche.models.scan import LLMAnalysisRecord, ScanCandidate, ScanRun
 from tyche.models.watchlist import WatchlistSymbol
 from tyche.models.wheel import WheelCycle
 
@@ -17,11 +18,14 @@ __all__ = [
     "BotMemory",
     "EarningsEntry",
     "ExecutionDecision",
+    "LLMAnalysisRecord",
     "OpenOrder",
     "OptionCandidate",
     "OrderIntent",
     "OrderMonitorSnapshot",
     "Position",
+    "ScanCandidate",
+    "ScanRun",
     "TradeJournal",
     "TradeRecommendation",
     "WatchlistSymbol",

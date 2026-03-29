@@ -41,6 +41,7 @@ class TycheSettings(BaseSettings):
 
     # --- Data Storage ---
     data_dir: str = "data"
+    db_dir: str = "db"
 
     # --- Universe Filtering ---
     min_market_cap_millions: float = 5000.0
@@ -79,6 +80,14 @@ class TycheSettings(BaseSettings):
     cc_target_dte_max: int = 14
     min_annualized_return_pct: float = 15.0
 
+    # --- Options Scan ---
+    max_expiration_dates: int = 2
+    strike_range_pct: float = 15.0  # Only consider strikes within X% below the 8-EMA
+    llm_concurrency: int = 5  # Max parallel LLM calls
+
+    # --- Scan Persistence ---
+    scan_retention_count: int = 5
+
     # --- Workflow ---
     morning_scan_time: str = "09:35"
     order_monitor_interval_min: int = 15
@@ -89,7 +98,14 @@ class TycheSettings(BaseSettings):
     watchlist_symbols: list[str] = Field(default_factory=list)
 
     # --- Database ---
-    database_url: str = "sqlite+aiosqlite:///tyche.db"
+    database_url: str = ""
+
+    @property
+    def effective_database_url(self) -> str:
+        """Resolve default DB URL into db_dir if not explicitly set."""
+        if self.database_url:
+            return self.database_url
+        return f"sqlite+aiosqlite:///{self.db_dir}/tyche.db"
 
     @property
     def broker_base_url(self) -> str:

@@ -5,6 +5,7 @@ Enhanced with conviction engine (8/21 EMA) and order intent generation.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
@@ -28,6 +29,26 @@ from tyche.strategy.strategies.base import ScoredCandidate
 logger = structlog.get_logger()
 
 
+class PipelineStage:
+    """A single filter stage in the scan pipeline."""
+
+    def __init__(self, name: str, input_count: int, output_count: int, detail: str = "") -> None:
+        self.name = name
+        self.input_count = input_count
+        self.output_count = output_count
+        self.dropped = input_count - output_count
+        self.detail = detail
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "input": self.input_count,
+            "output": self.output_count,
+            "dropped": self.dropped,
+            "detail": self.detail,
+        }
+
+
 class MorningScanResult:
     """Results of a morning scan run."""
 
@@ -43,6 +64,7 @@ class MorningScanResult:
         self.institutional_ownership: dict[str, float] = {}
         self.allocation: AllocationResult | None = None
         self.errors: list[str] = []
+        self.pipeline_stages: list[PipelineStage] = []
 
 
 async def run_morning_scan(
@@ -60,6 +82,9 @@ async def run_morning_scan(
     available_capital_override: float = 0.0,
     min_institutional_pct: float = 0.40,
     min_market_cap: float = 500_000_000.0,
+    max_expiration_dates: int = 2,
+    strike_range_pct: float = 15.0,
+    llm_concurrency: int = 5,
 ) -> MorningScanResult:
     """Execute the full morning scan pipeline.
 
@@ -102,6 +127,7 @@ async def run_morning_scan(
     )
 
     # 2. Build the screening universe
+    input_symbols = watchlist[:] if watchlist else []
     if watchlist:
         screened = universe_builder.screen_watchlist(watchlist)
         screened_symbols = [s.symbol for s in screened]
@@ -111,6 +137,7 @@ async def run_morning_scan(
             min_avg_volume=universe_builder._min_vol,
             min_price=universe_builder._min_price,
         )
+        input_symbols = screened_symbols[:]
         logger.info("scan_using_dynamic_universe", symbols=len(screened_symbols))
     else:
         result.errors.append(
@@ -119,7 +146,11 @@ async def run_morning_scan(
         )
         return result
 
-    result.symbols_scanned = len(screened_symbols)
+    result.symbols_scanned = len(input_symbols)
+    result.pipeline_stages.append(
+        PipelineStage("Fundamental Screen", len(input_symbols), len(screened_symbols),
+                       detail=f"Price/volume gates via UniverseBuilder")
+    )
 
     if not screened_symbols:
         result.errors.append("No symbols passed fundamental screening")
@@ -129,14 +160,27 @@ async def run_morning_scan(
     if ticker_meta_store and ticker_meta_store.exists and min_market_cap > 0:
         market_caps = ticker_meta_store.get_market_caps(screened_symbols)
         before = len(screened_symbols)
-        screened_symbols = [
-            sym for sym in screened_symbols
-            if market_caps.get(sym, 0) >= min_market_cap
-        ]
+        passed = []
+        no_data = []
+        for sym in screened_symbols:
+            cap = market_caps.get(sym)
+            if cap is None or cap == 0:
+                passed.append(sym)
+                no_data.append(sym)
+            elif cap >= min_market_cap:
+                passed.append(sym)
+        screened_symbols = passed
+        detail = f"Min ${min_market_cap/1e6:.0f}M"
+        if no_data:
+            detail += f" ({len(no_data)} passed with no data: {', '.join(no_data[:5])})"
+        result.pipeline_stages.append(
+            PipelineStage("Market Cap", before, len(screened_symbols), detail=detail)
+        )
         logger.info(
             "market_cap_filter_applied",
             before=before,
             after=len(screened_symbols),
+            no_data=no_data,
             min_market_cap=min_market_cap,
         )
 
@@ -146,10 +190,13 @@ async def run_morning_scan(
 
     # 3. Run conviction engine on screened symbols
     if conviction_engine and data_store and data_store.exists:
+        before_conviction = len(screened_symbols)
         try:
             ticker_data = data_store.read_tickers(screened_symbols)
             if ticker_data:
-                signals = conviction_engine.analyze_batch(ticker_data)
+                signals = conviction_engine.analyze_batch(
+                    ticker_data, requested_tickers=screened_symbols
+                )
                 for sig in signals:
                     result.conviction_signals[sig.ticker] = sig
 
@@ -165,16 +212,25 @@ async def run_morning_scan(
                     )
                 else:
                     logger.warning("conviction_no_eligible", total=len(signals))
+                result.pipeline_stages.append(
+                    PipelineStage("EMA Conviction", before_conviction, len(screened_symbols),
+                                   detail="8/21 EMA trend + CSP eligibility")
+                )
         except Exception:
             logger.warning("morning_scan_conviction_failed", exc_info=True)
 
     # 3b. Filter by institutional ownership (only on conviction survivors)
     if min_institutional_pct > 0 and len(screened_symbols) <= 100:
+        before_inst = len(screened_symbols)
         try:
             screened_symbols, inst_map = await filter_by_institutional_ownership(
                 screened_symbols, min_pct=min_institutional_pct
             )
             result.institutional_ownership = inst_map
+            result.pipeline_stages.append(
+                PipelineStage("Institutional Ownership", before_inst, len(screened_symbols),
+                               detail=f"Min {min_institutional_pct*100:.0f}% inst. ownership")
+            )
             logger.info(
                 "institutional_filter_applied",
                 passed=len(screened_symbols),
@@ -203,7 +259,10 @@ async def run_morning_scan(
             watchlist=screened_symbols,
             available_cash=effective_buying_power,
             earnings_dates=earnings_dates,
+            conviction_signals=result.conviction_signals,
             top_n=top_n,
+            max_expirations=max_expiration_dates,
+            strike_range_pct=strike_range_pct,
         )
         result.csp_candidates = csp_candidates
     except Exception as exc:
@@ -252,25 +311,55 @@ async def run_morning_scan(
         except Exception:
             logger.warning("portfolio_allocation_failed", exc_info=True)
 
-    # 7. LLM analysis with conviction context
+    # 7. LLM analysis — per-ticker, parallel with semaphore.
+    #    Group candidates by ticker, send one focused LLM call per ticker.
     if analysis_agent and result.csp_candidates:
-        conviction_data = {
-            ticker: sig.to_dict()
-            for ticker, sig in result.conviction_signals.items()
-        }
-        try:
-            analyses = await analysis_agent.analyze_csp_candidates(
-                candidates=result.csp_candidates,
-                balance=balance,
-                positions=positions,
-                earnings_context=result.earnings_context,
-                conviction_signals=conviction_data or None,
-                effective_buying_power=effective_buying_power,
-            )
-            result.csp_analyses = analyses
-        except Exception as exc:
-            result.errors.append(f"LLM analysis failed: {exc}")
-            logger.error("morning_scan_llm_failed", exc_info=True)
+        ticker_candidates: dict[str, list[ScoredCandidate]] = {}
+        for c in result.csp_candidates:
+            ticker_candidates.setdefault(c.symbol, []).append(c)
+
+        tickers_to_analyze = list(ticker_candidates.keys())
+        logger.info(
+            "llm_parallel_start",
+            tickers=len(tickers_to_analyze),
+            total_candidates=len(result.csp_candidates),
+            concurrency=llm_concurrency,
+        )
+
+        semaphore = asyncio.Semaphore(llm_concurrency)
+
+        async def _analyze_ticker(ticker: str) -> list[CSPAnalysis]:
+            async with semaphore:
+                cands = ticker_candidates[ticker]
+                sig = result.conviction_signals.get(ticker)
+                conviction_data = {ticker: sig.to_dict()} if sig else {}
+                earnings_for_ticker = {
+                    k: v for k, v in result.earnings_context.items() if k == ticker
+                }
+                try:
+                    return await analysis_agent.analyze_csp_candidates(
+                        candidates=cands,
+                        balance=balance,
+                        positions=positions,
+                        earnings_context=earnings_for_ticker,
+                        conviction_signals=conviction_data or None,
+                        effective_buying_power=effective_buying_power,
+                    )
+                except Exception:
+                    logger.warning("llm_ticker_failed", ticker=ticker, exc_info=True)
+                    return []
+
+        tasks = [_analyze_ticker(t) for t in tickers_to_analyze]
+        all_analyses = await asyncio.gather(*tasks)
+
+        for analyses in all_analyses:
+            result.csp_analyses.extend(analyses)
+
+        logger.info(
+            "llm_parallel_complete",
+            tickers_analyzed=len(tickers_to_analyze),
+            analyses_returned=len(result.csp_analyses),
+        )
 
     logger.info(
         "morning_scan_complete",

@@ -10,34 +10,56 @@ alwaysApply: false
 
 ## Stack
 
-React + TypeScript, Vite, Tailwind CSS, @tanstack/react-query, react-router-dom.
+React + TypeScript, Vite, Tailwind CSS, @tanstack/react-query, react-router-dom, lucide-react.
+
+## Navigation Architecture
+
+The frontend uses a **modular sidebar** with collapsible sections:
+
+- `navigation/modules.ts` — Module registry defining sidebar sections (Options, Research, etc.)
+- Each module declares its routes, icon, and sub-items
+- **Hybrid collapsibility:** Opening one section auto-collapses others; user can manually toggle
+- "BETA" badge displayed next to the Tyche logo
+- "TRADIER" (sandbox/live) badge displayed under the Options section header
+- Settings lives under the Options module (it's options-specific)
 
 ## API Layer
 
-- `api/client.ts` — typed `request<T>()` wrapper around fetch. All endpoints under `/api/v1`.
+- `api/client.ts` — typed `request<T>()` wrapper around fetch. All endpoints under `/api/v1`. Parses FastAPI 422 validation errors into human-readable strings.
 - `hooks/useApi.ts` — react-query hooks wrapping every API call. Mutations invalidate relevant query keys.
-- `types/index.ts` — must match backend response shapes exactly. Update when backend changes.
+- `types/index.ts` — must match backend response shapes exactly. Update when backend changes. Includes `ScanHistoryEntry`.
 
 ## Pages
 
 | Page | Purpose | Key hooks |
 |---|---|---|
 | Dashboard | Overview, quick links | `useOrderIntents("pending")` |
-| Scanner | Full scan (broker + LLM) → generates intents | `useTriggerScan` |
-| Conviction | EMA trend analysis only (informational) | `useConvictionScan`, `useTriggerConvictionScan` |
+| Scanner | Full scan (broker + LLM) → persisted results | `useTriggerScan`, `useLatestScan`, `useScanHistory`, `useScanById` |
+| Conviction | EMA trend analysis with ladder view | `useConvictionScan`, `useTriggerConvictionScan` |
 | Intents | Approve/reject trade recommendations | `useOrderIntents`, `useApproveIntent`, `useRejectIntent` |
 | Orders | Open orders + executed trades | `useOpenOrders`, `useOrderIntents("executed")` |
 | Monitor | Track positions, real-time P&L + alerts | `useTrackedPositions`, `useTrackPosition` |
-| Settings | Editable config (watchlist, capital, risk) | `useSystemConfig`, `useUpdateConfig` |
+| Settings | Editable config (watchlist, capital, risk, universe filters) | `useSystemConfig`, `useUpdateConfig` |
 
 ## UI Conventions
 
-- Risk-failed items: red border (`border-red-500/30 bg-red-950/10`) + "RISK FAILED" badge
+- **Light theme** — modern financial broker aesthetic (no dark mode)
 - Conviction colors: high=emerald, medium=amber, low=red, none=gray
 - Alert severity: critical=red, warning=amber, info=gray
+- Risk-failed items: red border + "RISK FAILED" badge
 - Risk summary reasons: `FAIL:` prefix=red, `WARN:`=amber, plain=gray
 - Empty states must show explanatory messages, not blank space
-- `StatusBadge` for labels, `PLValue` for P&L numbers, `Card` for sections
+- `StatusBadge` for labels, `PLValue` for P&L numbers, `Card` for sections (accepts `ReactNode` title)
+- Scanner shows `PipelineFunnel` visualization and `RecentScans` history selector
+- Conviction page shows expandable `GateLadder` rows for each ticker's eligibility progression
+
+## Scanner Page Components
+
+- `PipelineFunnel` — Shows each filter stage (fundamental, market cap, conviction, institutional) with counts
+- `TickerGroupRow` — Groups CSP candidates by ticker with expand/collapse
+- `RecentScans` — Collapsible scan history selector, loads full scan details on selection
+- Scan results persist in SQLite — `GET /scanner/latest` returns 200 + null if no scan exists (not 404)
+- `useScanHistory(limit)` and `useScanById(scanId)` hooks for history navigation
 
 ## Monitor Page
 

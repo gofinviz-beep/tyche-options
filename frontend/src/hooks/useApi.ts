@@ -29,7 +29,6 @@ export function useLatestScan() {
   return useQuery({
     queryKey: ["scanner", "latest"],
     queryFn: api.scanner.getLatest,
-    retry: false,
   });
 }
 
@@ -43,9 +42,25 @@ export function useTriggerScan() {
       symbols?: string;
       topN?: number;
     }) => api.scanner.triggerScan(symbols, topN),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      queryClient.setQueryData(["scanner", "latest"], data);
       queryClient.invalidateQueries({ queryKey: ["scanner"] });
     },
+  });
+}
+
+export function useScanHistory(limit = 5) {
+  return useQuery({
+    queryKey: ["scanner", "history", limit],
+    queryFn: () => api.scanner.getHistory(limit),
+  });
+}
+
+export function useScanById(scanId: string | null) {
+  return useQuery({
+    queryKey: ["scanner", "detail", scanId],
+    queryFn: () => api.scanner.getById(scanId!),
+    enabled: !!scanId,
   });
 }
 

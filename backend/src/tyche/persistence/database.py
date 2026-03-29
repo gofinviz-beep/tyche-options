@@ -1,71 +1,127 @@
-"""SQLAlchemy async engine and session factory."""
+"""SQLAlchemy async engine and session factory with multi-database support.
+
+Supports a registry of named engines for distributed SQLite files.
+Each domain (scans, candidates, analyses, intents) can use its own DB file,
+reducing blast radius and mapping cleanly to PostgreSQL schemas on migration.
+"""
 
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+import structlog
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
 
+logger = structlog.get_logger()
+
 
 class Base(DeclarativeBase):
     """Shared declarative base for all ORM models."""
 
 
-_engine = None
-_session_factory: async_sessionmaker[AsyncSession] | None = None
+_engines: dict[str, AsyncEngine] = {}
+_sessions: dict[str, async_sessionmaker[AsyncSession]] = {}
+
+
+def register_engine(name: str, database_url: str) -> None:
+    """Register a named async engine and session factory.
+
+    Args:
+        name: Logical name (e.g. "default", "scans", "candidates", "analyses").
+        database_url: SQLAlchemy-compatible async database URL.
+    """
+    engine = create_async_engine(database_url, echo=False, pool_pre_ping=True)
+    _engines[name] = engine
+    _sessions[name] = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    logger.debug("db_engine_registered", name=name, url=database_url)
 
 
 def init_db(database_url: str) -> None:
-    """Initialize the async engine and session factory.
+    """Initialize the default engine (backward-compatible entrypoint)."""
+    register_engine("default", database_url)
 
-    Args:
-        database_url: SQLAlchemy-compatible async database URL.
+
+def init_scanner_dbs(db_dir: str) -> None:
+    """Register scanner-domain engines (scans, candidates, analyses).
+
+    Creates the DB directory if it doesn't exist. Each domain gets its own
+    SQLite file under the given directory.
     """
-    global _engine, _session_factory  # noqa: PLW0603
-    _engine = create_async_engine(
-        database_url,
-        echo=False,
-        pool_pre_ping=True,
-    )
-    _session_factory = async_sessionmaker(
-        bind=_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
+    db_path = Path(db_dir)
+    db_path.mkdir(parents=True, exist_ok=True)
 
-
-async def get_session_dep() -> AsyncGenerator[AsyncSession, None]:
-    """Yield an async session for FastAPI dependency injection."""
-    if _session_factory is None:
-        raise RuntimeError("Database not initialized. Call init_db() first.")
-    async with _session_factory() as session:
-        yield session
+    for name in ("scans", "candidates", "analyses"):
+        file_path = db_path / f"{name}.db"
+        url = f"sqlite+aiosqlite:///{file_path}"
+        register_engine(name, url)
 
 
 @asynccontextmanager
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """Provide an async session as a context manager for direct use."""
-    if _session_factory is None:
-        raise RuntimeError("Database not initialized. Call init_db() first.")
-    async with _session_factory() as session:
+async def get_session(db: str = "default") -> AsyncGenerator[AsyncSession, None]:
+    """Provide an async session as a context manager.
+
+    Args:
+        db: Name of the registered engine to use.
+    """
+    factory = _sessions.get(db)
+    if factory is None:
+        raise RuntimeError(
+            f"Database '{db}' not initialized. "
+            f"Available: {list(_sessions.keys())}"
+        )
+    async with factory() as session:
         yield session
 
 
-async def create_tables() -> None:
-    """Create all tables (dev/test convenience — use Alembic in production)."""
-    if _engine is None:
-        raise RuntimeError("Database not initialized. Call init_db() first.")
-    async with _engine.begin() as conn:
+async def get_session_dep() -> AsyncGenerator[AsyncSession, None]:
+    """Yield an async session for FastAPI dependency injection (default DB)."""
+    async with get_session("default") as session:
+        yield session
+
+
+async def create_tables(db: str = "default") -> None:
+    """Create all tables for the given engine (dev convenience — use Alembic in prod)."""
+    engine = _engines.get(db)
+    if engine is None:
+        raise RuntimeError(f"Database '{db}' not initialized.")
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
 
-async def dispose_engine() -> None:
-    """Dispose the engine on shutdown."""
-    if _engine is not None:
-        await _engine.dispose()
+async def create_tables_for_models(db: str, *model_classes: type) -> None:
+    """Create tables only for specific model classes on the given engine."""
+    engine = _engines.get(db)
+    if engine is None:
+        raise RuntimeError(f"Database '{db}' not initialized.")
+
+    tables = [cls.__table__ for cls in model_classes if hasattr(cls, "__table__")]
+    if tables:
+        async with engine.begin() as conn:
+            await conn.run_sync(
+                lambda sync_conn: Base.metadata.create_all(
+                    sync_conn, tables=tables
+                )
+            )
+
+
+async def dispose_engine(db: str | None = None) -> None:
+    """Dispose one or all engines on shutdown."""
+    if db:
+        engine = _engines.get(db)
+        if engine:
+            await engine.dispose()
+    else:
+        for engine in _engines.values():
+            await engine.dispose()
+        _engines.clear()
+        _sessions.clear()

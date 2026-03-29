@@ -11,7 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from tyche.config import get_settings
 from tyche.logging import configure_logging
-from tyche.persistence.database import create_tables, dispose_engine, init_db
+from tyche.models.scan import LLMAnalysisRecord, ScanCandidate, ScanRun
+from tyche.persistence.database import (
+    create_tables,
+    create_tables_for_models,
+    dispose_engine,
+    init_db,
+    init_scanner_dbs,
+)
 
 logger = structlog.get_logger()
 
@@ -33,6 +40,7 @@ async def _scheduled_morning_scan() -> None:
         get_universe_builder,
     )
     from tyche.persistence.database import get_session
+    from tyche.persistence.scan_repository import cleanup_old_scans, save_scan
     from tyche.workflow.intent_builder import create_intents_from_scan
     from tyche.workflow.morning_scan import run_morning_scan
 
@@ -49,18 +57,26 @@ async def _scheduled_morning_scan() -> None:
         top_n=5,
     )
 
+    intents_created = 0
     if result.csp_analyses:
         try:
             async with get_session() as session:
-                await create_intents_from_scan(
+                intents = await create_intents_from_scan(
                     session=session,
                     scan_id=result.scan_id,
                     csp_analyses=result.csp_analyses,
                     csp_candidates=result.csp_candidates,
                     conviction_signals=result.conviction_signals,
                 )
+                intents_created = len(intents)
         except Exception:
             logger.error("scheduled_intent_creation_failed", exc_info=True)
+
+    try:
+        await save_scan(result, intents_created=intents_created, trigger="scheduled")
+        await cleanup_old_scans(settings.scan_retention_count)
+    except Exception:
+        logger.error("scheduled_scan_persistence_failed", exc_info=True)
 
     logger.info(
         "scheduled_morning_scan_complete",
@@ -84,8 +100,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         watchlist_count=len(settings.watchlist_symbols),
     )
 
-    init_db(settings.database_url)
+    init_db(settings.effective_database_url)
     await create_tables()
+
+    init_scanner_dbs(settings.db_dir)
+    await create_tables_for_models("scans", ScanRun)
+    await create_tables_for_models("candidates", ScanCandidate)
+    await create_tables_for_models("analyses", LLMAnalysisRecord)
 
     from tyche.api.deps import get_scheduler
 
