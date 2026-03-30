@@ -53,6 +53,7 @@ coverage.xml
 node_modules/
 frontend/dist/
 frontend/build/
+*.tsbuildinfo
 
 # OS
 .DS_Store

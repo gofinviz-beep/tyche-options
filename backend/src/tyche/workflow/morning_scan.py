@@ -83,6 +83,7 @@ async def run_morning_scan(
     min_institutional_pct: float = 0.40,
     min_market_cap: float = 500_000_000.0,
     max_expiration_dates: int = 2,
+    expiration_mode: str = "friday_target",
     strike_range_pct: float = 15.0,
     llm_concurrency: int = 5,
 ) -> MorningScanResult:
@@ -263,6 +264,7 @@ async def run_morning_scan(
             top_n=top_n,
             max_expirations=max_expiration_dates,
             strike_range_pct=strike_range_pct,
+            expiration_mode=expiration_mode,
         )
         result.csp_candidates = csp_candidates
     except Exception as exc:

@@ -79,9 +79,14 @@ def _compute_risk_weight(
     """Compute a composite risk weight for a candidate.
 
     Combines:
-    - Conviction multiplier (high=1.0, medium=0.7)
+    - Conviction multiplier (high=1.0, medium=0.7, low=0.3)
     - Extension proximity (closer to 8-EMA = safer)
     - Liquidity factor (open interest)
+    - Assignment safety (lower |delta| = less likely to be assigned)
+
+    Lower delta (more OTM) is preferred because the Wheel Strategy's
+    primary engine is repeated premium collection with fast capital
+    recycling, not assignment into shares.
     """
     conviction = "high"
     extension_pct = 0.0
@@ -99,7 +104,11 @@ def _compute_risk_weight(
     oi_threshold = 1000 if candidate.strategy == "csp" else 500
     liq_w = min(1.0, candidate.open_interest / oi_threshold)
 
-    return conv_w * ext_w * liq_w
+    abs_delta = min(abs(candidate.delta), 1.0)
+    delta_w = 1.0 - abs_delta * 0.6
+    delta_w = max(0.4, delta_w)
+
+    return conv_w * ext_w * liq_w * delta_w
 
 
 class PortfolioAllocator:

@@ -53,6 +53,7 @@ async def get_config(
         },
         "options_scan": {
             "max_expiration_dates": settings.max_expiration_dates,
+            "expiration_mode": settings.expiration_mode,
             "strike_range_pct": settings.strike_range_pct,
             "llm_concurrency": settings.llm_concurrency,
         },
@@ -87,6 +88,7 @@ class ConfigUpdate(BaseModel):
     min_avg_volume: int | None = None
     min_stock_price: float | None = None
     max_expiration_dates: int | None = None
+    expiration_mode: str | None = None
     strike_range_pct: float | None = None
     llm_concurrency: int | None = None
 
@@ -110,6 +112,7 @@ _CONFIG_ENV_MAP: dict[str, str] = {
     "min_avg_volume": "TYCHE_MIN_AVG_VOLUME",
     "min_stock_price": "TYCHE_MIN_STOCK_PRICE",
     "max_expiration_dates": "TYCHE_MAX_EXPIRATION_DATES",
+    "expiration_mode": "TYCHE_EXPIRATION_MODE",
     "strike_range_pct": "TYCHE_STRIKE_RANGE_PCT",
     "llm_concurrency": "TYCHE_LLM_CONCURRENCY",
 }

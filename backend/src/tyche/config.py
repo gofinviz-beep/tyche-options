@@ -82,6 +82,7 @@ class TycheSettings(BaseSettings):
 
     # --- Options Scan ---
     max_expiration_dates: int = 2
+    expiration_mode: str = "friday_target"  # "friday_target" or "max_n"
     strike_range_pct: float = 15.0  # Only consider strikes within X% below the 8-EMA
     llm_concurrency: int = 5  # Max parallel LLM calls
 

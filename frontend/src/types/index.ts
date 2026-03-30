@@ -322,6 +322,7 @@ export interface ConfigUpdateRequest {
   min_avg_volume?: number;
   min_stock_price?: number;
   max_expiration_dates?: number;
+  expiration_mode?: string;
   strike_range_pct?: number;
   llm_concurrency?: number;
 }

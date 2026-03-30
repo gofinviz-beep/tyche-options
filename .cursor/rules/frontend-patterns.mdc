@@ -55,11 +55,27 @@ The frontend uses a **modular sidebar** with collapsible sections:
 
 ## Scanner Page Components
 
+- `EntryTimingBanner` — Day-of-week-aware banner: green for Tue/Wed (optimal), amber for Thu/Fri (weaker), gray for weekend/Mon. Shows trading window and prime slot guidance.
 - `PipelineFunnel` — Shows each filter stage (fundamental, market cap, conviction, institutional) with counts
 - `TickerGroupRow` — Groups CSP candidates by ticker with expand/collapse
 - `RecentScans` — Collapsible scan history selector, loads full scan details on selection
+- `AllocationSummaryCard` — Optimizer-selected trades with gross premium, commission ($0.65/contract), net premium, capital deployed. Includes collapsible trade detail table.
+- `AllocationPlayground` — Interactive "what-if" tool inside AllocationSummaryCard:
+  - Toggle trades on/off via checkboxes, adjust contract counts with +/- buttons
+  - Capital ceiling from `useSystemConfig().available_capital`; blocks increases that exceed limit
+  - "Add from N other candidates" dropdown to pull in unselected CSP candidates
+  - Side-by-side comparison grid: Recommended vs Your Selection (contracts, premium, commission, net, capital)
+  - "Reset to Recommended" button restores optimizer defaults
+  - All math is client-side only — no backend call
+- `LlmAnalysesCard` — AI analyses sorted by assignment comfort desc, then confidence desc (safest trades first)
 - Scan results persist in SQLite — `GET /scanner/latest` returns 200 + null if no scan exists (not 404)
 - `useScanHistory(limit)` and `useScanById(scanId)` hooks for history navigation
+
+## Scanner Types
+
+- `AllocatedTrade` — per-trade data from MILP allocator (symbol, strike, expiration, contracts, total_premium, collateral, conviction, etc.)
+- `AllocationSummary` — optimizer rollup (total_premium, capital_utilization_pct, solver_status). Persisted version has fewer fields than live — use optional types.
+- `ScanResult.allocated_trades` — array of `AllocatedTrade[]` returned by both live and persisted scan endpoints
 
 ## Monitor Page
 

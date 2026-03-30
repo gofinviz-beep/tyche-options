@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import structlog
@@ -20,6 +20,56 @@ from tyche.strategy.strategies.cash_secured_put import CashSecuredPutStrategy
 from tyche.strategy.strategies.covered_call import CoveredCallStrategy
 
 logger = structlog.get_logger()
+
+
+def _next_friday(from_date: date) -> date:
+    """Return the next Friday on or after *from_date*."""
+    days_ahead = 4 - from_date.weekday()  # Friday = 4
+    if days_ahead < 0:
+        days_ahead += 7
+    return from_date + timedelta(days=days_ahead)
+
+
+def target_expiration_dates(
+    available_expirations: list[str],
+    today: date | None = None,
+    max_expirations: int = 1,
+) -> list[str]:
+    """Select target expiration dates with day-of-week awareness.
+
+    The number of expirations fetched depends on when the scan runs:
+      - Saturday → Wednesday: nearest ``max_expirations`` expiration(s)
+      - Thursday or Friday: nearest ``max_expirations + 1`` expiration(s)
+        (covers both the immediate and next-week expiry)
+
+    Only future expirations are considered. The CSP DTE filter (3-14d)
+    further culls anything too far out.
+    """
+    today = today or date.today()
+    day_of_week = today.weekday()  # Mon=0 … Sun=6
+
+    future_exps = []
+    for exp_str in available_expirations:
+        try:
+            if date.fromisoformat(exp_str) >= today:
+                future_exps.append(exp_str)
+        except ValueError:
+            continue
+
+    limit = max_expirations + 1 if day_of_week in (3, 4) else max_expirations
+
+    result = future_exps[:limit]
+
+    logger.info(
+        "expiration_targeting",
+        today=today.isoformat(),
+        day=today.strftime("%A"),
+        max_expirations=max_expirations,
+        limit=limit,
+        selected=result,
+        available_count=len(future_exps),
+    )
+    return result
 
 
 class StrategyEngine:
@@ -46,6 +96,7 @@ class StrategyEngine:
         top_n: int = 10,
         max_expirations: int = 2,
         strike_range_pct: float = 15.0,
+        expiration_mode: str = "friday_target",
     ) -> list[ScoredCandidate]:
         """Scan the watchlist for CSP opportunities.
 
@@ -61,6 +112,9 @@ class StrategyEngine:
             top_n: Return top N candidates.
             max_expirations: Max expiration dates to scan per ticker.
             strike_range_pct: Only consider strikes within this % below the 8-EMA.
+            expiration_mode: "friday_target" uses smart Friday-targeting
+                (Sat-Wed → this Friday, Thu-Fri → this + next Friday).
+                "max_n" uses the legacy first-N expirations approach.
 
         Returns:
             Scored and ranked CSP candidates.
@@ -74,14 +128,20 @@ class StrategyEngine:
                 quote = await broker.get_quote(symbol)
                 expirations = await broker.get_options_expirations(symbol)
 
-                # Compute strike floor from 8-EMA or current price
+                if expiration_mode == "friday_target":
+                    target_exps = target_expiration_dates(
+                        expirations, max_expirations=max_expirations,
+                    )
+                else:
+                    target_exps = expirations[:max_expirations]
+
                 sig = conviction_signals.get(symbol)
                 reference_price = quote.last
                 if sig and hasattr(sig, "ema_8") and sig.ema_8 > 0:
                     reference_price = sig.ema_8
                 strike_floor = reference_price * (1 - strike_range_pct / 100)
 
-                for exp_str in expirations[:max_expirations]:
+                for exp_str in target_exps:
                     try:
                         chain = await broker.get_options_chain(symbol, exp_str)
                     except Exception:
@@ -117,7 +177,7 @@ class StrategyEngine:
             symbols_scanned=len(watchlist),
             candidates_found=len(all_scored),
             top_n=top_n,
-            max_expirations=max_expirations,
+            expiration_mode=expiration_mode,
             strike_range_pct=strike_range_pct,
         )
         return all_scored[:top_n]

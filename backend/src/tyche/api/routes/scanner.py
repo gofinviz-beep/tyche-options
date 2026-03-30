@@ -86,6 +86,7 @@ async def trigger_scan(
         min_institutional_pct=settings.min_institutional_pct,
         min_market_cap=settings.min_market_cap_millions * 1_000_000,
         max_expiration_dates=settings.max_expiration_dates,
+        expiration_mode=settings.expiration_mode,
         strike_range_pct=settings.strike_range_pct,
         llm_concurrency=settings.llm_concurrency,
     )
@@ -110,6 +111,7 @@ async def trigger_scan(
         "top_n": top_n,
         "strike_range_pct": settings.strike_range_pct,
         "max_expiration_dates": settings.max_expiration_dates,
+        "expiration_mode": settings.expiration_mode,
         "llm_concurrency": settings.llm_concurrency,
         "min_market_cap_millions": settings.min_market_cap_millions,
         "min_institutional_pct": settings.min_institutional_pct,

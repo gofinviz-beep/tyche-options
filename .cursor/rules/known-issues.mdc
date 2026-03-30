@@ -17,12 +17,16 @@ alwaysApply: true
 - **Market cap filter passes tickers with missing data.** Tickers without market cap in `TickerMetaStore` are NOT dropped — only tickers with valid data below the threshold are excluded. Pipeline stage detail reports which passed with "no data".
 - **LLM token overflow fixed.** Scanner now runs per-ticker parallel LLM analysis (max `llm_concurrency=5` concurrent calls) instead of sending all candidates in one batch. Each call receives only that ticker's contracts, conviction signal, and earnings context.
 - **Strike range filtering.** Scanner only considers put strikes within `strike_range_pct` (default 15%) below the 8-EMA, capping irrelevant deep OTM contracts. Controlled by `TYCHE_STRIKE_RANGE_PCT`.
-- **Max expiration dates.** Scanner limits option chain fetches to `max_expiration_dates` (default 2) nearest valid expirations per ticker. Controlled by `TYCHE_MAX_EXPIRATION_DATES`.
+- **Expiration targeting.** Default mode is `friday_target` (`TYCHE_EXPIRATION_MODE`). Sat–Wed scans fetch `max_expiration_dates` nearest expirations; Thu–Fri scans fetch `max_expiration_dates + 1`. Set to `max_n` for legacy first-N behavior. Tickers without weekly options (monthly only) still get their nearest expiration; the DTE filter (3-14d) culls anything too far out.
+- **Allocator uses delta penalty.** `_compute_risk_weight` now includes a delta factor: `delta_w = 1.0 - |delta| * 0.6` (floored at 0.4). Lower delta (more OTM) is preferred to minimize assignment probability and maximize capital recycling. The MILP objective is `premium * conviction * extension * liquidity * delta_w`.
+- **Allocator runs BEFORE LLM.** Pipeline order: options scan → allocator → LLM. Allocator cannot use LLM confidence/comfort. Delta penalty partially compensates for this gap.
 
 ## Frontend
 
 - **Option symbol format mismatch:** User-entered symbols may not match Tradier's OCC format. The `check_position` method falls back to matching by strike + option type.
 - **Conviction scan "Run Scan" with blank field:** Scans watchlist tickers (not full universe) if watchlist is configured. Only scans full universe when watchlist is empty.
+- **Scanner allocation types.** `ScanResult` includes typed `allocation: AllocationSummary | null` and `allocated_trades: AllocatedTrade[]`. Persisted scans have a slimmer `AllocationSummary` (missing `trades`, `total_collateral`, `positions_used`) — use optional fields.
+- **Allocation Playground is client-side only.** The "Customize Allocation" playground in the Scanner page is purely frontend state. No backend API call — all math (premium, commission, collateral) is computed locally using `bid * 100` for premium and `strike * 100` for collateral per contract. Commission is hardcoded at `$0.65/contract`.
 
 ## LLM (Gemini)
 

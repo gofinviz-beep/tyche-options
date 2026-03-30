@@ -15,8 +15,8 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 - `config.py` — All settings via `TYCHE_*` env vars (pydantic-settings). Reads `.env` directly — do NOT `source .env` in shell scripts.
 - `api/deps.py` — Dependency injection: singleton providers for all services. Always use `Depends()` in routes.
 - `conviction/engine.py` — 8/21 EMA trend classification + CSP eligibility. The primary screening gate.
-- `strategy/allocator.py` — MILP optimizer (scipy). Maximizes risk-adjusted premium across CSPs and CCs.
-- `strategy/engine.py` — Orchestrates CSP/CC candidate scanning via broker API. Supports `max_expiration_dates` and `strike_range_pct`.
+- `strategy/allocator.py` — MILP optimizer (scipy). Maximizes risk-adjusted premium across CSPs and CCs. Risk weight includes conviction, EMA extension, liquidity, and **delta penalty** (lower |delta| preferred to minimize assignment).
+- `strategy/engine.py` — Orchestrates CSP/CC candidate scanning via broker API. Supports `max_expiration_dates`, `strike_range_pct`, and `expiration_mode` (`friday_target` default: day-of-week-aware expiration selection).
 - `market_data/data_store.py` — OHLCVStore + IntradayStore (per-ticker Parquet dirs) + TickerMetaStore + `_MetadataCache` for fast status queries.
 - `market_data/polygon.py` — Polygon.io client for historical bars and ticker reference. NOT used for live trading.
 - `broker/tradier/client.py` — Tradier API for live quotes, options chains, account ops. Handle `None` responses (market closed).
@@ -61,6 +61,8 @@ The Scanner calls Conviction Engine internally — no need to run conviction fir
 - **LLM = qualitative only.** Broker data is source of truth for all numbers. See intent-risk-pipeline rule.
 - **Per-ticker parallel LLM.** Scanner groups candidates by ticker and sends each to Gemini concurrently (max `llm_concurrency`). Avoids token overflow.
 - **Scanner persistence.** All scan results persist to distributed SQLite — survives restarts. `GET /scanner/latest` returns 200 + null if no scans exist.
+- **Expiration targeting.** `target_expiration_dates()` in `strategy/engine.py` selects expirations by day-of-week: Sat-Wed → `max_expirations` nearest; Thu-Fri → `max_expirations + 1`. Configurable via `TYCHE_EXPIRATION_MODE` (`friday_target` | `max_n`).
+- **Allocator pipeline position.** Allocator runs BEFORE LLM (step 6b vs step 7 in `morning_scan.py`). Delta penalty in risk weight partially compensates for lack of LLM insight at allocation time.
 - **Start scripts:** `./scripts/start-backend.sh`, `./scripts/start-frontend.sh`, `./scripts/start-all.sh`
 
 ## Import Conventions

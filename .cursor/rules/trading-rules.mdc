@@ -19,8 +19,8 @@ Market cap >= $5B (TickerMetaStore, tickers with no data pass through)
     → Extension <= 3% above 8-EMA
     → Days above both EMAs: 5-10
     → Institutional ownership >= 40%
-    → Tradier: live quote + options chain (max 2 expirations, strikes within 15% of 8-EMA)
-    → PortfolioAllocator: MILP optimization
+    → Tradier: live quote + options chain (day-aware expiration targeting, strikes within 15% of 8-EMA)
+    → PortfolioAllocator: MILP optimization (delta-penalized risk weight)
     → LLM Analysis (Gemini): per-ticker parallel (max 5 concurrent)
     → Risk Gate: 5 deterministic checks (see intent-risk-pipeline rule)
     → OrderIntent created (pending human approval)
@@ -52,19 +52,47 @@ Market cap >= $5B (TickerMetaStore, tickers with no data pass through)
 | Parameter | CSP (Puts) | CC (Calls) |
 |---|---|---|
 | DTE range | 3-14 days | 3-14 days |
-| Max expirations | 2 nearest valid (`TYCHE_MAX_EXPIRATION_DATES`) | 2 nearest valid |
+| Expiration targeting | Day-aware: Sat-Wed → `max_expirations` nearest; Thu-Fri → `max_expirations + 1` | 4 nearest valid |
 | OTM target | 5% below current price | Above current price AND above cost basis |
 | Strike range filter | Within `strike_range_pct` (15%) below 8-EMA | N/A |
 | Strike selection | Highest strike below OTM target with bid > 0 | Highest bid above cost basis |
 | Eligible positions | N/A | Equity with >= 100 shares |
 
+### Expiration Targeting (`TYCHE_EXPIRATION_MODE`)
+
+Default mode is `friday_target`. Controls how many expirations are fetched per ticker:
+- **Sat–Wed:** Fetch `max_expiration_dates` nearest future expirations (default 1 → this Friday only)
+- **Thu–Fri:** Fetch `max_expiration_dates + 1` (default 2 → this + next week)
+- Set to `max_n` for legacy behavior (always first N expirations regardless of day)
+- Tickers without weekly options (e.g. PLAB, monthly only) get their nearest expiration; the DTE filter (3-14d) rejects anything too far out
+
 ### Strike Range Filtering
 
 For CSP candidates, strikes are filtered to be within `strike_range_pct` (default 15%) below the 8-day EMA. This prevents scanning deep OTM strikes that are irrelevant. Example: if 8-EMA = $100 and `strike_range_pct = 15`, only strikes >= $85 are considered.
 
+### MILP Allocator Risk Weight
+
+The allocator's objective is `maximize sum(contracts * premium * risk_weight)` where:
+
+| Factor | Formula | Range | Purpose |
+|---|---|---|---|
+| Conviction | `{high: 1.0, medium: 0.7, low: 0.3, none: 0.1}` | 0.1–1.0 | EMA trend confidence |
+| Extension | `1 - (ext_pct / max_ext) * 0.3` | 0.5–1.0 | Closer to 8-EMA = safer |
+| Liquidity | `min(1.0, OI / 1000)` | 0.0–1.0 | Open interest threshold |
+| **Delta** | `1.0 - |delta| * 0.6` | 0.4–1.0 | **Lower delta = less assignment risk** |
+
+The delta factor is critical: it biases toward OTM strikes to minimize assignment probability, aligning with the capital-recycling strategy (collect premium, don't get assigned, free capital by Saturday).
+
 ## Day-of-Week Guidance
 
-Backtest data shows Tuesday and Wednesday are best for CSP entry. Thursday/Friday entries perform worst.
+Backtest data shows Tuesday and Wednesday are best for CSP entry. Thursday/Friday entries perform worst. The Scanner UI shows an `EntryTimingBanner` indicating optimal/suboptimal days and the 9:30 AM–1:00 PM trading window.
+
+### Ideal Cycle
+
+1. **Tuesday or Wednesday:** Run scan, review allocator recommendations + playground
+2. **Place CSP orders** targeting this Friday's expiration
+3. **Friday close:** Options expire worthless (OTM), premium collected
+4. **Saturday midnight:** Capital freed, ready for next Tuesday
 
 ## Time-of-Day Guidance
 
