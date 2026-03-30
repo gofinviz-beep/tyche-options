@@ -98,6 +98,12 @@ class TycheSettings(BaseSettings):
     # --- Watchlist ---
     watchlist_symbols: list[str] = Field(default_factory=list)
 
+    # --- Observability ---
+    log_level: str = "INFO"
+    gcp_project_id: str = ""
+    otel_service_name: str = "tyche-options"
+    otel_enabled: bool = True
+
     # --- Database ---
     database_url: str = ""
 

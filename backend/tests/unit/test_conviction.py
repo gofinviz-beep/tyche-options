@@ -37,6 +37,22 @@ def _uptrend(n=80, start=100.0, gain=0.5):
     return [start + i * gain for i in range(n)]
 
 
+def _fresh_uptrend(n=80, start=100.0, gain=0.5, streak_days=8):
+    """Uptrend with a mid-series dip that resets the days-above-EMAs streak.
+
+    Produces a series where the last ``streak_days`` bars are clearly above
+    both EMAs, keeping the streak in the 5-10 sweet spot required by Gate 3.
+    """
+    dip_at = n - streak_days - 2
+    prices = []
+    for i in range(n):
+        base = start + i * gain
+        if dip_at <= i < dip_at + 2:
+            base -= gain * 20
+        prices.append(base)
+    return prices
+
+
 def _downtrend(n=80, start=200.0, loss=0.5):
     return [start - i * loss for i in range(n)]
 
@@ -79,7 +95,7 @@ class TestConvictionEngine:
         assert signal.csp_eligible is False
 
     def test_strong_uptrend(self, engine):
-        signal = engine.analyze("UP", _make_ohlcv(_uptrend(80)))
+        signal = engine.analyze("UP", _make_ohlcv(_fresh_uptrend(80)))
         assert signal.trend_state in (TrendState.STRONG_UPTREND, TrendState.UPTREND)
         assert signal.conviction_level in ("high", "medium")
         assert signal.csp_eligible is True
@@ -107,7 +123,7 @@ class TestConvictionEngine:
 
     def test_batch(self, engine):
         data = {
-            "UP": _make_ohlcv(_uptrend(80)),
+            "UP": _make_ohlcv(_fresh_uptrend(80)),
             "DN": _make_ohlcv(_downtrend(80)),
             "SHORT": _make_ohlcv([100.0] * 10),
         }

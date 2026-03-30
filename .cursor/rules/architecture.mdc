@@ -12,7 +12,7 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 
 ## Module Map
 
-- `config.py` — All settings via `TYCHE_*` env vars (pydantic-settings). Reads `.env` directly — do NOT `source .env` in shell scripts.
+- `config.py` — All settings via `TYCHE_*` env vars (pydantic-settings). Reads `.env` directly — do NOT `source .env` in shell scripts. Includes observability settings: `log_level`, `gcp_project_id`, `otel_service_name`, `otel_enabled`.
 - `api/deps.py` — Dependency injection: singleton providers for all services. Always use `Depends()` in routes.
 - `conviction/engine.py` — 8/21 EMA trend classification + CSP eligibility. The primary screening gate.
 - `strategy/allocator.py` — MILP optimizer (scipy). Maximizes risk-adjusted premium across CSPs and CCs. Risk weight includes conviction, EMA extension, liquidity, and **delta penalty** (lower |delta| preferred to minimize assignment).
@@ -25,8 +25,12 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 - `workflow/active_monitor.py` — Real-time position monitoring. In-memory only, lost on restart.
 - `risk/engine.py` + `risk/rules.py` — Deterministic risk rule chain (max positions, concentration, etc.).
 - `models/scan.py` — SQLAlchemy ORM models: `ScanRun`, `ScanCandidate`, `LLMAnalysisRecord`.
-- `persistence/database.py` — Multi-engine registry for distributed SQLite (named engines per domain).
+- `persistence/database.py` — Multi-engine registry for distributed SQLite (named engines per domain). Includes `check_db_health()` for readiness probes.
 - `persistence/scan_repository.py` — Save/load/cleanup scan results across `scans.db`, `candidates.db`, `analyses.db`.
+- `telemetry.py` — OpenTelemetry configuration (traces + metrics). Pre-creates histograms and counters. GCP exporters when `gcp_project_id` is set, console exporters otherwise.
+- `logging.py` — Structured logging (structlog + JSON). Injects OTel `trace_id`/`span_id` into every log event for Cloud Trace correlation.
+- `api/middleware.py` — `RequestTimingMiddleware` (request duration, `X-Request-Id`, structlog context) and `global_exception_handler` (catches unhandled 500s).
+- `api/routes/telemetry.py` — `POST /telemetry/events` endpoint accepting batched frontend error/timing/crash events.
 
 ## Two Scan Types
 
@@ -63,6 +67,8 @@ The Scanner calls Conviction Engine internally — no need to run conviction fir
 - **Scanner persistence.** All scan results persist to distributed SQLite — survives restarts. `GET /scanner/latest` returns 200 + null if no scans exist.
 - **Expiration targeting.** `target_expiration_dates()` in `strategy/engine.py` selects expirations by day-of-week: Sat-Wed → `max_expirations` nearest; Thu-Fri → `max_expirations + 1`. Configurable via `TYCHE_EXPIRATION_MODE` (`friday_target` | `max_n`).
 - **Allocator pipeline position.** Allocator runs BEFORE LLM (step 6b vs step 7 in `morning_scan.py`). Delta penalty in risk weight partially compensates for lack of LLM insight at allocation time.
+- **Observability stack.** OpenTelemetry SDK for metrics (histograms, counters) and traces. Auto-instrumented: FastAPI inbound, httpx outbound. Custom metrics: `scanner.stage.duration`, `scanner.total.duration`, `scanner.errors`, `api.errors`, `llm.call.duration`, `broker.call.duration`, `http.server.request.duration`. GCP: export via OTLP to Cloud Monitoring + Cloud Trace; logs via structured JSON stdout to Cloud Logging.
+- **Health endpoints.** `GET /health` (liveness, shallow), `GET /health/ready` (readiness, checks DB connectivity).
 - **Start scripts:** `./scripts/start-backend.sh`, `./scripts/start-frontend.sh`, `./scripts/start-all.sh`
 
 ## Import Conventions

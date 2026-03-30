@@ -114,6 +114,22 @@ async def create_tables_for_models(db: str, *model_classes: type) -> None:
             )
 
 
+async def check_db_health() -> bool:
+    """Run a lightweight query against the default engine to verify connectivity."""
+    engine = _engines.get("default")
+    if engine is None:
+        return False
+    try:
+        from sqlalchemy import text
+
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        logger.warning("db_health_check_failed", exc_info=True)
+        return False
+
+
 async def dispose_engine(db: str | None = None) -> None:
     """Dispose one or all engines on shutdown."""
     if db:

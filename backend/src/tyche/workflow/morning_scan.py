@@ -1,12 +1,14 @@
 """Morning scan workflow — the primary daily CSP + CC screening pipeline.
 
 Enhanced with conviction engine (8/21 EMA) and order intent generation.
+All stages are timed and reported via OpenTelemetry metrics.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -25,6 +27,12 @@ from tyche.schemas.analysis import CSPAnalysis
 from tyche.strategy.allocator import AllocatedTrade, AllocationResult, PortfolioAllocator
 from tyche.strategy.engine import StrategyEngine
 from tyche.strategy.strategies.base import ScoredCandidate
+from tyche.telemetry import (
+    llm_call_duration,
+    scanner_errors,
+    scanner_stage_duration,
+    scanner_total_duration,
+)
 
 logger = structlog.get_logger()
 
@@ -32,12 +40,20 @@ logger = structlog.get_logger()
 class PipelineStage:
     """A single filter stage in the scan pipeline."""
 
-    def __init__(self, name: str, input_count: int, output_count: int, detail: str = "") -> None:
+    def __init__(
+        self,
+        name: str,
+        input_count: int,
+        output_count: int,
+        detail: str = "",
+        duration_ms: float = 0.0,
+    ) -> None:
         self.name = name
         self.input_count = input_count
         self.output_count = output_count
         self.dropped = input_count - output_count
         self.detail = detail
+        self.duration_ms = duration_ms
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,7 +62,13 @@ class PipelineStage:
             "output": self.output_count,
             "dropped": self.dropped,
             "detail": self.detail,
+            "duration_ms": round(self.duration_ms, 2),
         }
+
+
+def _record_stage(name: str, duration_s: float) -> None:
+    """Record a pipeline stage duration as an OTel histogram observation."""
+    scanner_stage_duration.record(duration_s, {"stage": name})
 
 
 class MorningScanResult:
@@ -65,6 +87,7 @@ class MorningScanResult:
         self.allocation: AllocationResult | None = None
         self.errors: list[str] = []
         self.pipeline_stages: list[PipelineStage] = []
+        self.total_duration_ms: float = 0.0
 
 
 async def run_morning_scan(
@@ -98,17 +121,26 @@ async def run_morning_scan(
     6. Scan for CC candidates on held shares
     7. Send top candidates to LLM with conviction context (if available)
     """
+    scan_start = time.perf_counter()
     result = MorningScanResult()
 
-    # 1. Load account state
+    # ── 1. Load account state ─────────────────────────────────────────
+    t0 = time.perf_counter()
     try:
         balance = await broker.get_account_balances()
         positions = await broker.get_positions()
         open_orders = await broker.get_open_orders()
     except Exception as exc:
+        dur = (time.perf_counter() - t0) * 1000
         result.errors.append(f"Failed to load account state: {exc}")
-        logger.error("morning_scan_account_failed", exc_info=True)
+        logger.error("morning_scan_account_failed", duration_ms=round(dur, 2), exc_info=True)
+        scanner_errors.add(1, {"stage": "account_load", "error_type": type(exc).__name__})
+        _record_stage("account_load", time.perf_counter() - t0)
+        result.total_duration_ms = (time.perf_counter() - scan_start) * 1000
         return result
+
+    acct_dur = time.perf_counter() - t0
+    _record_stage("account_load", acct_dur)
 
     effective_buying_power = balance.buying_power
     if effective_buying_power <= 0 and available_capital_override > 0:
@@ -125,9 +157,11 @@ async def run_morning_scan(
         buying_power=effective_buying_power,
         positions=len(positions),
         open_orders=len(open_orders),
+        duration_ms=round(acct_dur * 1000, 2),
     )
 
-    # 2. Build the screening universe
+    # ── 2. Build the screening universe ───────────────────────────────
+    t0 = time.perf_counter()
     input_symbols = watchlist[:] if watchlist else []
     if watchlist:
         screened = universe_builder.screen_watchlist(watchlist)
@@ -145,20 +179,31 @@ async def run_morning_scan(
             "No watchlist configured and data store not bootstrapped. "
             "Either set TYCHE_WATCHLIST_SYMBOLS or bootstrap the data store first."
         )
+        result.total_duration_ms = (time.perf_counter() - scan_start) * 1000
         return result
+
+    screen_dur = time.perf_counter() - t0
+    _record_stage("fundamental_screen", screen_dur)
 
     result.symbols_scanned = len(input_symbols)
     result.pipeline_stages.append(
-        PipelineStage("Fundamental Screen", len(input_symbols), len(screened_symbols),
-                       detail=f"Price/volume gates via UniverseBuilder")
+        PipelineStage(
+            "Fundamental Screen",
+            len(input_symbols),
+            len(screened_symbols),
+            detail="Price/volume gates via UniverseBuilder",
+            duration_ms=screen_dur * 1000,
+        )
     )
 
     if not screened_symbols:
         result.errors.append("No symbols passed fundamental screening")
+        result.total_duration_ms = (time.perf_counter() - scan_start) * 1000
         return result
 
-    # 2b. Filter by market cap using persisted ticker metadata
+    # ── 2b. Filter by market cap ──────────────────────────────────────
     if ticker_meta_store and ticker_meta_store.exists and min_market_cap > 0:
+        t0 = time.perf_counter()
         market_caps = ticker_meta_store.get_market_caps(screened_symbols)
         before = len(screened_symbols)
         passed = []
@@ -171,11 +216,14 @@ async def run_morning_scan(
             elif cap >= min_market_cap:
                 passed.append(sym)
         screened_symbols = passed
+        cap_dur = time.perf_counter() - t0
+        _record_stage("market_cap", cap_dur)
+
         detail = f"Min ${min_market_cap/1e6:.0f}M"
         if no_data:
             detail += f" ({len(no_data)} passed with no data: {', '.join(no_data[:5])})"
         result.pipeline_stages.append(
-            PipelineStage("Market Cap", before, len(screened_symbols), detail=detail)
+            PipelineStage("Market Cap", before, len(screened_symbols), detail=detail, duration_ms=cap_dur * 1000)
         )
         logger.info(
             "market_cap_filter_applied",
@@ -183,14 +231,17 @@ async def run_morning_scan(
             after=len(screened_symbols),
             no_data=no_data,
             min_market_cap=min_market_cap,
+            duration_ms=round(cap_dur * 1000, 2),
         )
 
     if not screened_symbols:
         result.errors.append("No symbols passed market cap screening")
+        result.total_duration_ms = (time.perf_counter() - scan_start) * 1000
         return result
 
-    # 3. Run conviction engine on screened symbols
+    # ── 3. Run conviction engine ──────────────────────────────────────
     if conviction_engine and data_store and data_store.exists:
+        t0 = time.perf_counter()
         before_conviction = len(screened_symbols)
         try:
             ticker_data = data_store.read_tickers(screened_symbols)
@@ -213,34 +264,58 @@ async def run_morning_scan(
                     )
                 else:
                     logger.warning("conviction_no_eligible", total=len(signals))
+
+                conv_dur = time.perf_counter() - t0
+                _record_stage("conviction_engine", conv_dur)
                 result.pipeline_stages.append(
-                    PipelineStage("EMA Conviction", before_conviction, len(screened_symbols),
-                                   detail="8/21 EMA trend + CSP eligibility")
+                    PipelineStage(
+                        "EMA Conviction",
+                        before_conviction,
+                        len(screened_symbols),
+                        detail="8/21 EMA trend + CSP eligibility",
+                        duration_ms=conv_dur * 1000,
+                    )
                 )
         except Exception:
-            logger.warning("morning_scan_conviction_failed", exc_info=True)
+            conv_dur = time.perf_counter() - t0
+            _record_stage("conviction_engine", conv_dur)
+            scanner_errors.add(1, {"stage": "conviction_engine", "error_type": "exception"})
+            logger.warning("morning_scan_conviction_failed", duration_ms=round(conv_dur * 1000, 2), exc_info=True)
 
-    # 3b. Filter by institutional ownership (only on conviction survivors)
+    # ── 3b. Filter by institutional ownership ─────────────────────────
     if min_institutional_pct > 0 and len(screened_symbols) <= 100:
+        t0 = time.perf_counter()
         before_inst = len(screened_symbols)
         try:
             screened_symbols, inst_map = await filter_by_institutional_ownership(
                 screened_symbols, min_pct=min_institutional_pct
             )
             result.institutional_ownership = inst_map
+            inst_dur = time.perf_counter() - t0
+            _record_stage("institutional_ownership", inst_dur)
             result.pipeline_stages.append(
-                PipelineStage("Institutional Ownership", before_inst, len(screened_symbols),
-                               detail=f"Min {min_institutional_pct*100:.0f}% inst. ownership")
+                PipelineStage(
+                    "Institutional Ownership",
+                    before_inst,
+                    len(screened_symbols),
+                    detail=f"Min {min_institutional_pct*100:.0f}% inst. ownership",
+                    duration_ms=inst_dur * 1000,
+                )
             )
             logger.info(
                 "institutional_filter_applied",
                 passed=len(screened_symbols),
                 ownership_data=len(inst_map),
+                duration_ms=round(inst_dur * 1000, 2),
             )
         except Exception:
-            logger.warning("institutional_filter_failed", exc_info=True)
+            inst_dur = time.perf_counter() - t0
+            _record_stage("institutional_ownership", inst_dur)
+            scanner_errors.add(1, {"stage": "institutional_ownership", "error_type": "exception"})
+            logger.warning("institutional_filter_failed", duration_ms=round(inst_dur * 1000, 2), exc_info=True)
 
-    # 4. Fetch earnings dates
+    # ── 4. Fetch earnings dates ───────────────────────────────────────
+    t0 = time.perf_counter()
     earnings_dates: dict[str, Any] = {}
     if earnings_client:
         try:
@@ -251,9 +326,13 @@ async def run_morning_scan(
                 earnings_dates[symbol] = info.get("earnings_date")
                 result.earnings_context[symbol] = info
         except Exception:
+            scanner_errors.add(1, {"stage": "earnings_fetch", "error_type": "exception"})
             logger.warning("morning_scan_earnings_failed", exc_info=True)
+    earn_dur = time.perf_counter() - t0
+    _record_stage("earnings_fetch", earn_dur)
 
-    # 5. Scan for CSP candidates
+    # ── 5. Scan for CSP candidates ────────────────────────────────────
+    t0 = time.perf_counter()
     try:
         csp_candidates = await strategy_engine.scan_csp_candidates(
             broker=broker,
@@ -269,9 +348,13 @@ async def run_morning_scan(
         result.csp_candidates = csp_candidates
     except Exception as exc:
         result.errors.append(f"CSP scan failed: {exc}")
+        scanner_errors.add(1, {"stage": "csp_scan", "error_type": type(exc).__name__})
         logger.error("morning_scan_csp_failed", exc_info=True)
+    csp_dur = time.perf_counter() - t0
+    _record_stage("csp_scan", csp_dur)
 
-    # 6. Scan for CC candidates on held shares
+    # ── 6. Scan for CC candidates on held shares ──────────────────────
+    t0 = time.perf_counter()
     try:
         cc_candidates = await strategy_engine.scan_cc_candidates(
             broker=broker,
@@ -281,10 +364,14 @@ async def run_morning_scan(
         result.cc_candidates = cc_candidates
     except Exception as exc:
         result.errors.append(f"CC scan failed: {exc}")
+        scanner_errors.add(1, {"stage": "cc_scan", "error_type": type(exc).__name__})
         logger.error("morning_scan_cc_failed", exc_info=True)
+    cc_dur = time.perf_counter() - t0
+    _record_stage("cc_scan", cc_dur)
 
-    # 6b. Run portfolio allocator (MILP optimizer) on combined candidates
+    # ── 6b. Portfolio allocator (MILP optimizer) ──────────────────────
     if portfolio_allocator and (result.csp_candidates or result.cc_candidates):
+        t0 = time.perf_counter()
         try:
             held_shares: dict[str, int] = {}
             for pos in positions:
@@ -303,19 +390,25 @@ async def run_morning_scan(
                 conviction_signals=conviction_data_for_alloc,
                 held_shares=held_shares,
             )
+            alloc_dur = time.perf_counter() - t0
+            _record_stage("portfolio_allocation", alloc_dur)
             logger.info(
                 "portfolio_allocation_complete",
                 trades=result.allocation.positions_used,
                 total_premium=result.allocation.total_premium,
                 utilization=result.allocation.capital_utilization_pct,
                 solver=result.allocation.solver_status,
+                duration_ms=round(alloc_dur * 1000, 2),
             )
         except Exception:
-            logger.warning("portfolio_allocation_failed", exc_info=True)
+            alloc_dur = time.perf_counter() - t0
+            _record_stage("portfolio_allocation", alloc_dur)
+            scanner_errors.add(1, {"stage": "portfolio_allocation", "error_type": "exception"})
+            logger.warning("portfolio_allocation_failed", duration_ms=round(alloc_dur * 1000, 2), exc_info=True)
 
-    # 7. LLM analysis — per-ticker, parallel with semaphore.
-    #    Group candidates by ticker, send one focused LLM call per ticker.
+    # ── 7. LLM analysis — per-ticker, parallel with semaphore ─────────
     if analysis_agent and result.csp_candidates:
+        t0 = time.perf_counter()
         ticker_candidates: dict[str, list[ScoredCandidate]] = {}
         for c in result.csp_candidates:
             ticker_candidates.setdefault(c.symbol, []).append(c)
@@ -338,8 +431,9 @@ async def run_morning_scan(
                 earnings_for_ticker = {
                     k: v for k, v in result.earnings_context.items() if k == ticker
                 }
+                ticker_t0 = time.perf_counter()
                 try:
-                    return await analysis_agent.analyze_csp_candidates(
+                    analyses = await analysis_agent.analyze_csp_candidates(
                         candidates=cands,
                         balance=balance,
                         positions=positions,
@@ -347,8 +441,19 @@ async def run_morning_scan(
                         conviction_signals=conviction_data or None,
                         effective_buying_power=effective_buying_power,
                     )
+                    ticker_dur = time.perf_counter() - ticker_t0
+                    llm_call_duration.record(ticker_dur, {"ticker": ticker, "model": "gemini"})
+                    return analyses
                 except Exception:
-                    logger.warning("llm_ticker_failed", ticker=ticker, exc_info=True)
+                    ticker_dur = time.perf_counter() - ticker_t0
+                    llm_call_duration.record(ticker_dur, {"ticker": ticker, "model": "gemini"})
+                    scanner_errors.add(1, {"stage": "llm_analysis", "error_type": "exception"})
+                    logger.warning(
+                        "llm_ticker_failed",
+                        ticker=ticker,
+                        duration_ms=round(ticker_dur * 1000, 2),
+                        exc_info=True,
+                    )
                     return []
 
         tasks = [_analyze_ticker(t) for t in tickers_to_analyze]
@@ -357,11 +462,19 @@ async def run_morning_scan(
         for analyses in all_analyses:
             result.csp_analyses.extend(analyses)
 
+        llm_dur = time.perf_counter() - t0
+        _record_stage("llm_analysis", llm_dur)
         logger.info(
             "llm_parallel_complete",
             tickers_analyzed=len(tickers_to_analyze),
             analyses_returned=len(result.csp_analyses),
+            duration_ms=round(llm_dur * 1000, 2),
         )
+
+    # ── Summary ───────────────────────────────────────────────────────
+    total_dur = time.perf_counter() - scan_start
+    result.total_duration_ms = total_dur * 1000
+    scanner_total_duration.record(total_dur)
 
     logger.info(
         "morning_scan_complete",
@@ -371,5 +484,6 @@ async def run_morning_scan(
         llm_analyses=len(result.csp_analyses),
         conviction_signals=len(result.conviction_signals),
         errors=len(result.errors),
+        duration_ms=round(result.total_duration_ms, 2),
     )
     return result

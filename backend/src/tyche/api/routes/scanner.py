@@ -244,4 +244,5 @@ def _serialize_scan_result(result: MorningScanResult) -> dict[str, Any]:
             for t in (result.allocation.trades if result.allocation else [])
         ],
         "errors": result.errors,
+        "total_duration_ms": round(result.total_duration_ms, 2),
     }

@@ -27,6 +27,11 @@ env/
 
 # Secrets / tokens
 .github_pat_token
+*.pem
+*.key
+*-credentials.json
+*-service-account.json
+gcp-*.json
 
 # Database
 *.db
@@ -68,3 +73,8 @@ backend/data/
 
 # Database files (SQLite)
 backend/db/
+
+# Terraform / IaC state
+*.tfstate
+*.tfstate.backup
+.terraform/

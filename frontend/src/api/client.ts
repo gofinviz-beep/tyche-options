@@ -1,32 +1,52 @@
+import { telemetry } from "@/lib/telemetry";
+
 const BASE_URL = "/api/v1";
 
 async function request<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(`${BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json", ...options.headers },
-    ...options,
-  });
+  const start = performance.now();
+  let status = 0;
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }));
-    let message: string;
-    if (typeof error.detail === "string") {
-      message = error.detail;
-    } else if (Array.isArray(error.detail)) {
-      message = error.detail
-        .map((e: { msg?: string; loc?: string[] }) =>
-          e.msg ? `${(e.loc ?? []).slice(-1).join(".")}: ${e.msg}` : JSON.stringify(e),
-        )
-        .join("; ");
-    } else {
-      message = `Request failed: ${response.status}`;
+  try {
+    const response = await fetch(`${BASE_URL}${path}`, {
+      headers: { "Content-Type": "application/json", ...options.headers },
+      ...options,
+    });
+
+    status = response.status;
+    const durationMs = performance.now() - start;
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      let message: string;
+      if (typeof error.detail === "string") {
+        message = error.detail;
+      } else if (Array.isArray(error.detail)) {
+        message = error.detail
+          .map((e: { msg?: string; loc?: string[] }) =>
+            e.msg ? `${(e.loc ?? []).slice(-1).join(".")}: ${e.msg}` : JSON.stringify(e),
+          )
+          .join("; ");
+      } else {
+        message = `Request failed: ${response.status}`;
+      }
+      telemetry.reportError(path, status, message, durationMs);
+      throw new Error(message);
     }
-    throw new Error(message);
-  }
 
-  return response.json();
+    telemetry.reportTiming(path, durationMs, status);
+    return response.json();
+  } catch (err) {
+    const durationMs = performance.now() - start;
+    if (status === 0) {
+      telemetry.reportError(path, 0, (err as Error).message, durationMs, {
+        network_error: true,
+      });
+    }
+    throw err;
+  }
 }
 
 export const api = {

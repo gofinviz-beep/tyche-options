@@ -9,16 +9,19 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from tyche.api.middleware import RequestTimingMiddleware, global_exception_handler
 from tyche.config import get_settings
 from tyche.logging import configure_logging
 from tyche.models.scan import LLMAnalysisRecord, ScanCandidate, ScanRun
 from tyche.persistence.database import (
+    check_db_health,
     create_tables,
     create_tables_for_models,
     dispose_engine,
     init_db,
     init_scanner_dbs,
 )
+from tyche.telemetry import configure_telemetry, shutdown_telemetry
 
 logger = structlog.get_logger()
 
@@ -91,13 +94,21 @@ async def _scheduled_morning_scan() -> None:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
     settings = get_settings()
-    configure_logging()
+
+    configure_telemetry(
+        service_name=settings.otel_service_name,
+        gcp_project_id=settings.gcp_project_id,
+        enabled=settings.otel_enabled,
+    )
+    configure_logging(log_level=settings.log_level)
 
     logger.info(
         "tyche_starting",
         sandbox=settings.tradier_sandbox,
         preview_only=settings.preview_only_mode,
         watchlist_count=len(settings.watchlist_symbols),
+        otel_enabled=settings.otel_enabled,
+        gcp_project=bool(settings.gcp_project_id),
     )
 
     init_db(settings.effective_database_url)
@@ -119,6 +130,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     scheduler.shutdown()
     await dispose_engine()
+    shutdown_telemetry()
     logger.info("tyche_shutdown")
 
 
@@ -133,6 +145,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.add_middleware(RequestTimingMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://localhost:3000"],
@@ -140,6 +153,22 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.add_exception_handler(Exception, global_exception_handler)
+
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app)
+    except Exception:
+        pass
+
+    try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+        HTTPXClientInstrumentor().instrument()
+    except Exception:
+        pass
 
     from tyche.api.routes import (
         account,
@@ -150,6 +179,7 @@ def create_app() -> FastAPI:
         orders,
         scanner,
         system,
+        telemetry,
         watchlist,
     )
 
@@ -162,6 +192,7 @@ def create_app() -> FastAPI:
     app.include_router(conviction.router, prefix="/api/v1")
     app.include_router(intents.router, prefix="/api/v1")
     app.include_router(monitor.router, prefix="/api/v1")
+    app.include_router(telemetry.router, prefix="/api/v1")
 
     @app.get("/health")
     async def health_check() -> dict[str, str]:
@@ -169,6 +200,16 @@ def create_app() -> FastAPI:
             "status": "ok",
             "mode": "sandbox" if settings.tradier_sandbox else "live",
             "trading": "preview_only" if settings.preview_only_mode else "live_enabled",
+        }
+
+    @app.get("/health/ready")
+    async def readiness_check() -> dict[str, str | bool]:
+        db_ok = await check_db_health()
+        status = "ok" if db_ok else "degraded"
+        return {
+            "status": status,
+            "database": db_ok,
+            "mode": "sandbox" if settings.tradier_sandbox else "live",
         }
 
     return app

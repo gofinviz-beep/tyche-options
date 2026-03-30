@@ -25,9 +25,16 @@ The frontend uses a **modular sidebar** with collapsible sections:
 
 ## API Layer
 
-- `api/client.ts` — typed `request<T>()` wrapper around fetch. All endpoints under `/api/v1`. Parses FastAPI 422 validation errors into human-readable strings.
+- `api/client.ts` — typed `request<T>()` wrapper around fetch. All endpoints under `/api/v1`. Parses FastAPI 422 validation errors into human-readable strings. Includes per-request timing via `performance.now()` and reports errors/slow requests to the telemetry library.
 - `hooks/useApi.ts` — react-query hooks wrapping every API call. Mutations invalidate relevant query keys.
 - `types/index.ts` — must match backend response shapes exactly. Update when backend changes. Includes `ScanHistoryEntry`.
+- `lib/telemetry.ts` — Batched frontend telemetry reporter. Queues error, timing, and crash events in an in-memory buffer (max 50). Flushes to `POST /api/v1/telemetry/events` every 10s or on page unload. Auto-starts on import.
+
+## Error Handling
+
+- `components/ErrorBoundary.tsx` — Class component wrapping `<App />` in `main.tsx`. Catches React render crashes via `componentDidCatch`, reports to `telemetry.reportCrash()`, and shows a recovery UI with a "Reload Page" button.
+- API errors are reported via `telemetry.reportError()` in `client.ts`. Network failures (status 0) are tagged with `network_error: true`.
+- Slow requests (>5s) are automatically reported as timing events.
 
 ## Pages
 

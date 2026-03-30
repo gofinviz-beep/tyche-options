@@ -28,6 +28,16 @@ alwaysApply: true
 - **Scanner allocation types.** `ScanResult` includes typed `allocation: AllocationSummary | null` and `allocated_trades: AllocatedTrade[]`. Persisted scans have a slimmer `AllocationSummary` (missing `trades`, `total_collateral`, `positions_used`) — use optional fields.
 - **Allocation Playground is client-side only.** The "Customize Allocation" playground in the Scanner page is purely frontend state. No backend API call — all math (premium, commission, collateral) is computed locally using `bid * 100` for premium and `strike * 100` for collateral per contract. Commission is hardcoded at `$0.65/contract`.
 
+## Observability
+
+- **OTel console exporters active locally.** When `TYCHE_GCP_PROJECT_ID` is empty (default), OpenTelemetry uses console exporters — metrics and trace spans are printed to stdout alongside structlog JSON. Set `TYCHE_OTEL_ENABLED=false` to disable entirely.
+- **Every log line carries `trace_id` / `span_id`.** The structlog processor `_inject_otel_context` injects OTel trace context into all log events, linking them to Cloud Trace when running on GCP.
+- **`RequestTimingMiddleware` adds `X-Request-Id` header** and binds it to structlog contextvars. If the client sends `X-Request-Id`, it is reused.
+- **`/health` is shallow (liveness), `/health/ready` checks DB.** The readiness check runs `SELECT 1` against the default engine. If DB is unreachable, returns `{"status": "degraded", "database": false}`.
+- **Scanner `PipelineStage` now includes `duration_ms`.** All pipeline stages and the total scan duration are timed and recorded as OTel histogram metrics (`scanner.stage.duration`, `scanner.total.duration`).
+- **Frontend telemetry is batched.** `lib/telemetry.ts` buffers events and flushes to `POST /api/v1/telemetry/events` every 10s or on page unload. Max 50 events per batch.
+- **ErrorBoundary wraps the app.** React render crashes are caught, reported via `telemetry.reportCrash()`, and shown as a recovery UI.
+
 ## LLM (Gemini)
 
 - **Premium unit confusion:** LLM sometimes returns per-contract instead of per-share. Sanity check in `intent_builder.py` auto-corrects if `premium > strike`.

@@ -25,6 +25,13 @@ dependencies = [
     "numpy>=2.0",
     "scipy>=1.12",
     "click>=8.1",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp>=1.27",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "opentelemetry-exporter-gcp-monitoring>=1.8.0a0",
+    "opentelemetry-exporter-gcp-trace>=1.8.0a0",
 ]
 
 [project.optional-dependencies]

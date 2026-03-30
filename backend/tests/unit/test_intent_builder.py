@@ -175,7 +175,7 @@ class TestCreateIntentsFromScan:
 
         assert len(intents) == 1
         assert intents[0].option_symbol is None
-        assert intents[0].conviction_level == "high"
+        assert intents[0].conviction_level == "none"  # min(EMA=none, LLM=high)
 
     @pytest.mark.asyncio
     async def test_picks_best_candidate_by_score(self):

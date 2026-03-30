@@ -74,6 +74,7 @@ class GeminiClient:
 
         for current_model in models_to_try:
             delay = _BASE_DELAY_S
+            non_retryable = False
             for attempt in range(1, _MAX_RETRIES + 1):
                 try:
                     response = await asyncio.to_thread(
@@ -109,7 +110,10 @@ class GeminiClient:
                     break
                 except Exception as exc:
                     last_exc = exc
+                    non_retryable = True
                     break
+            if non_retryable:
+                break
 
         raise last_exc or LLMResponseError("All model attempts failed")
 
