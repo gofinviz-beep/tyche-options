@@ -104,22 +104,33 @@ Samples price at 30-minute intervals (9:30 AM to 3:30 PM ET) and simulates CSP o
 ## Tests
 
 ```bash
-pytest
+pytest                                # All unit tests (245 tests, ~35s)
+pytest tests/unit/ -q --no-header     # Quiet mode with coverage summary
+pytest tests/unit/test_conviction.py  # Single module
 ```
+
+Current coverage: **69% overall** (100% on `morning_scan.py` and `analysis/client.py`).
 
 ## Architecture
 
-The system follows a conviction-first pipeline:
+The system follows a conviction-first pipeline with 10 stages:
 
 ```
-Universe filters (market cap, exchange, price, volume)
-    → ConvictionEngine (8/21 EMA trend + extension cap + days-above streak)
-    → Tradier (live quotes + options chains)
-    → PortfolioAllocator (MILP optimizer)
-    → Human approval → Order execution
+1. Account state (balances, positions, open orders from Tradier)
+2. Universe filters (market cap ≥ $5B, exchange, price ≥ $15, volume ≥ 500K)
+3. ConvictionEngine (8/21 EMA trend + extension cap ≤ 3% + days-above 5-10)
+4. Institutional ownership filter (≥ 40%)
+5. Earnings calendar check
+6. CSP candidate scan (Tradier options chains, day-aware expiration targeting)
+7. CC candidate scan (held shares with ≥ 100 qty)
+8. PortfolioAllocator (MILP optimizer with delta-penalized risk weight)
+9. Per-ticker parallel LLM analysis (Gemini, semaphore-controlled)
+10. Risk gate → OrderIntent creation → Persist to SQLite
 ```
 
-Key technologies: FastAPI, Tradier, Polygon.io, Google Gemini, Apache Parquet, scipy MILP.
+All stages are timed via OpenTelemetry. Results persist across restarts.
+
+Key technologies: FastAPI, Tradier, Polygon.io, Google Gemini, Apache Parquet, scipy MILP, OpenTelemetry.
 
 ## Documentation
 

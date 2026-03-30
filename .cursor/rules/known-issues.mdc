@@ -8,7 +8,7 @@ alwaysApply: true
 ## Backend
 
 - **`uvicorn --reload` sometimes misses file changes.** If API responses don't reflect code edits, manually restart: `./scripts/stop-backend.sh && ./scripts/start-backend.sh`
-- **Pydantic-settings list parsing:** List fields in `.env` must be JSON arrays (e.g. `TYCHE_WATCHLIST_SYMBOLS=["AAPL","FSLY"]`), NOT comma-separated. The `PATCH /system/config` endpoint handles this via `json.dumps()`.
+- **Pydantic-settings list parsing:** List fields in `.env` must be JSON arrays (e.g. `TYCHE_WATCHLIST_SYMBOLS=["AAPL","FSLY"]`), NOT comma-separated. The `PATCH /api/v1/system/config` endpoint handles this via `json.dumps()`.
 - **Do NOT `source .env` in shell scripts.** Pydantic-settings reads `.env` directly. Shell-sourcing mangles JSON arrays.
 - **Tradier `get_options_chain` can return `None` options data** when market is closed. Always use `options_data = data.get("options") or {}` pattern.
 - **Position Monitor is in-memory only.** Tracked positions are lost on backend restart. Future: persist to SQLite.
@@ -43,3 +43,12 @@ alwaysApply: true
 - **Premium unit confusion:** LLM sometimes returns per-contract instead of per-share. Sanity check in `intent_builder.py` auto-corrects if `premium > strike`.
 - **LLM numbers are never trusted for display.** All numerical intent fields use broker data via `_resolve_numeric()`. LLM provides thesis, risks, confidence only.
 - **Combined conviction = min(EMA, LLM).** Never show optimistic EMA conviction when LLM confidence is low.
+- **GeminiClient retry is ServerError-only.** `_call_with_retry` retries with exponential backoff on 503/429 `ServerError`, and falls back to the secondary model (e.g. `gemini-2.5-flash`) when the primary is exhausted. Non-`ServerError` exceptions (e.g. `ValueError`, `LLMResponseError`) immediately propagate — they do NOT trigger fallback, since the same bad input would fail identically on the fallback model.
+
+## Testing
+
+- **245 unit tests, 69% overall coverage.** Run with `cd backend && pytest tests/unit/`.
+- **`morning_scan.py` and `analysis/client.py` are at 100% coverage.** Every error branch, timing path, retry/fallback, and LLM integration path is tested.
+- **MockBroker provides deterministic test data.** Uses PL and AAPL positions with realistic prices. Located in `broker/mock.py`.
+- **Tests never hit real APIs.** External calls (Tradier, Gemini, yfinance) are mocked via `unittest.mock.AsyncMock` / `MagicMock`.
+- **Conviction tests use `_fresh_uptrend` helper.** Generates uptrend data with a temporary dip to reset the days-above-EMA streak, preventing false failures from the `max_days_above_emas` rule.
