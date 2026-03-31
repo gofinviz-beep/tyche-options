@@ -28,6 +28,7 @@ class ConvictionSignalResponse(BaseModel):
     trend_state: str
     conviction_level: str
     csp_eligible: bool
+    is_watchlist: bool = False
     last_close: float
     ema_8: float
     ema_21: float
@@ -44,6 +45,18 @@ class ConvictionSignalResponse(BaseModel):
     gate_results: list[GateResultResponse] = []
 
 
+class TrendSummary(BaseModel):
+    """Breakdown of how many tickers are in each trend state."""
+
+    strong_uptrend: int = 0
+    uptrend: int = 0
+    pullback_to_8ema: int = 0
+    pullback_to_21ema: int = 0
+    consolidation: int = 0
+    downtrend: int = 0
+    insufficient_data: int = 0
+
+
 class ConvictionScanResponse(BaseModel):
     """Result of a conviction scan across multiple tickers."""
 
@@ -51,6 +64,10 @@ class ConvictionScanResponse(BaseModel):
     scanned_at: str
     total_screened: int
     eligible_count: int
+    uptrend_eligible: int = 0
+    pullback_eligible: int = 0
+    pullback_count: int = 0
+    trend_summary: TrendSummary | None = None
     signals: list[ConvictionSignalResponse]
 
 

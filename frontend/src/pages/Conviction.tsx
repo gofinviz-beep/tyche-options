@@ -9,8 +9,8 @@ import {
   useConvictionScan,
   useTriggerConvictionScan,
 } from "@/hooks/useApi";
-import type { ConvictionSignal } from "@/types";
-import { ChevronDown, ChevronRight, Check, X, Minus, Database } from "lucide-react";
+import type { ConvictionSignal, TrendSummary } from "@/types";
+import { ChevronDown, ChevronRight, Check, X, Minus, Database, Star } from "lucide-react";
 import { convictionSortValue } from "@/lib/format";
 
 const TREND_VARIANT: Record<string, "success" | "warning" | "danger" | "neutral" | "info"> = {
@@ -31,7 +31,10 @@ const signalColumns: DataTableColumn<ConvictionSignal>[] = [
     sortable: true,
     width: "90px",
     render: (r) => (
-      <span className="font-mono font-bold text-gray-900">{r.ticker}</span>
+      <span className="flex items-center gap-1 font-mono font-bold text-gray-900">
+        {r.ticker}
+        {r.is_watchlist && <Star className="h-3 w-3 fill-amber-400 text-amber-400" />}
+      </span>
     ),
   },
   {
@@ -96,16 +99,21 @@ const signalColumns: DataTableColumn<ConvictionSignal>[] = [
   },
   {
     key: "days_above_both_emas",
-    header: "Days Above",
-    accessor: (r) => r.days_above_both_emas,
+    header: "Streak",
+    accessor: (r) => r.trend_state.startsWith("pullback") ? r.prior_streak : r.days_above_both_emas,
     sortable: true,
     align: "right",
-    render: (r) =>
-      r.last_close > 0 ? (
-        <span className="text-gray-700">{r.days_above_both_emas}d</span>
-      ) : (
-        <span className="text-gray-300">—</span>
-      ),
+    render: (r) => {
+      if (r.last_close <= 0) return <span className="text-gray-300">—</span>;
+      if (r.trend_state.startsWith("pullback")) {
+        return (
+          <span className="font-mono text-xs text-blue-600" title="Prior streak before pullback">
+            {r.prior_streak}d prior
+          </span>
+        );
+      }
+      return <span className="text-gray-700">{r.days_above_both_emas}d</span>;
+    },
   },
   {
     key: "csp_eligible",
@@ -150,8 +158,19 @@ export function Conviction() {
     manualScan.mutate(symbols || undefined);
   };
 
+  const pullbackEligible = scanData?.signals.filter(
+    (s) => s.csp_eligible && s.trend_state.startsWith("pullback"),
+  ) ?? [];
+  const uptrendEligible = scanData?.signals.filter(
+    (s) => s.csp_eligible && !s.trend_state.startsWith("pullback"),
+  ) ?? [];
+  const pullbackNotEligible = scanData?.signals.filter(
+    (s) => !s.csp_eligible && s.trend_state.startsWith("pullback"),
+  ) ?? [];
   const eligible = scanData?.signals.filter((s) => s.csp_eligible) ?? [];
-  const excluded = scanData?.signals.filter((s) => !s.csp_eligible) ?? [];
+  const excluded = scanData?.signals.filter(
+    (s) => !s.csp_eligible && !s.trend_state.startsWith("pullback"),
+  ) ?? [];
 
   const storeReady = !!status?.exists;
 
@@ -160,9 +179,8 @@ export function Conviction() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Conviction Engine</h1>
         <p className="mt-1 text-sm text-gray-500">
-          8/21 EMA trend analysis — identify stocks with strong uptrends for
-          selling cash-secured puts. Expand any row to see the full eligibility
-          pipeline.
+          8/21 EMA trend analysis — pullback CSPs (Path B, 76.8% win rate) are
+          shown first, followed by uptrend CSPs (Path A). Full universe scan.
         </p>
       </div>
 
@@ -232,28 +250,44 @@ export function Conviction() {
               <span className="text-gray-400">Screened: </span>
               <span className="font-semibold text-gray-900">{scanData.total_screened}</span>
             </div>
-            <div className="rounded-lg border border-gray-200 bg-white px-4 py-2 shadow-sm">
-              <span className="text-gray-400">Returned: </span>
-              <span className="font-semibold text-gray-900">{scanData.signals.length}</span>
-            </div>
-            <div className={`rounded-lg border px-4 py-2 shadow-sm ${eligible.length > 0 ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
-              <span className={eligible.length > 0 ? "text-emerald-600" : "text-amber-600"}>
-                CSP Eligible: {eligible.length}
+            <div className={`rounded-lg border px-4 py-2 shadow-sm ${pullbackEligible.length > 0 ? "border-blue-200 bg-blue-50" : "border-gray-200 bg-gray-50"}`}>
+              <span className={pullbackEligible.length > 0 ? "text-blue-600 font-semibold" : "text-gray-500"}>
+                Pullback CSP: {pullbackEligible.length}
               </span>
             </div>
-            {excluded.length > 0 && (
-              <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2">
-                <span className="text-gray-500">
-                  Excluded: {excluded.length}
+            <div className={`rounded-lg border px-4 py-2 shadow-sm ${uptrendEligible.length > 0 ? "border-emerald-200 bg-emerald-50" : "border-gray-200 bg-gray-50"}`}>
+              <span className={uptrendEligible.length > 0 ? "text-emerald-600" : "text-gray-500"}>
+                Uptrend CSP: {uptrendEligible.length}
+              </span>
+            </div>
+            {(scanData.pullback_count ?? 0) > 0 && (
+              <div className="rounded-lg border border-blue-100 bg-blue-50/50 px-4 py-2 shadow-sm">
+                <span className="text-blue-500">
+                  Pullbacks Detected: {scanData.pullback_count}
                 </span>
               </div>
             )}
           </div>
 
-          {eligible.length > 0 && (
-            <Card title="CSP Eligible" subtitle={`${eligible.length} ticker(s) passed all gates`}>
+          {scanData.trend_summary && (
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-7">
+              <TrendPill label="Strong Up" count={scanData.trend_summary.strong_uptrend} color="emerald" />
+              <TrendPill label="Uptrend" count={scanData.trend_summary.uptrend} color="green" />
+              <TrendPill label="PB → 8EMA" count={scanData.trend_summary.pullback_to_8ema} color="blue" />
+              <TrendPill label="PB → 21EMA" count={scanData.trend_summary.pullback_to_21ema} color="indigo" />
+              <TrendPill label="Consolidation" count={scanData.trend_summary.consolidation} color="gray" />
+              <TrendPill label="Downtrend" count={scanData.trend_summary.downtrend} color="red" />
+              <TrendPill label="No Data" count={scanData.trend_summary.insufficient_data} color="gray" />
+            </div>
+          )}
+
+          {pullbackEligible.length > 0 && (
+            <Card
+              title="Pullback CSP Eligible (Path B)"
+              subtitle={`${pullbackEligible.length} ticker(s) pulling back to EMA support with confirmed prior uptrend — highest win rate`}
+            >
               <DataTable
-                data={eligible}
+                data={pullbackEligible}
                 columns={signalColumns}
                 searchField={(r) => r.ticker}
                 rowKey={(r) => r.ticker}
@@ -265,10 +299,13 @@ export function Conviction() {
             </Card>
           )}
 
-          {excluded.length > 0 && (
-            <Card title="Excluded" subtitle={`${excluded.length} ticker(s) failed one or more gates — expand to see why`}>
+          {pullbackNotEligible.length > 0 && (
+            <Card
+              title="Pullbacks Forming"
+              subtitle={`${pullbackNotEligible.length} ticker(s) pulling back to EMA but not yet CSP-eligible — expand to see why`}
+            >
               <DataTable
-                data={excluded}
+                data={pullbackNotEligible}
                 columns={signalColumns}
                 searchField={(r) => r.ticker}
                 rowKey={(r) => r.ticker}
@@ -280,15 +317,34 @@ export function Conviction() {
             </Card>
           )}
 
-          {scanData.signals.length === 0 && (
+          {uptrendEligible.length > 0 && (
+            <Card
+              title="Uptrend CSP Eligible (Path A)"
+              subtitle={`${uptrendEligible.length} ticker(s) above both EMAs in the sweet spot`}
+            >
+              <DataTable
+                data={uptrendEligible}
+                columns={signalColumns}
+                searchField={(r) => r.ticker}
+                rowKey={(r) => r.ticker}
+                defaultSortKey="conviction_level"
+                defaultSortDir="desc"
+                defaultPageSize={15}
+                expandedRow={(r) => <SignalDetail signal={r} />}
+              />
+            </Card>
+          )}
+
+          {eligible.length === 0 && pullbackNotEligible.length === 0 && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
               <p className="text-sm font-medium text-amber-600">
-                Scan completed — no tickers returned
+                No CSP-eligible tickers found
               </p>
               <p className="mt-1 text-xs text-gray-400">
-                {scanData.total_screened} ticker(s) were requested but none had
-                data in the OHLCV store. Try updating the data store or
-                checking ticker symbols.
+                {scanData.total_screened} ticker(s) screened.
+                {(scanData.pullback_count ?? 0) === 0
+                  ? " No stocks are currently pulling back to their EMAs in the universe."
+                  : ` ${scanData.pullback_count} pullback(s) detected but none met the prior streak or slope requirements.`}
               </p>
             </div>
           )}
@@ -432,7 +488,12 @@ function SignalDetail({ signal: s }: { signal: ConvictionSignal }) {
             <MetricRow label="EMA 8" value={`$${s.ema_8.toFixed(2)}`} />
             <MetricRow label="EMA 21" value={`$${s.ema_21.toFixed(2)}`} />
             <MetricRow label="8-EMA Dist" value={`${s.price_to_8ema_pct.toFixed(2)}%`} />
-            <MetricRow label="Days Above" value={`${s.days_above_both_emas}d`} />
+            <MetricRow label="21-EMA Dist" value={`${s.price_to_21ema_pct.toFixed(2)}%`} />
+            {s.trend_state.startsWith("pullback") ? (
+              <MetricRow label="Prior Streak" value={`${s.prior_streak}d`} />
+            ) : (
+              <MetricRow label="Days Above" value={`${s.days_above_both_emas}d`} />
+            )}
             <MetricRow label="Volume" value={s.latest_volume.toLocaleString()} />
             <MetricRow label="Avg Vol 20d" value={s.avg_volume_20d.toLocaleString()} />
           </div>
@@ -456,6 +517,24 @@ function DataStat({ label, value }: { label: string; value: string }) {
     <div>
       <p className="text-xs text-gray-400">{label}</p>
       <p className="mt-0.5 text-sm font-semibold text-gray-900">{value}</p>
+    </div>
+  );
+}
+
+const PILL_COLORS: Record<string, string> = {
+  emerald: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  green: "bg-green-50 text-green-700 border-green-200",
+  blue: "bg-blue-50 text-blue-700 border-blue-200",
+  indigo: "bg-indigo-50 text-indigo-700 border-indigo-200",
+  gray: "bg-gray-50 text-gray-500 border-gray-200",
+  red: "bg-red-50 text-red-600 border-red-200",
+};
+
+function TrendPill({ label, count, color }: { label: string; count: number; color: string }) {
+  return (
+    <div className={`rounded-lg border px-3 py-1.5 text-center text-xs ${PILL_COLORS[color] ?? PILL_COLORS.gray}`}>
+      <div className="font-semibold">{count}</div>
+      <div className="text-[10px] opacity-70">{label}</div>
     </div>
   );
 }

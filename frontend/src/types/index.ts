@@ -71,6 +71,7 @@ export interface ConvictionSignal {
   conviction_level: string;
   raw_conviction: string;
   csp_eligible: boolean;
+  is_watchlist: boolean;
   last_close: number;
   ema_8: number;
   ema_21: number;
@@ -214,11 +215,25 @@ export interface DataStoreStatus {
   parquet_path: string;
 }
 
+export interface TrendSummary {
+  strong_uptrend: number;
+  uptrend: number;
+  pullback_to_8ema: number;
+  pullback_to_21ema: number;
+  consolidation: number;
+  downtrend: number;
+  insufficient_data: number;
+}
+
 export interface ConvictionScanResult {
   scan_id: string;
   scanned_at: string;
   total_screened: number;
   eligible_count: number;
+  uptrend_eligible: number;
+  pullback_eligible: number;
+  pullback_count: number;
+  trend_summary: TrendSummary | null;
   signals: ConvictionSignal[];
 }
 

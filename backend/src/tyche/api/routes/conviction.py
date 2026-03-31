@@ -21,6 +21,7 @@ from tyche.config import TycheSettings
 from tyche.conviction.engine import ConvictionEngine, ConvictionSignal
 from tyche.market_data.data_store import OHLCVStore, bootstrap_ohlcv
 from tyche.market_data.polygon import PolygonClient
+from tyche.conviction.engine import TrendState as _TS
 from tyche.schemas.conviction import (
     BootstrapRequest,
     BootstrapResponse,
@@ -28,6 +29,7 @@ from tyche.schemas.conviction import (
     ConvictionSignalResponse,
     DataStoreStatusResponse,
     GateResultResponse,
+    TrendSummary,
 )
 
 logger = structlog.get_logger()
@@ -120,11 +122,15 @@ async def scan_conviction(
     store: OHLCVStore = Depends(get_data_store),
     settings: TycheSettings = Depends(get_settings),
 ) -> ConvictionScanResponse:
-    """Run the conviction engine on specified symbols, watchlist, or dynamic discovery.
+    """Run the conviction engine across the full universe.
 
-    Results are cached by (latest OHLCV date, ticker set).  Since OHLCV
-    data only changes once per day, subsequent calls with the same tickers
-    return the cached result instantly.  Use ``force=true`` to bypass.
+    Always scans the full screened universe (not limited to watchlist).
+    Watchlist tickers are tagged with ``is_watchlist=true`` for display.
+    Results include both CSP-eligible stocks AND pullback-state stocks
+    (even if not yet eligible) so the user can see opportunities forming.
+
+    Results are cached by (latest OHLCV date, ticker set).
+    Use ``force=true`` to bypass cache.
     """
     if not store.exists:
         raise HTTPException(
@@ -134,8 +140,6 @@ async def scan_conviction(
 
     if symbols:
         tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    elif settings.watchlist_symbols:
-        tickers = settings.watchlist_symbols
     else:
         tickers = store.screen_universe(
             min_avg_volume=settings.min_avg_volume,
@@ -145,6 +149,10 @@ async def scan_conviction(
 
     if not tickers:
         raise HTTPException(status_code=400, detail="No symbols found after screening.")
+
+    watchlist_set = frozenset(
+        s.upper() for s in (settings.watchlist_symbols or [])
+    )
 
     cache_key = _make_cache_key(store, tickers)
     if not force and cache_key in _scan_cache:
@@ -165,21 +173,55 @@ async def scan_conviction(
             detail="No data found for the requested symbols.",
         )
 
+    # --- Trend breakdown ---
+    trend_counts: dict[str, int] = {}
+    for s in signals:
+        trend_counts[s.trend_state.value] = trend_counts.get(s.trend_state.value, 0) + 1
+
+    pullback_states = (_TS.PULLBACK_TO_8EMA, _TS.PULLBACK_TO_21EMA)
+    uptrend_states = (_TS.STRONG_UPTREND, _TS.UPTREND)
+
     eligible = [s for s in signals if s.csp_eligible]
-    eligible.sort(
-        key=lambda s: (
-            {"high": 0, "medium": 1, "low": 2}.get(s.conviction_level, 3),
+    pullback_all = [
+        s for s in signals if s.trend_state in pullback_states
+    ]
+    pullback_eligible_list = [s for s in eligible if s.trend_state in pullback_states]
+    uptrend_eligible_list = [s for s in eligible if s.trend_state in uptrend_states]
+
+    if symbols:
+        display_signals = signals
+    else:
+        pullback_not_eligible = [
+            s for s in pullback_all if not s.csp_eligible
+        ]
+        display_signals = eligible + pullback_not_eligible
+
+        conviction_order = {"high": 0, "medium": 1, "low": 2, "none": 3}
+        display_signals.sort(key=lambda s: (
+            0 if (s.csp_eligible and s.trend_state in pullback_states) else
+            1 if s.csp_eligible else
+            2,
+            conviction_order.get(s.conviction_level, 99),
+            -s.prior_streak,
             -s.days_above_both_emas,
-        )
-    )
-    display_signals = eligible[:limit] if not symbols else signals
+        ))
+        display_signals = display_signals[:limit]
 
     response = ConvictionScanResponse(
         scan_id=str(uuid.uuid4()),
         scanned_at=datetime.now(timezone.utc).isoformat(),
         total_screened=len(tickers),
         eligible_count=len(eligible),
-        signals=[_signal_to_response(s) for s in display_signals],
+        uptrend_eligible=len(uptrend_eligible_list),
+        pullback_eligible=len(pullback_eligible_list),
+        pullback_count=len(pullback_all),
+        trend_summary=TrendSummary(**{
+            k: trend_counts.get(k, 0) for k in TrendSummary.model_fields
+        }),
+        signals=[
+            _signal_to_response(s, is_watchlist=s.ticker in watchlist_set)
+            for s in display_signals
+        ],
     )
 
     _scan_cache[cache_key] = response
@@ -188,6 +230,9 @@ async def scan_conviction(
         "conviction_scan_computed_and_cached",
         tickers=len(tickers),
         eligible=len(eligible),
+        pullback_eligible=len(pullback_eligible_list),
+        pullback_total=len(pullback_all),
+        uptrend_eligible=len(uptrend_eligible_list),
         duration_ms=round(dur_ms, 2),
     )
     return response
@@ -217,12 +262,15 @@ async def get_ticker_conviction(
     return _signal_to_response(signal)
 
 
-def _signal_to_response(s: ConvictionSignal) -> ConvictionSignalResponse:
+def _signal_to_response(
+    s: ConvictionSignal, *, is_watchlist: bool = False,
+) -> ConvictionSignalResponse:
     return ConvictionSignalResponse(
         ticker=s.ticker,
         trend_state=s.trend_state.value,
         conviction_level=s.conviction_level,
         csp_eligible=s.csp_eligible,
+        is_watchlist=is_watchlist,
         last_close=round(s.last_close, 2),
         ema_8=round(s.ema_8, 4),
         ema_21=round(s.ema_21, 4),
@@ -234,6 +282,7 @@ def _signal_to_response(s: ConvictionSignal) -> ConvictionSignalResponse:
         avg_volume_20d=s.avg_volume_20d,
         latest_volume=s.latest_volume,
         days_above_both_emas=s.days_above_both_emas,
+        prior_streak=s.prior_streak,
         as_of_date=s.as_of_date.isoformat() if s.as_of_date else None,
         gate_results=[
             GateResultResponse(
