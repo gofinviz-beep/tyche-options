@@ -335,6 +335,74 @@ class TestBatchSortingWithPullbacks:
         assert levels == sorted(levels)
 
 
+class TestEngineCache:
+    """Tests for per-ticker conviction result caching."""
+
+    def test_cache_hit_returns_same_signal(self):
+        engine = ConvictionEngine()
+        df = _make_ohlcv(_uptrend(80))
+        sig1 = engine.analyze("AAPL", df)
+        sig2 = engine.analyze("AAPL", df)
+        assert sig1 is sig2
+        assert engine.cache_size == 1
+
+    def test_different_tickers_cached_separately(self):
+        engine = ConvictionEngine()
+        df = _make_ohlcv(_uptrend(80))
+        sig_a = engine.analyze("AAPL", df)
+        sig_b = engine.analyze("GOOG", df)
+        assert sig_a is not sig_b
+        assert engine.cache_size == 2
+        assert engine.analyze("AAPL", df) is sig_a
+
+    def test_date_change_invalidates_cache(self):
+        engine = ConvictionEngine()
+        df1 = _make_ohlcv(_uptrend(80), start_date=date(2026, 1, 1))
+        sig1 = engine.analyze("AAPL", df1)
+        assert engine.cache_size == 1
+
+        df2 = _make_ohlcv(_uptrend(80), start_date=date(2026, 1, 2))
+        sig2 = engine.analyze("AAPL", df2)
+        assert sig2 is not sig1
+        assert engine.cache_size == 1
+
+    def test_invalidate_cache_clears_all(self):
+        engine = ConvictionEngine()
+        df = _make_ohlcv(_uptrend(80))
+        engine.analyze("AAPL", df)
+        engine.analyze("GOOG", df)
+        assert engine.cache_size == 2
+
+        engine.invalidate_cache()
+        assert engine.cache_size == 0
+
+    def test_batch_populates_cache(self):
+        engine = ConvictionEngine()
+        data = {
+            "AAPL": _make_ohlcv(_uptrend(80)),
+            "GOOG": _make_ohlcv(_uptrend(80)),
+        }
+        engine.analyze_batch(data)
+        assert engine.cache_size == 2
+
+    def test_batch_reuses_cached_signals(self):
+        engine = ConvictionEngine()
+        df = _make_ohlcv(_uptrend(80))
+        original = engine.analyze("AAPL", df)
+        assert engine.cache_size == 1
+
+        data = {"AAPL": df, "GOOG": df}
+        signals = engine.analyze_batch(data)
+        aapl_sig = next(s for s in signals if s.ticker == "AAPL")
+        assert aapl_sig is original
+
+    def test_insufficient_data_not_cached(self):
+        engine = ConvictionEngine(min_bars=50)
+        df = _make_ohlcv(_uptrend(10))
+        engine.analyze("AAPL", df)
+        assert engine.cache_size == 0
+
+
 class TestTrendState:
     def test_all_string_values(self):
         for state in TrendState:

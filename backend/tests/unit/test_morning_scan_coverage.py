@@ -442,7 +442,7 @@ class TestCSPScanFailure:
         mock_engine = MagicMock(spec=StrategyEngine)
         mock_engine.scan_csp_candidates = AsyncMock(
             side_effect=ValueError("options chain empty"),
-        )
+        )  # side_effect raises, so no tuple needed
         mock_engine.scan_cc_candidates = AsyncMock(return_value=[])
 
         result = await run_morning_scan(
@@ -466,7 +466,7 @@ class TestCCScanFailure:
     @pytest.mark.asyncio
     async def test_cc_exception_recorded_in_errors(self, broker):
         mock_engine = MagicMock(spec=StrategyEngine)
-        mock_engine.scan_csp_candidates = AsyncMock(return_value=[])
+        mock_engine.scan_csp_candidates = AsyncMock(return_value=([], {}))
         mock_engine.scan_cc_candidates = AsyncMock(
             side_effect=ValueError("no held shares"),
         )
@@ -519,7 +519,7 @@ class TestPortfolioAllocator:
     async def test_allocator_runs_when_candidates_exist(self, broker):
         mock_engine = MagicMock(spec=StrategyEngine)
         mock_engine.scan_csp_candidates = AsyncMock(
-            return_value=[_make_csp_candidate()],
+            return_value=([_make_csp_candidate()], {"symbols_with_candidates": 1}),
         )
         mock_engine.scan_cc_candidates = AsyncMock(return_value=[])
 
@@ -542,7 +542,7 @@ class TestPortfolioAllocator:
     async def test_allocator_exception_is_swallowed(self, broker):
         mock_engine = MagicMock(spec=StrategyEngine)
         mock_engine.scan_csp_candidates = AsyncMock(
-            return_value=[_make_csp_candidate()],
+            return_value=([_make_csp_candidate()], {"symbols_with_candidates": 1}),
         )
         mock_engine.scan_cc_candidates = AsyncMock(return_value=[])
 
@@ -592,7 +592,7 @@ class TestLLMAnalysis:
     async def test_llm_analysis_called_per_ticker(self, broker):
         mock_engine = MagicMock(spec=StrategyEngine)
         candidates = [_make_csp_candidate("PL"), _make_csp_candidate("AAPL", 180.0)]
-        mock_engine.scan_csp_candidates = AsyncMock(return_value=candidates)
+        mock_engine.scan_csp_candidates = AsyncMock(return_value=(candidates, {"symbols_with_candidates": 2}))
         mock_engine.scan_cc_candidates = AsyncMock(return_value=[])
 
         mock_agent = MagicMock()
@@ -619,7 +619,7 @@ class TestLLMAnalysis:
     async def test_llm_failure_per_ticker_returns_empty(self, broker):
         mock_engine = MagicMock(spec=StrategyEngine)
         mock_engine.scan_csp_candidates = AsyncMock(
-            return_value=[_make_csp_candidate("PL")],
+            return_value=([_make_csp_candidate("PL")], {"symbols_with_candidates": 1}),
         )
         mock_engine.scan_cc_candidates = AsyncMock(return_value=[])
 
@@ -643,7 +643,7 @@ class TestLLMAnalysis:
     @pytest.mark.asyncio
     async def test_llm_not_called_when_no_candidates(self, broker):
         mock_engine = MagicMock(spec=StrategyEngine)
-        mock_engine.scan_csp_candidates = AsyncMock(return_value=[])
+        mock_engine.scan_csp_candidates = AsyncMock(return_value=([], {}))
         mock_engine.scan_cc_candidates = AsyncMock(return_value=[])
 
         mock_agent = MagicMock()

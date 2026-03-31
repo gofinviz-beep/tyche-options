@@ -44,10 +44,160 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 
 
+@router.post("/cache/clear")
+async def clear_broker_cache(
+    broker: BrokerClient = Depends(get_broker),
+) -> dict[str, Any]:
+    """Clear the broker's market data cache (quotes, expirations, chains).
+
+    Use this to force a hard refresh of all Tradier data on the next scan.
+    """
+    if hasattr(broker, "clear_cache"):
+        stats = broker.clear_cache()
+        return {"cleared": True, **stats}
+    return {"cleared": False, "detail": "Broker does not support caching"}
+
+
+@router.get("/cache/stats")
+async def get_broker_cache_stats(
+    broker: BrokerClient = Depends(get_broker),
+) -> dict[str, Any]:
+    """Return current broker cache statistics."""
+    if hasattr(broker, "cache_stats"):
+        return {"cached": True, **broker.cache_stats}
+    return {"cached": False}
+
+
+@router.post("/explore", response_model=dict[str, Any])
+async def explore_options(
+    symbols: str = Query(description="Comma-separated tickers to explore"),
+    available_capital: float | None = Query(default=None, description="Override available capital"),
+    broker: BrokerClient = Depends(get_broker),
+    settings: TycheSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Lightweight options explorer — bypasses the full Scanner pipeline.
+
+    Fetches quotes + option chains for the given tickers with minimal
+    filtering (OTM puts with bid > 0, open interest >= 1).  Uses the
+    broker TTL cache so repeated calls are near-instant.
+    """
+    import time as _time
+    from datetime import date as _date
+
+    from tyche.broker.base import Quote as _Quote
+    from tyche.strategy.engine import target_expiration_dates
+    from tyche.strategy.strategies.cash_secured_put import CashSecuredPutStrategy
+
+    t0 = _time.perf_counter()
+    tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not tickers:
+        raise HTTPException(status_code=400, detail="No valid symbols provided.")
+
+    capital = available_capital or settings.available_capital
+    csp = CashSecuredPutStrategy(dte_min=1, dte_max=45)
+
+    results: list[dict[str, Any]] = []
+    errors: list[str] = []
+    symbols_with_options = 0
+    target_exp: str | None = None
+
+    for symbol in tickers:
+        try:
+            quote = await broker.get_quote(symbol)
+            if quote.last <= 0:
+                fallback = quote.close if quote.close > 0 else quote.bid
+                if fallback > 0:
+                    quote = _Quote(
+                        symbol=quote.symbol, last=fallback,
+                        bid=quote.bid, ask=quote.ask, high=quote.high,
+                        low=quote.low, open=quote.open, close=quote.close,
+                        volume=quote.volume, change=quote.change,
+                        change_pct=quote.change_pct,
+                    )
+
+            expirations = await broker.get_options_expirations(symbol)
+            target_exps = target_expiration_dates(expirations, max_expirations=1)
+            if not target_exps:
+                errors.append(f"{symbol}: no valid expiration")
+                continue
+
+            exp_str = target_exps[0]
+            if target_exp is None:
+                target_exp = exp_str
+
+            chain = await broker.get_options_chain(symbol, exp_str)
+            if chain.underlying_price == 0:
+                chain.underlying_price = quote.last
+
+            raw = csp.identify_candidates(chain, quote, strike_floor=0.0)
+            if not raw:
+                continue
+
+            filtered = csp.apply_filters(raw, min_oi=1, min_volume=0, max_spread_pct=50.0)
+            scored = csp.score(filtered, capital)
+
+            if scored:
+                symbols_with_options += 1
+                for sc in scored:
+                    collateral_per = sc.strike * 100
+                    max_contracts = int(capital // collateral_per) if collateral_per > 0 else 0
+                    results.append({
+                        "symbol": sc.symbol,
+                        "option_symbol": sc.option_symbol,
+                        "strike": sc.strike,
+                        "expiration": sc.expiration.isoformat(),
+                        "dte": sc.dte,
+                        "bid": sc.bid,
+                        "ask": sc.ask,
+                        "mid": sc.mid,
+                        "volume": sc.volume,
+                        "open_interest": sc.open_interest,
+                        "implied_volatility": round(sc.implied_volatility, 4),
+                        "delta": sc.delta,
+                        "theta": sc.theta,
+                        "underlying_price": sc.underlying_price,
+                        "premium_per_contract": sc.premium_per_contract,
+                        "collateral": collateral_per,
+                        "max_contracts": max_contracts,
+                        "total_premium": sc.premium_per_contract * max_contracts,
+                        "annualized_return_pct": sc.annualized_return_pct,
+                        "score": sc.score,
+                    })
+        except Exception as exc:
+            errors.append(f"{symbol}: {exc}")
+            logger.warning("explore_symbol_failed", symbol=symbol, exc_info=True)
+
+    results.sort(key=lambda r: r["annualized_return_pct"], reverse=True)
+
+    cache_stats = broker.cache_stats if hasattr(broker, "cache_stats") else {}
+    dur_ms = (_time.perf_counter() - t0) * 1000
+
+    logger.info(
+        "explore_complete",
+        symbols=len(tickers),
+        with_options=symbols_with_options,
+        contracts=len(results),
+        duration_ms=round(dur_ms, 2),
+    )
+
+    return {
+        "symbols_requested": len(tickers),
+        "symbols_with_options": symbols_with_options,
+        "expiration": target_exp,
+        "total_contracts": len(results),
+        "available_capital": capital,
+        "duration_ms": round(dur_ms, 2),
+        "broker_cache": cache_stats,
+        "errors": errors,
+        "candidates": results,
+    }
+
+
 @router.post("/scan", response_model=dict[str, Any])
 async def trigger_scan(
     top_n: int = Query(default=10, ge=1, le=200),
     symbols: str | None = Query(default=None, description="Comma-separated symbols override"),
+    force_refresh: bool = Query(default=False, description="Clear broker cache before scanning"),
     broker: BrokerClient = Depends(get_broker),
     strategy: StrategyEngine = Depends(get_strategy_engine),
     analysis: AnalysisAgent | None = Depends(get_analysis_agent),
@@ -59,7 +209,16 @@ async def trigger_scan(
     allocator: PortfolioAllocator = Depends(get_portfolio_allocator),
     settings: TycheSettings = Depends(get_settings),
 ) -> dict[str, Any]:
-    """Trigger a full morning scan, persist results, and create trade intents."""
+    """Trigger a full morning scan, persist results, and create trade intents.
+
+    Broker API responses (quotes, expirations, chains) are cached for
+    ``broker_cache_ttl`` seconds (default 5 min). Re-running within that
+    window reuses cached data — only conviction + allocator + LLM re-run.
+
+    Pass ``force_refresh=true`` to clear the cache before scanning.
+    """
+    if force_refresh and hasattr(broker, "clear_cache"):
+        broker.clear_cache()
     if symbols is not None:
         watchlist = [s.strip().upper() for s in symbols.split(",") if s.strip()]
         if not watchlist:
@@ -96,6 +255,8 @@ async def trigger_scan(
         llm_concurrency=settings.llm_concurrency,
         csp_strike_preference=settings.csp_strike_preference,
         pullback_strike_offset_pct=settings.pullback_strike_offset_pct,
+        pullback_strike_ceiling_pct=settings.pullback_strike_ceiling_pct,
+        earliest_expiration_only=settings.earliest_expiration_only,
         min_institutional_pct_stock_buy=settings.min_institutional_pct_stock_buy,
         notification_dispatcher=notification_dispatcher,
     )
@@ -141,6 +302,8 @@ async def trigger_scan(
 
     serialized = _serialize_scan_result(result)
     serialized["intents_created"] = intents_created
+    if hasattr(broker, "cache_stats"):
+        serialized["broker_cache"] = broker.cache_stats
     return serialized
 
 

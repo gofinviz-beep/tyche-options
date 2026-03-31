@@ -134,6 +134,11 @@ def compute_slope(series: pd.Series, periods: int = 3) -> float:
 class ConvictionEngine:
     """Computes 8/21 EMA conviction signals for stock screening.
 
+    Per-ticker results are cached keyed by (ticker, as_of_date).
+    When the underlying OHLCV date changes, the cache auto-clears.
+    Both the conviction route and the scanner share this cache
+    since the engine is a singleton.
+
     Usage:
         engine = ConvictionEngine(ema_fast=8, ema_slow=21)
         signal = engine.analyze(ticker="AAPL", df=ohlcv_dataframe)
@@ -161,8 +166,27 @@ class ConvictionEngine:
         self._pullback_csp_enabled = pullback_csp_enabled
         self._min_prior_streak = min_prior_streak
 
+        self._cache: dict[str, ConvictionSignal] = {}
+        self._cache_date: str | None = None
+
+    def invalidate_cache(self) -> None:
+        """Clear the per-ticker conviction cache (called after OHLCV updates)."""
+        count = len(self._cache)
+        self._cache.clear()
+        self._cache_date = None
+        if count:
+            logger.info("conviction_engine_cache_cleared", entries=count)
+
+    @property
+    def cache_size(self) -> int:
+        return len(self._cache)
+
     def analyze(self, ticker: str, df: pd.DataFrame) -> ConvictionSignal:
         """Analyze a single ticker's OHLCV DataFrame and return a conviction signal.
+
+        Results are cached per (ticker, as_of_date). When the OHLCV date
+        changes across calls, the entire cache is auto-cleared so stale
+        signals are never served.
 
         Args:
             ticker: Stock ticker symbol.
@@ -191,6 +215,24 @@ class ConvictionEngine:
                     GateResult(gate="Days Above EMAs", passed=False, actual="—", threshold=f"{self._min_days_above}–{self._max_days_above}d", reason="Skipped — failed prior gate"),
                 ],
             )
+
+        raw_as_of = df["date"].iloc[-1]
+        as_of_str = raw_as_of if isinstance(raw_as_of, str) else raw_as_of.isoformat()
+
+        if self._cache_date is not None and self._cache_date != as_of_str:
+            logger.info(
+                "conviction_engine_cache_date_changed",
+                old=self._cache_date,
+                new=as_of_str,
+                evicted=len(self._cache),
+            )
+            self._cache.clear()
+        self._cache_date = as_of_str
+
+        cache_key = ticker.upper()
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         close = df["close"].astype(float)
         volume = df["volume"].astype(int)
@@ -348,11 +390,11 @@ class ConvictionEngine:
         if not csp_eligible and trend_passed:
             conviction = "low"
 
-        as_of = df["date"].iloc[-1]
+        as_of = raw_as_of
         if isinstance(as_of, str):
             as_of = date.fromisoformat(as_of)
 
-        return ConvictionSignal(
+        signal = ConvictionSignal(
             ticker=ticker,
             trend_state=trend_state,
             conviction_level=conviction,
@@ -373,6 +415,8 @@ class ConvictionEngine:
             as_of_date=as_of,
             gate_results=gates,
         )
+        self._cache[cache_key] = signal
+        return signal
 
     def analyze_batch(
         self,
@@ -437,6 +481,7 @@ class ConvictionEngine:
             "conviction_batch_complete",
             total=len(signals),
             eligible=sum(1 for s in signals if s.csp_eligible),
+            cache_size=len(self._cache),
         )
         return signals
 

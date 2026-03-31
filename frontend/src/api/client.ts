@@ -69,6 +69,14 @@ export const api = {
       request<import("@/types").ScanHistoryEntry[]>(`/scanner/history?limit=${limit}`),
     getById: (scanId: string) =>
       request<import("@/types").ScanResult>(`/scanner/${scanId}`),
+    explore: (symbols: string, capital?: number) => {
+      const params = new URLSearchParams({ symbols });
+      if (capital) params.set("available_capital", String(capital));
+      return request<import("@/types").ExploreResult>(
+        `/scanner/explore?${params}`,
+        { method: "POST" },
+      );
+    },
   },
 
   orders: {

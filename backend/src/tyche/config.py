@@ -21,6 +21,7 @@ class TycheSettings(BaseSettings):
     tradier_account_id: str = ""
     tradier_sandbox: bool = True
     tradier_base_url: str = Field(default="")
+    broker_cache_ttl: float = 300.0  # 5 min TTL for quotes/chains/expirations
 
     # --- LLM ---
     gemini_api_key: str = ""
@@ -64,7 +65,11 @@ class TycheSettings(BaseSettings):
     # --- Pullback CSP ---
     pullback_csp_enabled: bool = True
     min_prior_streak: int = 5  # min days above both EMAs before the pullback
-    pullback_strike_offset_pct: float = 5.0  # strike at X% below support EMA
+    pullback_strike_offset_pct: float = 5.0  # strike floor: X% below support EMA
+    pullback_strike_ceiling_pct: float = 1.0  # strike ceiling: X% below support EMA
+
+    # --- Expiration Strategy ---
+    earliest_expiration_only: bool = True  # keep only the earliest expiration across all tickers
 
     # --- Capital ---
     available_capital: float = 100_000.0  # Available cash for CSP collateral (Fidelity)
@@ -80,14 +85,14 @@ class TycheSettings(BaseSettings):
     preview_only_mode: bool = True
 
     # --- Wheel-specific ---
-    csp_target_dte_min: int = 3
-    csp_target_dte_max: int = 14
+    csp_target_dte_min: int = 1
+    csp_target_dte_max: int = 45
     cc_target_dte_min: int = 3
     cc_target_dte_max: int = 14
     min_annualized_return_pct: float = 15.0
 
     # --- Options Scan ---
-    max_expiration_dates: int = 2
+    max_expiration_dates: int = 1
     expiration_mode: str = "friday_target"  # "friday_target" or "max_n"
     strike_range_pct: float = 15.0  # Only consider strikes within X% below the 8-EMA
     llm_concurrency: int = 5  # Max parallel LLM calls

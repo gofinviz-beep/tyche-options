@@ -11,6 +11,7 @@ import {
   Settings,
   LineChart,
   Clock,
+  Compass,
 } from "lucide-react";
 
 export interface ModulePage {
@@ -37,6 +38,7 @@ export const modules: AppModule[] = [
       { path: "", label: "Dashboard", icon: LayoutDashboard },
       { path: "/scanner", label: "Scanner", icon: Search },
       { path: "/conviction", label: "Conviction", icon: BarChart3 },
+      { path: "/explore", label: "Explore", icon: Compass },
       { path: "/intents", label: "Intents", icon: FileCheck },
       { path: "/orders", label: "Orders", icon: ShoppingCart },
       { path: "/monitor", label: "Monitor", icon: Activity },

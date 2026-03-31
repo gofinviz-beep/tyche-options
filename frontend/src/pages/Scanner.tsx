@@ -31,6 +31,7 @@ import {
   useScanHistory,
   useScanById,
   useSystemConfig,
+  useConvictionScan,
 } from "@/hooks/useApi";
 import type {
   CSPCandidate,
@@ -46,6 +47,7 @@ const TOP_N_LIMIT = 100;
 export function Scanner() {
   const { data: latestScan } = useLatestScan();
   const { data: scanHistory } = useScanHistory(5);
+  const { data: convictionData } = useConvictionScan(undefined, true);
   const triggerScan = useTriggerScan();
   const [symbols, setSymbols] = useState("");
   const [selectedScanId, setSelectedScanId] = useState<string | null>(null);
@@ -67,6 +69,16 @@ export function Scanner() {
     setSelectedScanId(scanId === selectedScanId ? null : scanId);
   };
 
+  const scanAge = useMemo(() => {
+    if (!scan?.scanned_at) return null;
+    const scannedMs = new Date(scan.scanned_at).getTime();
+    const ageMs = Date.now() - scannedMs;
+    const ageHours = ageMs / (1000 * 60 * 60);
+    return { ageMs, ageHours, scannedAt: new Date(scan.scanned_at) };
+  }, [scan?.scanned_at]);
+
+  const isStale = scanAge ? scanAge.ageHours > 2 : false;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -80,6 +92,18 @@ export function Scanner() {
         </div>
       </div>
 
+      {/* Conviction Preview — show pullback opportunities waiting */}
+      {convictionData && !triggerScan.isPending && (
+        <ConvictionPreview
+          pullbackEligible={convictionData.pullback_eligible}
+          uptrendEligible={convictionData.uptrend_eligible}
+          pullbackCount={convictionData.pullback_count}
+          isStale={isStale}
+          onRunScan={handleScan}
+          scanPending={triggerScan.isPending}
+        />
+      )}
+
       {/* Scan Input */}
       <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="flex items-center gap-3">
@@ -87,7 +111,7 @@ export function Scanner() {
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
             <input
               type="text"
-              placeholder="Enter tickers: AAPL, GOOG, META …  or leave blank for watchlist"
+              placeholder="Enter tickers: AAPL, GOOG, META …  or leave blank for full universe"
               value={symbols}
               onChange={(e) => setSymbols(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -113,6 +137,24 @@ export function Scanner() {
             )}
           </button>
         </div>
+        {scanAge && (
+          <div className="mt-2 text-xs text-gray-400">
+            Last scan:{" "}
+            <span className={isStale ? "font-medium text-amber-600" : "text-gray-500"}>
+              {scanAge.scannedAt.toLocaleString(undefined, {
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </span>
+            {isStale && (
+              <span className="ml-1.5 text-amber-500">
+                ({Math.floor(scanAge.ageHours)}h ago — conviction data may have changed)
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Recent Scans */}
@@ -151,11 +193,89 @@ export function Scanner() {
             No scan results yet
           </p>
           <p className="mt-1 text-xs text-gray-400">
-            Enter tickers above and click Run Scan — or leave blank to scan your
-            watchlist
+            Enter tickers above and click Run Scan — or leave blank to scan the
+            full universe
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── Conviction Preview Banner ─────────────────────────────────── */
+
+function ConvictionPreview({
+  pullbackEligible,
+  uptrendEligible,
+  pullbackCount,
+  isStale,
+  onRunScan,
+  scanPending,
+}: {
+  pullbackEligible: number;
+  uptrendEligible: number;
+  pullbackCount: number;
+  isStale: boolean;
+  onRunScan: () => void;
+  scanPending: boolean;
+}) {
+  const totalEligible = pullbackEligible + uptrendEligible;
+  if (totalEligible === 0 && pullbackCount === 0) return null;
+
+  return (
+    <div
+      className={`rounded-xl border p-4 shadow-sm ${
+        isStale
+          ? "border-amber-200 bg-amber-50/50"
+          : "border-emerald-200 bg-emerald-50/50"
+      }`}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <TrendingUp
+            className={`h-5 w-5 ${isStale ? "text-amber-500" : "text-emerald-600"}`}
+          />
+          <div>
+            <p
+              className={`text-sm font-semibold ${
+                isStale ? "text-amber-900" : "text-emerald-900"
+              }`}
+            >
+              {totalEligible > 0
+                ? `${totalEligible} CSP-eligible ticker${totalEligible !== 1 ? "s" : ""} detected`
+                : `${pullbackCount} pullback${pullbackCount !== 1 ? "s" : ""} forming`}
+            </p>
+            <p
+              className={`mt-0.5 text-xs ${
+                isStale ? "text-amber-700" : "text-emerald-700"
+              }`}
+            >
+              {pullbackEligible > 0 && (
+                <span className="font-semibold">
+                  {pullbackEligible} pullback (Path B)
+                </span>
+              )}
+              {pullbackEligible > 0 && uptrendEligible > 0 && " + "}
+              {uptrendEligible > 0 && (
+                <span>{uptrendEligible} uptrend (Path A)</span>
+              )}
+              {isStale
+                ? " — run a new scan to get fresh options data for these tickers"
+                : " — from cached conviction analysis"}
+            </p>
+          </div>
+        </div>
+        {isStale && (
+          <button
+            onClick={onRunScan}
+            disabled={scanPending}
+            className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-amber-700 disabled:opacity-50"
+          >
+            <Search className="h-3.5 w-3.5" />
+            Scan Now
+          </button>
+        )}
+      </div>
     </div>
   );
 }

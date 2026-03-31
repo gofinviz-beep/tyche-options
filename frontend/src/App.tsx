@@ -7,6 +7,7 @@ import { Orders } from "@/pages/Orders";
 import { Monitor } from "@/pages/Monitor";
 import { Intents } from "@/pages/Intents";
 import { Conviction } from "@/pages/Conviction";
+import { Explore } from "@/pages/Explore";
 import { Settings } from "@/pages/Settings";
 import { ResearchHome } from "@/pages/research/ResearchHome";
 import { StocksDashboard } from "@/pages/stocks/Dashboard";
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="/options" element={<Dashboard />} />
             <Route path="/options/scanner" element={<Scanner />} />
             <Route path="/options/conviction" element={<Conviction />} />
+            <Route path="/options/explore" element={<Explore />} />
             <Route path="/options/intents" element={<Intents />} />
             <Route path="/options/orders" element={<Orders />} />
             <Route path="/options/monitor" element={<Monitor />} />

@@ -9,7 +9,7 @@ import {
   useConvictionScan,
   useTriggerConvictionScan,
 } from "@/hooks/useApi";
-import type { ConvictionSignal, TrendSummary } from "@/types";
+import type { ConvictionSignal } from "@/types";
 import { ChevronDown, ChevronRight, Check, X, Minus, Database, Star } from "lucide-react";
 import { convictionSortValue } from "@/lib/format";
 
@@ -22,6 +22,19 @@ const TREND_VARIANT: Record<string, "success" | "warning" | "danger" | "neutral"
   downtrend: "danger",
   insufficient_data: "neutral",
 };
+
+function formatMarketCap(cap: number | null): string {
+  if (cap == null || cap <= 0) return "—";
+  if (cap >= 1e12) return `$${(cap / 1e12).toFixed(1)}T`;
+  if (cap >= 1e9) return `$${(cap / 1e9).toFixed(1)}B`;
+  if (cap >= 1e6) return `$${(cap / 1e6).toFixed(0)}M`;
+  return `$${cap.toLocaleString()}`;
+}
+
+function formatInstPct(pct: number | null): string {
+  if (pct == null) return "—";
+  return `${(pct * 100).toFixed(0)}%`;
+}
 
 const signalColumns: DataTableColumn<ConvictionSignal>[] = [
   {
@@ -80,6 +93,31 @@ const signalColumns: DataTableColumn<ConvictionSignal>[] = [
       ) : (
         <span className="text-gray-300">—</span>
       ),
+  },
+  {
+    key: "market_cap",
+    header: "Mkt Cap",
+    accessor: (r) => r.market_cap ?? 0,
+    sortable: true,
+    align: "right",
+    render: (r) => (
+      <span className="font-mono text-xs text-gray-500">
+        {formatMarketCap(r.market_cap)}
+      </span>
+    ),
+  },
+  {
+    key: "institutional_pct",
+    header: "Inst %",
+    accessor: (r) => r.institutional_pct ?? -1,
+    sortable: true,
+    align: "right",
+    render: (r) => {
+      if (r.institutional_pct == null) return <span className="text-xs text-gray-300">—</span>;
+      const pct = r.institutional_pct * 100;
+      const color = pct >= 60 ? "text-emerald-600" : pct >= 40 ? "text-amber-600" : "text-red-500";
+      return <span className={`font-mono text-xs ${color}`}>{pct.toFixed(0)}%</span>;
+    },
   },
   {
     key: "price_to_8ema_pct",
@@ -168,9 +206,6 @@ export function Conviction() {
     (s) => !s.csp_eligible && s.trend_state.startsWith("pullback"),
   ) ?? [];
   const eligible = scanData?.signals.filter((s) => s.csp_eligible) ?? [];
-  const excluded = scanData?.signals.filter(
-    (s) => !s.csp_eligible && !s.trend_state.startsWith("pullback"),
-  ) ?? [];
 
   const storeReady = !!status?.exists;
 
@@ -250,14 +285,14 @@ export function Conviction() {
               <span className="text-gray-400">Screened: </span>
               <span className="font-semibold text-gray-900">{scanData.total_screened}</span>
             </div>
-            <div className={`rounded-lg border px-4 py-2 shadow-sm ${pullbackEligible.length > 0 ? "border-blue-200 bg-blue-50" : "border-gray-200 bg-gray-50"}`}>
-              <span className={pullbackEligible.length > 0 ? "text-blue-600 font-semibold" : "text-gray-500"}>
-                Pullback CSP: {pullbackEligible.length}
+            <div className={`rounded-lg border px-4 py-2 shadow-sm ${(scanData.pullback_eligible ?? 0) > 0 ? "border-blue-200 bg-blue-50" : "border-gray-200 bg-gray-50"}`}>
+              <span className={(scanData.pullback_eligible ?? 0) > 0 ? "text-blue-600 font-semibold" : "text-gray-500"}>
+                Pullback CSP: {scanData.pullback_eligible ?? pullbackEligible.length}
               </span>
             </div>
-            <div className={`rounded-lg border px-4 py-2 shadow-sm ${uptrendEligible.length > 0 ? "border-emerald-200 bg-emerald-50" : "border-gray-200 bg-gray-50"}`}>
-              <span className={uptrendEligible.length > 0 ? "text-emerald-600" : "text-gray-500"}>
-                Uptrend CSP: {uptrendEligible.length}
+            <div className={`rounded-lg border px-4 py-2 shadow-sm ${(scanData.uptrend_eligible ?? 0) > 0 ? "border-emerald-200 bg-emerald-50" : "border-gray-200 bg-gray-50"}`}>
+              <span className={(scanData.uptrend_eligible ?? 0) > 0 ? "text-emerald-600" : "text-gray-500"}>
+                Uptrend CSP: {scanData.uptrend_eligible ?? uptrendEligible.length}
               </span>
             </div>
             {(scanData.pullback_count ?? 0) > 0 && (
@@ -479,7 +514,7 @@ function SignalDetail({ signal: s }: { signal: ConvictionSignal }) {
       </div>
 
       {s.last_close > 0 && (
-        <div className="w-52 shrink-0 rounded-lg border border-gray-200 bg-white p-4">
+        <div className="w-56 shrink-0 rounded-lg border border-gray-200 bg-white p-4">
           <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">
             Metrics
           </h4>
@@ -494,6 +529,8 @@ function SignalDetail({ signal: s }: { signal: ConvictionSignal }) {
             ) : (
               <MetricRow label="Days Above" value={`${s.days_above_both_emas}d`} />
             )}
+            <MetricRow label="Mkt Cap" value={formatMarketCap(s.market_cap)} />
+            <MetricRow label="Inst. Own" value={formatInstPct(s.institutional_pct)} />
             <MetricRow label="Volume" value={s.latest_volume.toLocaleString()} />
             <MetricRow label="Avg Vol 20d" value={s.avg_volume_20d.toLocaleString()} />
           </div>

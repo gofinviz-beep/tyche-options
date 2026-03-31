@@ -70,6 +70,7 @@ def get_broker(settings: TycheSettings = Depends(get_settings)) -> BrokerClient:
                 api_token=settings.tradier_api_token,
                 account_id=settings.tradier_account_id,
                 base_url=settings.broker_base_url,
+                cache_ttl=settings.broker_cache_ttl,
             )
             logger.info("broker_initialized", type="tradier_production")
         else:

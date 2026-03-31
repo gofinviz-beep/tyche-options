@@ -90,6 +90,16 @@ broker_call_duration: Histogram = _meter.create_histogram(
     unit="s",
 )
 
+csp_scan_candidates_found: Histogram = _meter.create_histogram(
+    name="scanner.csp.candidates_found",
+    description="Number of CSP candidates surviving the full pipeline",
+)
+
+csp_scan_drops: Counter = _meter.create_counter(
+    name="scanner.csp.drops",
+    description="Count of CSP candidates dropped by reason",
+)
+
 
 # ---------------------------------------------------------------------------
 # One-time configuration

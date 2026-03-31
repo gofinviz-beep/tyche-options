@@ -125,12 +125,20 @@ pullback_eligible = prior_streak >= min_prior_streak and ema_21_slope > 0
 
 ### Strike Selection by Path
 
-| Path | Reference Price | Strike Range |
-|---|---|---|
-| Uptrend (A) | 8-EMA | Floor = 8-EMA × (1 - `strike_range_pct`/100). Default: 15% below. |
-| Pullback (B) | Support EMA (21-EMA or 8-EMA) | Floor = support_EMA × (1 - `pullback_strike_offset_pct`/100). Ceiling = support_EMA. Default: 5% below. |
+| Path | Floor | Ceiling | Example ($100 EMA, $102 price) |
+|---|---|---|---|
+| Uptrend (A) | 15% below current price | 8-EMA | $86.70 → $100.00 |
+| Pullback (B) | 5% below support EMA | 1% below support EMA | $95.00 → $99.00 |
 
-For pullback CSPs, strikes are bounded tightly: no deeper than 5% below the support EMA, and no higher than the EMA itself (to avoid selling ITM puts).
+**Path A (Uptrend):** The floor uses the standard `strike_range_pct` (15%) below current price. The ceiling is the 8-EMA — if assigned, you buy at or below the trend support level. The OTM filter (`strike < quote.last`) also applies, so strikes never exceed the current price.
+
+**Path B (Pullback):** Strikes are bounded tightly between `pullback_strike_offset_pct` (5%) below and `pullback_strike_ceiling_pct` (1%) below the support EMA. This ensures assignment occurs at a meaningful discount to the EMA support — not at the EMA itself (too close to the bounce zone) and not too deep OTM (where premium is negligible).
+
+### Earliest Expiration Filter
+
+After collecting all candidates from both paths across all tickers, the engine filters to **only the single earliest expiration date** across the entire corpus. For example, if some tickers have April 2nd weekly options and others only have April 17th monthlies, only the April 2nd candidates survive.
+
+This maximizes capital recycling speed — get in, collect premium, get out, repeat. Controlled by `TYCHE_EARLIEST_EXPIRATION_ONLY` (default: `true`).
 
 ## Pre-Conviction Universe Filters
 
@@ -181,7 +189,9 @@ All thresholds are configurable via environment variables (see [Configuration Re
 | Bootstrap days | `TYCHE_BOOTSTRAP_DAYS` | 120 | Both |
 | Pullback CSP enabled | `TYCHE_PULLBACK_CSP_ENABLED` | true | Pullback (B) |
 | Min prior streak | `TYCHE_MIN_PRIOR_STREAK` | 5 | Pullback (B) |
-| Pullback strike offset | `TYCHE_PULLBACK_STRIKE_OFFSET_PCT` | 5.0% | Pullback (B) |
+| Pullback strike offset (floor) | `TYCHE_PULLBACK_STRIKE_OFFSET_PCT` | 5.0% | Pullback (B) |
+| Pullback strike ceiling | `TYCHE_PULLBACK_STRIKE_CEILING_PCT` | 1.0% | Pullback (B) |
+| Earliest expiration only | `TYCHE_EARLIEST_EXPIRATION_ONLY` | true | Both |
 
 ## Updating Thresholds
 

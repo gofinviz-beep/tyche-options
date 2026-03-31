@@ -66,6 +66,26 @@ async def get_institutional_ownership(
         return None
 
 
+def get_cached_ownership_batch(tickers: list[str]) -> dict[str, float]:
+    """Return cached institutional ownership for the given tickers.
+
+    Zero-cost: reads in-memory cache only, never triggers yfinance API calls.
+    Returns a mapping of ticker -> ownership pct (0.0–1.0) for tickers
+    with cached data.
+    """
+    from datetime import timezone as _tz
+
+    now = datetime.now(_tz.utc)
+    result: dict[str, float] = {}
+    for ticker in tickers:
+        cached = _cache.get(ticker)
+        if cached:
+            age_hours = (now - cached.fetched_at).total_seconds() / 3600
+            if age_hours < _CACHE_TTL_HOURS:
+                result[ticker] = cached.institutional_pct
+    return result
+
+
 async def filter_by_institutional_ownership(
     tickers: list[str],
     min_pct: float = 0.40,

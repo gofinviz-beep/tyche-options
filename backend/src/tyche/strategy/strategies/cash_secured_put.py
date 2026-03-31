@@ -23,8 +23,8 @@ class CashSecuredPutStrategy:
 
     def __init__(
         self,
-        dte_min: int = 3,
-        dte_max: int = 14,
+        dte_min: int = 1,
+        dte_max: int = 45,
         max_delta: float = -0.15,
         min_delta: float = -0.45,
     ) -> None:
@@ -88,18 +88,23 @@ class CashSecuredPutStrategy:
     def apply_filters(
         self,
         candidates: list[RawCandidate],
-        min_oi: int = 100,
-        min_volume: int = 10,
+        min_oi: int = 10,
+        min_volume: int = 0,
         max_spread_pct: float = 15.0,
     ) -> list[FilteredCandidate]:
-        """Apply deterministic quality filters."""
+        """Apply deterministic quality filters.
+
+        Open interest is the primary liquidity signal (survives across sessions).
+        Volume is optional — defaults to 0 so early-morning scans are not penalized.
+        """
         filtered: list[FilteredCandidate] = []
 
         for c in candidates:
             filters: dict[str, bool] = {}
 
             filters["min_open_interest"] = c.open_interest >= min_oi
-            filters["min_volume"] = c.volume >= min_volume
+            if min_volume > 0:
+                filters["min_volume"] = c.volume >= min_volume
 
             spread_pct = ((c.ask - c.bid) / c.mid * 100) if c.mid > 0 else 100.0
             filters["max_bid_ask_spread"] = spread_pct <= max_spread_pct

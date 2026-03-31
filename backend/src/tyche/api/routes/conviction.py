@@ -16,10 +16,11 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from tyche.api.deps import get_conviction_engine, get_data_store, get_polygon, get_settings
+from tyche.api.deps import get_conviction_engine, get_data_store, get_polygon, get_settings, get_ticker_meta_store
 from tyche.config import TycheSettings
 from tyche.conviction.engine import ConvictionEngine, ConvictionSignal
-from tyche.market_data.data_store import OHLCVStore, bootstrap_ohlcv
+from tyche.market_data.data_store import OHLCVStore, TickerMetaStore, bootstrap_ohlcv
+from tyche.market_data.institutional import get_cached_ownership_batch
 from tyche.market_data.polygon import PolygonClient
 from tyche.conviction.engine import TrendState as _TS
 from tyche.schemas.conviction import (
@@ -47,10 +48,15 @@ def _make_cache_key(store: OHLCVStore, tickers: list[str]) -> str:
 
 
 def invalidate_conviction_cache() -> None:
-    """Clear the conviction scan cache (called after OHLCV data updates)."""
+    """Clear both the response cache and the engine's per-ticker cache."""
     global _scan_cache, _scan_cache_key
     _scan_cache.clear()
     _scan_cache_key = None
+
+    from tyche.api.deps import _conviction_engine
+    if _conviction_engine is not None:
+        _conviction_engine.invalidate_cache()
+
     logger.info("conviction_cache_invalidated")
 
 
@@ -116,10 +122,11 @@ async def update_daily_data(
 @router.get("/scan", response_model=ConvictionScanResponse)
 async def scan_conviction(
     symbols: str | None = Query(default=None, description="Comma-separated symbols"),
-    limit: int = Query(default=50, ge=1, le=500, description="Max results for dynamic discovery"),
+    limit_per_path: int = Query(default=100, ge=1, le=500, description="Max results per path (Path A, Path B, forming)"),
     force: bool = Query(default=False, description="Bypass cache and recompute"),
     engine: ConvictionEngine = Depends(get_conviction_engine),
     store: OHLCVStore = Depends(get_data_store),
+    meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
     settings: TycheSettings = Depends(get_settings),
 ) -> ConvictionScanResponse:
     """Run the conviction engine across the full universe.
@@ -188,24 +195,31 @@ async def scan_conviction(
     pullback_eligible_list = [s for s in eligible if s.trend_state in pullback_states]
     uptrend_eligible_list = [s for s in eligible if s.trend_state in uptrend_states]
 
+    conviction_order = {"high": 0, "medium": 1, "low": 2, "none": 3}
+
+    def _sort_key(s: ConvictionSignal) -> tuple:
+        return (
+            conviction_order.get(s.conviction_level, 99),
+            -s.prior_streak,
+            -s.days_above_both_emas,
+        )
+
     if symbols:
         display_signals = signals
     else:
         pullback_not_eligible = [
             s for s in pullback_all if not s.csp_eligible
         ]
-        display_signals = eligible + pullback_not_eligible
 
-        conviction_order = {"high": 0, "medium": 1, "low": 2, "none": 3}
-        display_signals.sort(key=lambda s: (
-            0 if (s.csp_eligible and s.trend_state in pullback_states) else
-            1 if s.csp_eligible else
-            2,
-            conviction_order.get(s.conviction_level, 99),
-            -s.prior_streak,
-            -s.days_above_both_emas,
-        ))
-        display_signals = display_signals[:limit]
+        pb_eligible_sorted = sorted(pullback_eligible_list, key=_sort_key)[:limit_per_path]
+        up_eligible_sorted = sorted(uptrend_eligible_list, key=_sort_key)[:limit_per_path]
+        pb_forming_sorted = sorted(pullback_not_eligible, key=_sort_key)[:limit_per_path]
+
+        display_signals = pb_eligible_sorted + up_eligible_sorted + pb_forming_sorted
+
+    display_tickers = [s.ticker for s in display_signals]
+    market_caps = meta_store.get_market_caps(display_tickers) if meta_store.exists else {}
+    inst_ownership = get_cached_ownership_batch(display_tickers)
 
     response = ConvictionScanResponse(
         scan_id=str(uuid.uuid4()),
@@ -219,7 +233,12 @@ async def scan_conviction(
             k: trend_counts.get(k, 0) for k in TrendSummary.model_fields
         }),
         signals=[
-            _signal_to_response(s, is_watchlist=s.ticker in watchlist_set)
+            _signal_to_response(
+                s,
+                is_watchlist=s.ticker in watchlist_set,
+                market_cap=market_caps.get(s.ticker),
+                institutional_pct=inst_ownership.get(s.ticker),
+            )
             for s in display_signals
         ],
     )
@@ -233,6 +252,7 @@ async def scan_conviction(
         pullback_eligible=len(pullback_eligible_list),
         pullback_total=len(pullback_all),
         uptrend_eligible=len(uptrend_eligible_list),
+        engine_cache_size=engine.cache_size,
         duration_ms=round(dur_ms, 2),
     )
     return response
@@ -263,7 +283,11 @@ async def get_ticker_conviction(
 
 
 def _signal_to_response(
-    s: ConvictionSignal, *, is_watchlist: bool = False,
+    s: ConvictionSignal,
+    *,
+    is_watchlist: bool = False,
+    market_cap: float | None = None,
+    institutional_pct: float | None = None,
 ) -> ConvictionSignalResponse:
     return ConvictionSignalResponse(
         ticker=s.ticker,
@@ -284,6 +308,8 @@ def _signal_to_response(
         days_above_both_emas=s.days_above_both_emas,
         prior_streak=s.prior_streak,
         as_of_date=s.as_of_date.isoformat() if s.as_of_date else None,
+        market_cap=market_cap if market_cap and market_cap > 0 else None,
+        institutional_pct=round(institutional_pct, 4) if institutional_pct is not None else None,
         gate_results=[
             GateResultResponse(
                 gate=g.gate,

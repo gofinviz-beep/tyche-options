@@ -85,6 +85,8 @@ export interface ConvictionSignal {
   days_above_both_emas: number;
   prior_streak: number;
   as_of_date?: string;
+  market_cap: number | null;
+  institutional_pct: number | null;
   gate_results: GateResult[];
 }
 
@@ -696,4 +698,39 @@ export interface ExitCheckResult {
   stop_losses_hit: number;
   errors: number;
   signals: ExitSignal[];
+}
+
+export interface ExploreCandidate {
+  symbol: string;
+  option_symbol: string;
+  strike: number;
+  expiration: string;
+  dte: number;
+  bid: number;
+  ask: number;
+  mid: number;
+  volume: number;
+  open_interest: number;
+  implied_volatility: number;
+  delta: number;
+  theta: number;
+  underlying_price: number;
+  premium_per_contract: number;
+  collateral: number;
+  max_contracts: number;
+  total_premium: number;
+  annualized_return_pct: number;
+  score: number;
+}
+
+export interface ExploreResult {
+  symbols_requested: number;
+  symbols_with_options: number;
+  expiration: string | null;
+  total_contracts: number;
+  available_capital: number;
+  duration_ms: number;
+  broker_cache: Record<string, number>;
+  errors: string[];
+  candidates: ExploreCandidate[];
 }

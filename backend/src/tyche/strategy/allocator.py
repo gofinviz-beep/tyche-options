@@ -71,6 +71,9 @@ class AllocationResult:
         }
 
 
+PULLBACK_PATH_BONUS = 1.25
+
+
 def _compute_risk_weight(
     candidate: ScoredCandidate,
     conviction_signals: dict[str, ConvictionSignal] | None = None,
@@ -83,18 +86,23 @@ def _compute_risk_weight(
     - Extension proximity (closer to 8-EMA = safer)
     - Liquidity factor (open interest)
     - Assignment safety (lower |delta| = less likely to be assigned)
+    - Pullback path bonus (1.25x for Path B — 76.8% backtest win rate)
 
     Lower delta (more OTM) is preferred because the Wheel Strategy's
     primary engine is repeated premium collection with fast capital
-    recycling, not assignment into shares.
+    recycling, not assignment into shares.  Pullback entries get a
+    25% boost because backtest data shows significantly higher win
+    rates and P&L vs uptrend entries.
     """
     conviction = "high"
     extension_pct = 0.0
+    is_pullback = False
 
     if conviction_signals and candidate.symbol in conviction_signals:
         sig = conviction_signals[candidate.symbol]
         conviction = sig.conviction_level
         extension_pct = abs(sig.price_to_8ema_pct)
+        is_pullback = sig.trend_state.value.startswith("pullback")
 
     conv_w = CONVICTION_WEIGHTS.get(conviction, 0.5)
 
@@ -108,7 +116,9 @@ def _compute_risk_weight(
     delta_w = 1.0 - abs_delta * 0.6
     delta_w = max(0.4, delta_w)
 
-    return conv_w * ext_w * liq_w * delta_w
+    path_w = PULLBACK_PATH_BONUS if is_pullback else 1.0
+
+    return conv_w * ext_w * liq_w * delta_w * path_w
 
 
 class PortfolioAllocator:

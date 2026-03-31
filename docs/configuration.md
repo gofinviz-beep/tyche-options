@@ -84,7 +84,9 @@ The `data/` directory contains raw market data (Parquet files only).
 |---|---|---|---|
 | `TYCHE_PULLBACK_CSP_ENABLED` | bool | `true` | Enable the pullback CSP eligibility path. When disabled, only the uptrend path (Gate 3a) is active. |
 | `TYCHE_MIN_PRIOR_STREAK` | int | `5` | Minimum days the stock must have been above both EMAs before the pullback for pullback CSP eligibility. |
-| `TYCHE_PULLBACK_STRIKE_OFFSET_PCT` | float | `5.0` | For pullback CSPs, only consider strikes within this % below the support EMA. E.g., 5% means for a stock with 21-EMA at $100, strikes between $95 and $100 are considered. |
+| `TYCHE_PULLBACK_STRIKE_OFFSET_PCT` | float | `5.0` | Strike floor: this % below the support EMA. E.g., 5% = for 21-EMA at $100, floor is $95. |
+| `TYCHE_PULLBACK_STRIKE_CEILING_PCT` | float | `1.0` | Strike ceiling: this % below the support EMA. E.g., 1% = for 21-EMA at $100, ceiling is $99. |
+| `TYCHE_EARLIEST_EXPIRATION_ONLY` | bool | `true` | After collecting CSP candidates from all tickers, keep only the single earliest expiration date. Maximizes capital recycling speed. |
 
 ## Capital and Risk Limits
 
@@ -103,12 +105,13 @@ The `data/` directory contains raw market data (Parquet files only).
 
 | Env Var | Type | Default | Description |
 |---|---|---|---|
-| `TYCHE_CSP_TARGET_DTE_MIN` | int | `3` | Minimum DTE for CSP candidates |
-| `TYCHE_CSP_TARGET_DTE_MAX` | int | `14` | Maximum DTE for CSP candidates |
+| `TYCHE_CSP_TARGET_DTE_MIN` | int | `1` | Minimum DTE for CSP candidates. Expiration targeting (`target_expiration_dates`) handles smart selection; this is a safety floor. |
+| `TYCHE_CSP_TARGET_DTE_MAX` | int | `45` | Maximum DTE for CSP candidates. Wide range allows monthly-only tickers through; expiration targeting picks the optimal date. |
 | `TYCHE_CC_TARGET_DTE_MIN` | int | `3` | Minimum DTE for CC candidates |
 | `TYCHE_CC_TARGET_DTE_MAX` | int | `14` | Maximum DTE for CC candidates |
 | `TYCHE_MIN_ANNUALIZED_RETURN_PCT` | float | `15.0` | Minimum annualized return threshold |
-| `TYCHE_MAX_EXPIRATION_DATES` | int | `2` | Maximum number of expiration dates to scan per ticker. Limits API calls and irrelevant data. |
+| `TYCHE_MAX_EXPIRATION_DATES` | int | `1` | Maximum number of expiration dates to scan per ticker. Default 1 targets the single nearest valid expiration. |
+| `TYCHE_EXPIRATION_MODE` | str | `friday_target` | Expiration targeting mode. `friday_target` picks nearest Friday (Sat-Wed) or next week (Thu-Fri). `max_n` uses legacy first-N approach. |
 | `TYCHE_STRIKE_RANGE_PCT` | float | `15.0` | Only consider put strikes within this % below the 8-EMA. E.g., 15% means for a stock with 8-EMA at $100, only strikes >= $85 are scanned. |
 | `TYCHE_LLM_CONCURRENCY` | int | `5` | Maximum parallel LLM analysis calls during scanner pipeline. Controls Gemini API rate. |
 
@@ -160,9 +163,13 @@ TYCHE_MAX_DAYS_ABOVE_EMAS=10
 TYCHE_PULLBACK_CSP_ENABLED=true
 TYCHE_MIN_PRIOR_STREAK=5
 TYCHE_PULLBACK_STRIKE_OFFSET_PCT=5.0
+TYCHE_PULLBACK_STRIKE_CEILING_PCT=1.0
+TYCHE_EARLIEST_EXPIRATION_ONLY=true
 
 # Scanner Options
-TYCHE_MAX_EXPIRATION_DATES=2
+TYCHE_CSP_TARGET_DTE_MIN=1
+TYCHE_CSP_TARGET_DTE_MAX=45
+TYCHE_MAX_EXPIRATION_DATES=1
 TYCHE_STRIKE_RANGE_PCT=15.0
 TYCHE_LLM_CONCURRENCY=5
 TYCHE_SCAN_RETENTION_COUNT=5

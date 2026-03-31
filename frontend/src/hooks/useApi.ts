@@ -29,6 +29,8 @@ export function useLatestScan() {
   return useQuery({
     queryKey: ["scanner", "latest"],
     queryFn: api.scanner.getLatest,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
   });
 }
 
@@ -46,6 +48,13 @@ export function useTriggerScan() {
       queryClient.setQueryData(["scanner", "latest"], data);
       queryClient.invalidateQueries({ queryKey: ["scanner"] });
     },
+  });
+}
+
+export function useExploreOptions() {
+  return useMutation({
+    mutationFn: ({ symbols, capital }: { symbols: string; capital?: number }) =>
+      api.scanner.explore(symbols, capital),
   });
 }
 

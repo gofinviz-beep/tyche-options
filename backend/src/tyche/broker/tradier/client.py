@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -31,8 +32,45 @@ from tyche.exceptions import (
 logger = structlog.get_logger()
 
 
+class _TTLCache:
+    """Simple in-memory TTL cache for broker API responses."""
+
+    __slots__ = ("_data", "_ttl")
+
+    def __init__(self, ttl_seconds: float = 300.0) -> None:
+        self._data: dict[str, tuple[Any, float]] = {}
+        self._ttl = ttl_seconds
+
+    def get(self, key: str) -> Any | None:
+        entry = self._data.get(key)
+        if entry is None:
+            return None
+        value, ts = entry
+        if (time.monotonic() - ts) > self._ttl:
+            del self._data[key]
+            return None
+        return value
+
+    def put(self, key: str, value: Any) -> None:
+        self._data[key] = (value, time.monotonic())
+
+    def clear(self) -> None:
+        self._data.clear()
+
+    @property
+    def size(self) -> int:
+        return len(self._data)
+
+
 class TradierClient:
-    """Async Tradier API client implementing the BrokerClient protocol."""
+    """Async Tradier API client implementing the BrokerClient protocol.
+
+    Includes an in-memory TTL cache for market data calls (quotes,
+    expirations, option chains).  Re-running a scan within the TTL
+    window reuses cached responses instead of re-hitting the API.
+
+    Call ``clear_cache()`` to force a full refresh on next access.
+    """
 
     def __init__(
         self,
@@ -40,6 +78,7 @@ class TradierClient:
         account_id: str,
         base_url: str = "https://sandbox.tradier.com/v1",
         timeout: float = 15.0,
+        cache_ttl: float = 300.0,
     ) -> None:
         self._account_id = account_id
         self._base_url = base_url.rstrip("/")
@@ -49,6 +88,10 @@ class TradierClient:
         }
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
+
+        self._quote_cache = _TTLCache(cache_ttl)
+        self._exp_cache = _TTLCache(cache_ttl)
+        self._chain_cache = _TTLCache(cache_ttl)
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -62,6 +105,27 @@ class TradierClient:
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+    def clear_cache(self) -> dict[str, int]:
+        """Clear all cached market data. Returns counts of cleared entries."""
+        stats = {
+            "quotes": self._quote_cache.size,
+            "expirations": self._exp_cache.size,
+            "chains": self._chain_cache.size,
+        }
+        self._quote_cache.clear()
+        self._exp_cache.clear()
+        self._chain_cache.clear()
+        logger.info("broker_cache_cleared", **stats)
+        return stats
+
+    @property
+    def cache_stats(self) -> dict[str, int]:
+        return {
+            "quotes": self._quote_cache.size,
+            "expirations": self._exp_cache.size,
+            "chains": self._chain_cache.size,
+        }
 
     async def _request(
         self,
@@ -212,6 +276,10 @@ class TradierClient:
     # --- Market Data ---
 
     async def get_quote(self, symbol: str) -> Quote:
+        cached = self._quote_cache.get(symbol)
+        if cached is not None:
+            return cached
+
         data = await self._request(
             "GET", "/markets/quotes", params={"symbols": symbol, "greeks": "false"}
         )
@@ -221,7 +289,7 @@ class TradierClient:
         if isinstance(q, list):
             q = q[0]
 
-        return Quote(
+        result = Quote(
             symbol=q.get("symbol", symbol),
             last=float(q.get("last", 0)),
             bid=float(q.get("bid", 0)),
@@ -234,6 +302,8 @@ class TradierClient:
             change=float(q.get("change", 0)),
             change_pct=float(q.get("change_percentage", 0)),
         )
+        self._quote_cache.put(symbol, result)
+        return result
 
     async def get_quotes(self, symbols: list[str]) -> list[Quote]:
         if not symbols:
@@ -266,6 +336,10 @@ class TradierClient:
         ]
 
     async def get_options_expirations(self, symbol: str) -> list[str]:
+        cached = self._exp_cache.get(symbol)
+        if cached is not None:
+            return cached
+
         data = await self._request(
             "GET",
             "/markets/options/expirations",
@@ -275,11 +349,17 @@ class TradierClient:
         date_list = expirations.get("date", [])
         if isinstance(date_list, str):
             date_list = [date_list]
+        self._exp_cache.put(symbol, date_list)
         return date_list
 
     async def get_options_chain(
         self, symbol: str, expiration: str, greeks: bool = True
     ) -> OptionsChain:
+        cache_key = f"{symbol}:{expiration}"
+        cached = self._chain_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         data = await self._request(
             "GET",
             "/markets/options/chains",
@@ -328,12 +408,14 @@ class TradierClient:
                 )
             )
 
-        return OptionsChain(
+        chain = OptionsChain(
             symbol=symbol,
             expiration=exp_date,
             underlying_price=underlying_price,
             contracts=contracts,
         )
+        self._chain_cache.put(cache_key, chain)
+        return chain
 
     # --- Trading ---
 

@@ -121,6 +121,8 @@ async def run_morning_scan(
     llm_concurrency: int = 5,
     csp_strike_preference: str = "legacy",
     pullback_strike_offset_pct: float = 5.0,
+    pullback_strike_ceiling_pct: float = 1.0,
+    earliest_expiration_only: bool = True,
     min_institutional_pct_stock_buy: float = 0.50,
     notification_dispatcher: Any | None = None,
 ) -> MorningScanResult:
@@ -358,8 +360,9 @@ async def run_morning_scan(
 
     # ── 5. Scan for CSP candidates ────────────────────────────────────
     t0 = time.perf_counter()
+    csp_diagnostics: dict[str, int] = {}
     try:
-        csp_candidates = await strategy_engine.scan_csp_candidates(
+        csp_candidates, csp_diagnostics = await strategy_engine.scan_csp_candidates(
             broker=broker,
             watchlist=screened_symbols,
             available_cash=effective_buying_power,
@@ -371,6 +374,8 @@ async def run_morning_scan(
             expiration_mode=expiration_mode,
             csp_strike_preference=csp_strike_preference,
             pullback_strike_offset_pct=pullback_strike_offset_pct,
+            pullback_strike_ceiling_pct=pullback_strike_ceiling_pct,
+            earliest_expiration_only=earliest_expiration_only,
         )
         result.csp_candidates = csp_candidates
     except Exception as exc:
@@ -379,6 +384,21 @@ async def run_morning_scan(
         logger.error("morning_scan_csp_failed", exc_info=True)
     csp_dur = time.perf_counter() - t0
     _record_stage("csp_scan", csp_dur)
+
+    diag_parts = [f"{k}: {v}" for k, v in csp_diagnostics.items() if v > 0]
+    result.pipeline_stages.append(
+        PipelineStage(
+            "CSP Options Scan",
+            len(screened_symbols),
+            len(result.csp_candidates),
+            detail=(
+                f"{len(result.csp_candidates)} candidates from "
+                f"{csp_diagnostics.get('symbols_with_candidates', 0)} tickers"
+                + (f" | drops: {', '.join(diag_parts)}" if diag_parts else "")
+            ),
+            duration_ms=csp_dur * 1000,
+        )
+    )
 
     # ── 6. Scan for CC candidates on held shares ──────────────────────
     t0 = time.perf_counter()

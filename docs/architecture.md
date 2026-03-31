@@ -78,7 +78,7 @@ backend/
 │   │       ├── intents.py       # POST /intents/generate (order intent generation)
 │   │       ├── monitor.py       # GET /monitor/status (active position monitor)
 │   │       ├── orders.py        # POST /orders/preview, /orders/place
-│   │       ├── scanner.py       # POST /scanner/scan, GET /latest, /history, /{scan_id}
+│   │       ├── scanner.py       # POST /scanner/scan, /scanner/explore, GET /latest, /history
 │   │       ├── system.py        # GET /health, /system/status
 │   │       └── watchlist.py     # GET/PUT /watchlist
 │   │
@@ -204,10 +204,10 @@ The conviction engine acts as the primary gate. No stock reaches options scannin
 1. Universe filters (market cap, exchange, price, volume)
 2. EMA trend classification
 3. CSP eligibility check via one of two paths:
-   - **Uptrend path (A):** trend state + extension cap ≤3% + 5-10 day streak above both EMAs
-   - **Pullback path (B):** pullback to EMA support + prior streak ≥5 days + rising 21-EMA slope
+   - **Uptrend path (A):** trend state + extension cap ≤3% + 5-10 day streak above both EMAs. Strikes: 15% below price → 8-EMA ceiling.
+   - **Pullback path (B):** pullback to EMA support + prior streak ≥5 days + rising 21-EMA slope. Strikes: 5% below → 1% below support EMA.
 
-The pullback path was added based on backtest validation (76.8% win rate on $5B+ stocks). Pullback CSPs use tighter strike targeting (5% below support EMA) to reduce assignment risk while still collecting premium.
+The pullback path was added based on backtest validation (76.8% win rate on $5B+ stocks). After collecting candidates from both paths, the engine filters to only the **earliest expiration date** across all tickers (configurable via `TYCHE_EARLIEST_EXPIRATION_ONLY`), maximizing capital recycling speed.
 
 This reduces API calls to Tradier and ensures only high-conviction candidates are evaluated.
 
@@ -255,16 +255,31 @@ These are two distinct scans that serve different purposes in the pipeline:
 
 **When to use:** To generate actionable trade recommendations with real pricing that you can approve/reject on the Intents page.
 
+### Options Explorer (`POST /scanner/explore`)
+
+**Purpose:** Lightweight options explorer — bypasses the full Scanner pipeline. Useful for quickly checking available put contracts on conviction-eligible tickers without running the full pipeline.
+
+- Accepts comma-separated tickers and optional capital override
+- Fetches live quotes + nearest expiration via Tradier (uses broker TTL cache)
+- Applies minimal filters: OTM puts, bid > 0, OI >= 1
+- Returns scored candidates sorted by annualized return
+- No conviction filtering, no LLM, no allocator — raw options data
+- Fast (sub-second with broker cache)
+- Frontend: dedicated Explore page at `/options/explore`
+
 ### Pipeline Relationship
 
 ```
 Conviction Scan ──► trend signals (informational)
 
+Explorer ──► broker quotes ──► options chains ──► scored candidates (exploratory)
+
 Scanner ──► conviction filter ──► broker quotes ──► options chains
+        ──► earliest-expiration filter ──► MILP allocator
         ──► LLM analysis ──► risk gate ──► OrderIntents (actionable)
 ```
 
-The Scanner calls the Conviction Engine internally — you don't need to run conviction first.
+The Scanner calls the Conviction Engine internally — you don't need to run conviction first. The Explorer is independent of both and useful for ad-hoc exploration.
 
 ## Related Documentation
 
