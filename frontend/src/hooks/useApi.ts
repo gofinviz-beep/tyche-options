@@ -148,6 +148,8 @@ export function useConvictionScan(symbols?: string, autoRun = false) {
     queryKey: ["conviction", "scan", symbols],
     queryFn: () => api.conviction.scan(symbols),
     enabled: autoRun,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
   });
 }
 

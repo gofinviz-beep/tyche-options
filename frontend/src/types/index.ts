@@ -82,6 +82,7 @@ export interface ConvictionSignal {
   avg_volume_20d: number;
   latest_volume: number;
   days_above_both_emas: number;
+  prior_streak: number;
   as_of_date?: string;
   gate_results: GateResult[];
 }

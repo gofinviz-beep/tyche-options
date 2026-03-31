@@ -1,7 +1,14 @@
-"""Conviction engine routes — 8/21 EMA analysis and data store management."""
+"""Conviction engine routes — 8/21 EMA analysis and data store management.
+
+Conviction scans are cached server-side by (latest_ohlcv_date, ticker_set).
+Since OHLCV data only changes once per day, this avoids re-computing EMAs
+for the entire universe on every page visit.  The cache is invalidated
+when new OHLCV data arrives (bootstrap or daily update).
+"""
 
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -25,6 +32,24 @@ from tyche.schemas.conviction import (
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/conviction", tags=["conviction"])
+
+_scan_cache: dict[str, ConvictionScanResponse] = {}
+_scan_cache_key: str | None = None
+
+
+def _make_cache_key(store: OHLCVStore, tickers: list[str]) -> str:
+    _, latest = store.get_date_range()
+    date_str = latest.isoformat() if latest else "none"
+    ticker_hash = hash(frozenset(t.upper() for t in tickers))
+    return f"{date_str}:{ticker_hash}"
+
+
+def invalidate_conviction_cache() -> None:
+    """Clear the conviction scan cache (called after OHLCV data updates)."""
+    global _scan_cache, _scan_cache_key
+    _scan_cache.clear()
+    _scan_cache_key = None
+    logger.info("conviction_cache_invalidated")
 
 
 @router.get("/status", response_model=DataStoreStatusResponse)
@@ -58,6 +83,7 @@ async def bootstrap_data(
 
     try:
         stats = await bootstrap_ohlcv(polygon, store, days=req.days)
+        invalidate_conviction_cache()
         return BootstrapResponse(**stats)
     except Exception as exc:
         logger.error("bootstrap_failed", exc_info=True)
@@ -78,6 +104,7 @@ async def update_daily_data(
 
     try:
         stats = await bootstrap_ohlcv(polygon, store, days=5)
+        invalidate_conviction_cache()
         return {"status": "ok", **stats}
     except Exception as exc:
         logger.error("daily_update_failed", exc_info=True)
@@ -88,15 +115,16 @@ async def update_daily_data(
 async def scan_conviction(
     symbols: str | None = Query(default=None, description="Comma-separated symbols"),
     limit: int = Query(default=50, ge=1, le=500, description="Max results for dynamic discovery"),
+    force: bool = Query(default=False, description="Bypass cache and recompute"),
     engine: ConvictionEngine = Depends(get_conviction_engine),
     store: OHLCVStore = Depends(get_data_store),
     settings: TycheSettings = Depends(get_settings),
 ) -> ConvictionScanResponse:
     """Run the conviction engine on specified symbols, watchlist, or dynamic discovery.
 
-    When no symbols are provided and watchlist is empty, screens the full
-    data store using volume/price/dollar-volume filters and returns the
-    top CSP-eligible stocks by conviction.
+    Results are cached by (latest OHLCV date, ticker set).  Since OHLCV
+    data only changes once per day, subsequent calls with the same tickers
+    return the cached result instantly.  Use ``force=true`` to bypass.
     """
     if not store.exists:
         raise HTTPException(
@@ -118,6 +146,12 @@ async def scan_conviction(
     if not tickers:
         raise HTTPException(status_code=400, detail="No symbols found after screening.")
 
+    cache_key = _make_cache_key(store, tickers)
+    if not force and cache_key in _scan_cache:
+        logger.info("conviction_scan_cache_hit", tickers=len(tickers))
+        return _scan_cache[cache_key]
+
+    t0 = time.perf_counter()
     ticker_data = store.read_tickers(tickers)
 
     signals = engine.analyze_batch(
@@ -140,13 +174,23 @@ async def scan_conviction(
     )
     display_signals = eligible[:limit] if not symbols else signals
 
-    return ConvictionScanResponse(
+    response = ConvictionScanResponse(
         scan_id=str(uuid.uuid4()),
         scanned_at=datetime.now(timezone.utc).isoformat(),
         total_screened=len(tickers),
         eligible_count=len(eligible),
         signals=[_signal_to_response(s) for s in display_signals],
     )
+
+    _scan_cache[cache_key] = response
+    dur_ms = (time.perf_counter() - t0) * 1000
+    logger.info(
+        "conviction_scan_computed_and_cached",
+        tickers=len(tickers),
+        eligible=len(eligible),
+        duration_ms=round(dur_ms, 2),
+    )
+    return response
 
 
 @router.get("/signal/{ticker}", response_model=ConvictionSignalResponse)
