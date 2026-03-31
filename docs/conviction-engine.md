@@ -4,7 +4,7 @@
 
 ## Purpose
 
-The conviction engine is the primary stock screening gate. It computes 8-day and 21-day Exponential Moving Averages on daily closes, classifies the trend state, and determines whether a stock is eligible for selling Cash-Secured Puts. Every threshold has been validated through backtesting (670+ trades over 90 days).
+The conviction engine is the primary stock screening gate. It computes 8-day and 21-day Exponential Moving Averages on daily closes, classifies the trend state, and determines whether a stock is eligible for selling Cash-Secured Puts via one of two paths: the **uptrend path** (stock above both EMAs) or the **pullback path** (stock pulling back to EMA support in a confirmed uptrend). The pullback path was validated through backtesting — 76.8% win rate across 35,324 trades on $5B+ market cap stocks with 5-day DTE and strikes 5% below the support EMA.
 
 ## Trend State Classification
 
@@ -59,13 +59,17 @@ Each trend state maps to a conviction level used for risk weighting in the portf
 
 ## CSP Eligibility Filters
 
-A stock must pass **all three gates** to be CSP-eligible:
+A stock can become CSP-eligible through **one of two paths**. Both share Gate 1 (trend state), but diverge at Gates 2 and 3.
 
-### Gate 1: Trend State
+### Gate 1: Trend State (both paths)
 
 Must be one of: `strong_uptrend`, `uptrend`, `pullback_to_8ema`, `pullback_to_21ema`.
 
-### Gate 2: Extension Cap (<= 3%)
+---
+
+### Path A — Uptrend CSP (stock above both EMAs)
+
+#### Gate 2: Extension Cap (<= 3%)
 
 The stock's price must not be more than 3% above its 8-day EMA.
 
@@ -76,7 +80,7 @@ if extension_pct > 3.0: csp_eligible = False
 
 **Backtest evidence:** Stocks extended >3% above 8-EMA showed significantly worse CSP outcomes. The 1-2% extension bucket had a 69% win rate vs. 44% for the 5-8% bucket. Over-extended stocks have high snapback risk — selling puts near the top leads to frequent assignment.
 
-### Gate 3: Days Above Both EMAs (5-10 days)
+#### Gate 3a: Days Above Both EMAs (5-10 days)
 
 The stock must have been continuously above both EMAs for 5 to 10 consecutive trading days.
 
@@ -87,6 +91,46 @@ if not (5 <= days_above_both_emas <= 10): csp_eligible = False
 **Rationale:**
 - **< 5 days:** Trend not confirmed. Too early to have confidence the uptrend is real.
 - **> 10 days:** Overdue for a reversal or consolidation. The best CSP entries are in the sweet spot of a confirmed but not exhausted trend.
+
+---
+
+### Path B — Pullback CSP (stock pulling back to EMA support)
+
+Applies when the trend state is `pullback_to_8ema` or `pullback_to_21ema`. Requires `pullback_csp_enabled=true` (default).
+
+#### Gate 2: Extension Cap (auto-pass)
+
+The extension cap is bypassed on the pullback path — the stock is pulling back, not extended.
+
+#### Gate 3b: Prior Streak + Rising 21-EMA
+
+Instead of checking the current streak above both EMAs (which is 0 during a pullback), the engine looks **backward** to find the uptrend that preceded the pullback:
+
+```python
+prior_streak = _compute_prior_streak(above_both_series)
+pullback_eligible = prior_streak >= min_prior_streak and ema_21_slope > 0
+```
+
+`_compute_prior_streak` skips trailing `False` values (the current pullback), then counts consecutive `True` values (the prior uptrend run).
+
+**Requirements:**
+- **Prior streak >= 5 days** (configurable via `min_prior_streak`): The stock must have been above both EMAs for at least 5 days before the pullback started, confirming it was in a real uptrend.
+- **21-EMA slope > 0**: The longer-term trend must still be rising, not rolling over.
+
+**Backtest evidence (2024-2026, $5B+ market cap):**
+- 5% below support EMA, 5-day DTE: **76.8% win rate** across 35,324 trades
+- At-the-money pullback CSPs (0% offset) showed very high assignment rates — avoided
+- 8-EMA pullbacks outperformed 21-EMA pullbacks
+- Quality large-caps (RSG, DTE, WMT) showed 75-81% win rates
+
+### Strike Selection by Path
+
+| Path | Reference Price | Strike Range |
+|---|---|---|
+| Uptrend (A) | 8-EMA | Floor = 8-EMA × (1 - `strike_range_pct`/100). Default: 15% below. |
+| Pullback (B) | Support EMA (21-EMA or 8-EMA) | Floor = support_EMA × (1 - `pullback_strike_offset_pct`/100). Ceiling = support_EMA. Default: 5% below. |
+
+For pullback CSPs, strikes are bounded tightly: no deeper than 5% below the support EMA, and no higher than the EMA itself (to avoid selling ITM puts).
 
 ## Pre-Conviction Universe Filters
 
@@ -110,24 +154,41 @@ Checked over a 5-day lookback window:
 
 Both must be true. This upgrades `pullback_to_21ema` from medium to **high** conviction.
 
+## Conviction Sorting
+
+In `analyze_batch`, signals are sorted for optimal trade selection:
+
+1. **Conviction level** (high → medium → low → none)
+2. **Pullback priority** (21-EMA pullback > 8-EMA pullback > uptrend — pullbacks are safer per backtest)
+3. **Prior streak** (longer prior uptrend = stronger setup, descending)
+
+## Assignment Philosophy
+
+If assigned on a pullback CSP, the stock was bought at 5% below a rising EMA on a quality large-cap name — exactly where you'd want to own it anyway. Enter the wheel: sell covered calls on the assigned shares.
+
 ## Configuration
 
 All thresholds are configurable via environment variables (see [Configuration Reference](configuration.md)):
 
-| Setting | Env Var | Default |
-|---|---|---|
-| Fast EMA period | `TYCHE_EMA_FAST_PERIOD` | 8 |
-| Slow EMA period | `TYCHE_EMA_SLOW_PERIOD` | 21 |
-| Pullback proximity | `TYCHE_PULLBACK_PROXIMITY_PCT` | 2.0% |
-| Max extension | `TYCHE_MAX_EXTENSION_PCT` | 3.0% |
-| Min days above EMAs | `TYCHE_MIN_DAYS_ABOVE_EMAS` | 5 |
-| Max days above EMAs | `TYCHE_MAX_DAYS_ABOVE_EMAS` | 10 |
-| Bootstrap days | `TYCHE_BOOTSTRAP_DAYS` | 120 |
+| Setting | Env Var | Default | Path |
+|---|---|---|---|
+| Fast EMA period | `TYCHE_EMA_FAST_PERIOD` | 8 | Both |
+| Slow EMA period | `TYCHE_EMA_SLOW_PERIOD` | 21 | Both |
+| Pullback proximity | `TYCHE_PULLBACK_PROXIMITY_PCT` | 2.0% | Both |
+| Max extension | `TYCHE_MAX_EXTENSION_PCT` | 3.0% | Uptrend (A) |
+| Min days above EMAs | `TYCHE_MIN_DAYS_ABOVE_EMAS` | 5 | Uptrend (A) |
+| Max days above EMAs | `TYCHE_MAX_DAYS_ABOVE_EMAS` | 10 | Uptrend (A) |
+| Bootstrap days | `TYCHE_BOOTSTRAP_DAYS` | 120 | Both |
+| Pullback CSP enabled | `TYCHE_PULLBACK_CSP_ENABLED` | true | Pullback (B) |
+| Min prior streak | `TYCHE_MIN_PRIOR_STREAK` | 5 | Pullback (B) |
+| Pullback strike offset | `TYCHE_PULLBACK_STRIKE_OFFSET_PCT` | 5.0% | Pullback (B) |
 
 ## Updating Thresholds
 
 If you change any conviction threshold:
 1. Update the env var or `config.py` default
-2. Re-run the backtest: `cd backend && python scripts/backtest_ema.py`
+2. Re-run the appropriate backtest:
+   - Uptrend path: `cd backend && python scripts/backtest_ema.py`
+   - Pullback path: `cd backend && python scripts/backtest_pullback_csp.py`
 3. Compare win rate, P&L, and category breakdowns against the baseline
-4. The backtest uses the same `ConvictionEngine` class, so results are production-identical
+4. Both backtests use the same `ConvictionEngine` class, so results are production-identical

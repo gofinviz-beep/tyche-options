@@ -120,6 +120,7 @@ async def run_morning_scan(
     strike_range_pct: float = 15.0,
     llm_concurrency: int = 5,
     csp_strike_preference: str = "legacy",
+    pullback_strike_offset_pct: float = 5.0,
     min_institutional_pct_stock_buy: float = 0.50,
     notification_dispatcher: Any | None = None,
 ) -> MorningScanResult:
@@ -268,12 +269,23 @@ async def run_morning_scan(
                 eligible_symbols = [
                     sig.ticker for sig in signals if sig.csp_eligible
                 ]
+                uptrend_count = sum(
+                    1 for sig in signals
+                    if sig.csp_eligible and sig.trend_state.value.startswith("pullback") is False
+                    and sig.trend_state.value in ("strong_uptrend", "uptrend")
+                )
+                pullback_count = sum(
+                    1 for sig in signals
+                    if sig.csp_eligible and sig.trend_state.value.startswith("pullback")
+                )
                 if eligible_symbols:
                     screened_symbols = eligible_symbols
                     logger.info(
                         "conviction_filter_applied",
                         total=len(signals),
                         eligible=len(eligible_symbols),
+                        uptrend=uptrend_count,
+                        pullback=pullback_count,
                     )
                 else:
                     logger.warning("conviction_no_eligible", total=len(signals))
@@ -285,7 +297,7 @@ async def run_morning_scan(
                         "EMA Conviction",
                         before_conviction,
                         len(screened_symbols),
-                        detail="8/21 EMA trend + CSP eligibility",
+                        detail=f"8/21 EMA: {uptrend_count} uptrend + {pullback_count} pullback CSP eligible",
                         duration_ms=conv_dur * 1000,
                     )
                 )
@@ -358,6 +370,7 @@ async def run_morning_scan(
             strike_range_pct=strike_range_pct,
             expiration_mode=expiration_mode,
             csp_strike_preference=csp_strike_preference,
+            pullback_strike_offset_pct=pullback_strike_offset_pct,
         )
         result.csp_candidates = csp_candidates
     except Exception as exc:

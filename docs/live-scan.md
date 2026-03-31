@@ -13,8 +13,8 @@ flowchart TD
     Start["Load TickerMetaStore\n+ OHLCVStore"] --> Filter["Universe Filter\nmarket cap >= $5B\nvalid exchange"]
     Filter -->|"~1100 tickers"| LoadOHLCV["Load OHLCV data\nfor qualified tickers"]
     LoadOHLCV --> Conviction["ConvictionEngine\n8/21 EMA analysis"]
-    Conviction -->|"~10-20 CSP-eligible"| Quotes["Tradier: Live Quotes\nfor eligible tickers"]
-    Quotes --> OptionsCSP["Tradier: Options Chains\nDTE 3-14, OTM 5%"]
+    Conviction -->|"~10-20 CSP-eligible\n(uptrend + pullback)"| Quotes["Tradier: Live Quotes\nfor eligible tickers"]
+    Quotes --> OptionsCSP["Tradier: Options Chains\nDTE 3-14\nPullback: 5% below EMA\nUptrend: OTM range"]
     OptionsCSP -->|"CSP candidates"| Allocator["PortfolioAllocator\nMILP Optimizer"]
     Start --> Positions["Tradier: Broker Positions\n(equity with >= 100 shares)"]
     Positions --> OptionsCC["Tradier: Options Chains\nfor held positions"]
@@ -37,9 +37,11 @@ Typical result: ~1,100 qualified tickers from ~12,000+ in the store.
 Load historical daily bars from `OHLCVStore` for all qualified tickers. Run `ConvictionEngine.analyze_batch()` which:
 - Computes 8/21 EMA for each ticker
 - Classifies trend state
-- Checks CSP eligibility (trend + extension <= 3% + 5-10 day streak)
+- Checks CSP eligibility via two paths:
+  - **Uptrend path:** extension <= 3% + 5-10 day streak above both EMAs
+  - **Pullback path:** prior streak >= 5 days + rising 21-EMA slope (stock pulling back to EMA support)
 
-Typical result: ~10-20 CSP-eligible tickers.
+Typical result: ~10-20 CSP-eligible tickers (mix of uptrend and pullback entries).
 
 ### 3. Fetch Live Quotes (Tradier)
 
@@ -53,7 +55,9 @@ For each eligible ticker with a live price >= $15:
 2. Filter to expirations within DTE range (default: 3-14 days)
 3. **Limit to nearest N expirations** (`max_expiration_dates`, default: 2) to cap API calls
 4. Fetch the options chain for each valid expiration
-5. **Filter strikes by EMA range**: only consider puts with `strike >= 8-EMA * (1 - strike_range_pct/100)`. For example, if the 8-EMA is $100 and `strike_range_pct=15`, only strikes >= $85 are scanned.
+5. **Filter strikes by EMA range**:
+   - **Uptrend tickers:** `strike >= 8-EMA * (1 - strike_range_pct/100)`. For example, if the 8-EMA is $100 and `strike_range_pct=15`, only strikes >= $85 are scanned.
+   - **Pullback tickers:** strikes bounded between `support_EMA * (1 - pullback_strike_offset_pct/100)` and `support_EMA`. For example, if the 21-EMA is $100 and offset is 5%, only strikes between $95 and $100 are scanned.
 6. Find the best put strike: `strike <= price * (1 - OTM_PCT)` with `bid > 0`, pick the highest strike below the OTM threshold
 7. Build a `ScoredCandidate` with premium, collateral, and annualized return
 
@@ -90,7 +94,8 @@ The optimizer returns the optimal trade allocation respecting all constraints.
 | `DTE_MAX` | 14 | Maximum days to expiration |
 | `OTM_PCT` | 5% | Out-of-the-money target for strike selection |
 | `MAX_EXPIRATION_DATES` | 2 | Max number of nearest expiration dates to scan per ticker |
-| `STRIKE_RANGE_PCT` | 15% | Only consider strikes within this % below 8-EMA |
+| `STRIKE_RANGE_PCT` | 15% | Only consider strikes within this % below 8-EMA (uptrend path) |
+| `PULLBACK_STRIKE_OFFSET_PCT` | 5% | Strikes within this % below support EMA (pullback path) |
 | `LLM_CONCURRENCY` | 5 | Max parallel LLM (Gemini) calls during analysis |
 
 ## Running the Live Scan

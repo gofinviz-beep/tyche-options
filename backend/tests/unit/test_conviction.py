@@ -186,6 +186,155 @@ class TestConvictionEngine:
         assert signal.days_above_both_emas > 0
 
 
+class TestComputePriorStreak:
+    """Tests for _compute_prior_streak static method."""
+
+    def test_simple_pullback_after_uptrend(self):
+        above = pd.Series([False] * 5 + [True] * 10 + [False] * 3)
+        assert ConvictionEngine._compute_prior_streak(above) == 10
+
+    def test_no_prior_uptrend(self):
+        above = pd.Series([False] * 10)
+        assert ConvictionEngine._compute_prior_streak(above) == 0
+
+    def test_all_above(self):
+        above = pd.Series([True] * 20)
+        assert ConvictionEngine._compute_prior_streak(above) == 20
+
+    def test_single_day_pullback(self):
+        above = pd.Series([True] * 8 + [False])
+        assert ConvictionEngine._compute_prior_streak(above) == 8
+
+    def test_multiple_pullback_bars(self):
+        above = pd.Series([True] * 6 + [False] * 5)
+        assert ConvictionEngine._compute_prior_streak(above) == 6
+
+    def test_earlier_streak_ignored(self):
+        above = pd.Series([True] * 3 + [False] * 2 + [True] * 7 + [False] * 2)
+        assert ConvictionEngine._compute_prior_streak(above) == 7
+
+    def test_empty_series(self):
+        above = pd.Series([], dtype=bool)
+        assert ConvictionEngine._compute_prior_streak(above) == 0
+
+
+class TestPullbackCSPEligibility:
+    """Tests for pullback CSP path (Gate 3b)."""
+
+    @pytest.fixture
+    def engine(self):
+        return ConvictionEngine(
+            ema_fast=8, ema_slow=21,
+            pullback_proximity_pct=2.0,
+            pullback_csp_enabled=True,
+            min_prior_streak=5,
+        )
+
+    @pytest.fixture
+    def engine_disabled(self):
+        return ConvictionEngine(
+            ema_fast=8, ema_slow=21,
+            pullback_proximity_pct=2.0,
+            pullback_csp_enabled=False,
+            min_prior_streak=5,
+        )
+
+    def _pullback_to_21ema(self, n=80, start=100.0, gain=0.5, pullback_bars=3, prior_streak=8):
+        """Uptrend that ends with a pullback toward the 21-EMA.
+
+        The stock rises for ``prior_streak`` days above both EMAs, then
+        pulls back gently toward the 21-EMA.
+        """
+        base_len = n - pullback_bars
+        prices = [start + i * gain for i in range(base_len)]
+        peak = prices[-1]
+        ema_21_approx = start + (base_len - 12) * gain
+        for i in range(pullback_bars):
+            frac = (i + 1) / pullback_bars
+            prices.append(peak - frac * (peak - ema_21_approx) * 0.85)
+        return prices
+
+    def test_pullback_csp_eligible_with_prior_streak(self, engine):
+        prices = self._pullback_to_21ema(n=80, prior_streak=8)
+        signal = engine.analyze("PB", _make_ohlcv(prices))
+        if signal.trend_state in (TrendState.PULLBACK_TO_8EMA, TrendState.PULLBACK_TO_21EMA):
+            assert signal.prior_streak > 0
+            if signal.prior_streak >= 5 and signal.ema_21_slope > 0:
+                assert signal.csp_eligible is True
+                assert signal.conviction_level in ("high", "medium")
+
+    def test_pullback_csp_disabled(self, engine_disabled):
+        prices = self._pullback_to_21ema(n=80, prior_streak=8)
+        signal = engine_disabled.analyze("PB", _make_ohlcv(prices))
+        if signal.trend_state in (TrendState.PULLBACK_TO_8EMA, TrendState.PULLBACK_TO_21EMA):
+            assert signal.csp_eligible is False
+            gate_names = [g.gate for g in signal.gate_results]
+            assert "Pullback Prior Streak" in gate_names
+            pullback_gate = next(g for g in signal.gate_results if g.gate == "Pullback Prior Streak")
+            assert pullback_gate.passed is False
+            assert "disabled" in pullback_gate.actual
+
+    def test_prior_streak_too_short(self):
+        engine = ConvictionEngine(
+            ema_fast=8, ema_slow=21,
+            pullback_proximity_pct=2.0,
+            pullback_csp_enabled=True,
+            min_prior_streak=20,
+        )
+        prices = [100.0 + i * 0.3 for i in range(70)]
+        peak = prices[-1]
+        for i in range(10):
+            prices.append(peak - (i + 1) * 0.3)
+        signal = engine.analyze("SHORT", _make_ohlcv(prices))
+        if signal.trend_state in (TrendState.PULLBACK_TO_8EMA, TrendState.PULLBACK_TO_21EMA):
+            assert signal.csp_eligible is False
+
+    def test_uptrend_path_unaffected(self, engine):
+        """Uptrend CSPs still work through Gate 3a."""
+        signal = engine.analyze("UP", _make_ohlcv(_fresh_uptrend(80)))
+        assert signal.trend_state in (TrendState.STRONG_UPTREND, TrendState.UPTREND)
+        assert signal.csp_eligible is True
+        gate_names = [g.gate for g in signal.gate_results]
+        assert "Days Above EMAs" in gate_names
+
+    def test_prior_streak_in_to_dict(self, engine):
+        signal = engine.analyze("D", _make_ohlcv(_uptrend(80)))
+        d = signal.to_dict()
+        assert "prior_streak" in d
+
+    def test_pullback_extension_cap_bypassed(self, engine):
+        """Pullback CSPs skip extension cap gate (stock is pulling back, not extended)."""
+        prices = self._pullback_to_21ema(n=80)
+        signal = engine.analyze("PB", _make_ohlcv(prices))
+        if signal.trend_state in (TrendState.PULLBACK_TO_8EMA, TrendState.PULLBACK_TO_21EMA):
+            ext_gate = next(g for g in signal.gate_results if g.gate == "Extension Cap")
+            assert ext_gate.passed is True
+            assert "pullback" in ext_gate.actual.lower()
+
+
+class TestBatchSortingWithPullbacks:
+    """Tests for the improved sorting: pullback CSPs ranked by conviction then prior streak."""
+
+    @pytest.fixture
+    def engine(self):
+        return ConvictionEngine(
+            ema_fast=8, ema_slow=21,
+            pullback_proximity_pct=2.0,
+            pullback_csp_enabled=True,
+            min_prior_streak=5,
+        )
+
+    def test_batch_sorted_by_conviction_first(self, engine):
+        data = {
+            "STRONG": _make_ohlcv(_fresh_uptrend(80, start=50, gain=1.0)),
+            "WEAK": _make_ohlcv(_downtrend(80)),
+        }
+        signals = engine.analyze_batch(data)
+        order = {"high": 0, "medium": 1, "low": 2, "none": 3}
+        levels = [order.get(s.conviction_level, 99) for s in signals]
+        assert levels == sorted(levels)
+
+
 class TestTrendState:
     def test_all_string_values(self):
         for state in TrendState:

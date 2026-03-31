@@ -35,7 +35,7 @@ flowchart TB
         TickerMeta -->|"market cap >= $5B\nvalid exchange"| UnivFilter["Universe Filter"]
         UnivFilter -->|"qualified tickers"| ConvEng["ConvictionEngine\n8/21 EMA"]
         OHLCVStore -->|"OHLCV DataFrames"| ConvEng
-        ConvEng -->|"CSP-eligible tickers\nextension<=3%, 5-10d streak"| TradierQuotes["Tradier API\nLive Quotes"]
+        ConvEng -->|"CSP-eligible tickers\nuptrend + pullback paths"| TradierQuotes["Tradier API\nLive Quotes"]
         TradierQuotes --> OptionsChain["Tradier API\nOptions Chains"]
         OptionsChain -->|"CSP candidates"| Allocator["PortfolioAllocator\nMILP Optimizer"]
         TradierPos["Tradier API\nBroker Positions"] -->|"CC candidates"| Allocator
@@ -59,7 +59,9 @@ flowchart TB
 ```
 backend/
 ├── scripts/
-│   ├── backtest_ema.py          # Backtest: per-trade sim + capital-aware portfolio sim
+│   ├── backtest_ema.py          # Backtest: uptrend CSP sim + capital-aware portfolio sim
+│   ├── backtest_pullback_csp.py # Backtest: pullback CSP sim (strike offsets × DTE × market cap)
+│   ├── backfill_market_caps.py  # Backfill market cap data from Polygon detail API
 │   └── live_scan.py             # Standalone live scanner (CLI, uses Tradier + conviction)
 ├── src/tyche/
 │   ├── app.py                   # FastAPI application factory + lifespan
@@ -201,7 +203,11 @@ Two separate APIs serve different purposes:
 The conviction engine acts as the primary gate. No stock reaches options scanning without first passing through:
 1. Universe filters (market cap, exchange, price, volume)
 2. EMA trend classification
-3. CSP eligibility check (trend state + extension cap + days-above streak)
+3. CSP eligibility check via one of two paths:
+   - **Uptrend path (A):** trend state + extension cap ≤3% + 5-10 day streak above both EMAs
+   - **Pullback path (B):** pullback to EMA support + prior streak ≥5 days + rising 21-EMA slope
+
+The pullback path was added based on backtest validation (76.8% win rate on $5B+ stocks). Pullback CSPs use tighter strike targeting (5% below support EMA) to reduce assignment risk while still collecting premium.
 
 This reduces API calls to Tradier and ensures only high-conviction candidates are evaluated.
 

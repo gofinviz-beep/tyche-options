@@ -95,6 +95,7 @@ async def trigger_scan(
         strike_range_pct=settings.strike_range_pct,
         llm_concurrency=settings.llm_concurrency,
         csp_strike_preference=settings.csp_strike_preference,
+        pullback_strike_offset_pct=settings.pullback_strike_offset_pct,
         min_institutional_pct_stock_buy=settings.min_institutional_pct_stock_buy,
         notification_dispatcher=notification_dispatcher,
     )

@@ -61,6 +61,11 @@ class TycheSettings(BaseSettings):
     max_days_above_emas: int = 10
     bootstrap_days: int = 120
 
+    # --- Pullback CSP ---
+    pullback_csp_enabled: bool = True
+    min_prior_streak: int = 5  # min days above both EMAs before the pullback
+    pullback_strike_offset_pct: float = 5.0  # strike at X% below support EMA
+
     # --- Capital ---
     available_capital: float = 100_000.0  # Available cash for CSP collateral (Fidelity)
 

@@ -24,7 +24,8 @@ alwaysApply: true
 - **Stock positions are persisted to `backtest.db`.** `StockPosition` and `ExitSignal` tables auto-created on startup. Positions survive restarts.
 - **Exit target is set once at position creation.** `target_exit_pct` comes from the ticker's `TickerPullbackProfile.p75_peak_gain_pct`. If no profile exists, `target_exit_pct` is `None` and only stop-loss (8-EMA) is active.
 - **Exit monitor refreshes OHLCV before checking.** Both the scheduled job (4:05 PM) and the on-demand `POST /stocks/positions/check-exits` call `bootstrap_ohlcv(include_today=True)` as a safety net before evaluating positions.
-- **Conviction is separate for CSP vs stock pullback.** CSP eligibility uses extension cap + days-above streak. Stock pullback conviction uses trend state + volume confirmation. Same engine, different assessment criteria.
+- **Conviction is separate for CSP vs stock pullback.** CSP eligibility has **two paths**: (A) uptrend path uses extension cap + days-above streak, (B) pullback path uses prior streak ≥5d + rising 21-EMA slope. Stock pullback conviction uses trend state + volume confirmation. Same engine, different assessment criteria.
+- **Pullback CSPs use different strike targeting.** For pullback-eligible tickers, strikes are bounded between `support_EMA * (1 - pullback_strike_offset_pct/100)` and `support_EMA`. This is narrower than the uptrend path's 15% `strike_range_pct` below 8-EMA.
 - **`POST /stocks/ohlcv/refresh` returns all zeros when up-to-date.** Early return in `bootstrap_ohlcv` short-circuits before counting tickers. Not an error — means no new data to fetch.
 
 ## Frontend

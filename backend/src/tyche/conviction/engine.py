@@ -84,6 +84,7 @@ class ConvictionSignal:
 
     # Additional context
     days_above_both_emas: int = 0
+    prior_streak: int = 0  # days above both EMAs before pullback started
     as_of_date: date | None = None
 
     # Gate-level eligibility results
@@ -107,6 +108,7 @@ class ConvictionSignal:
             "avg_volume_20d": self.avg_volume_20d,
             "latest_volume": self.latest_volume,
             "days_above_both_emas": self.days_above_both_emas,
+            "prior_streak": self.prior_streak,
             "as_of_date": self.as_of_date.isoformat() if self.as_of_date else None,
             "gate_results": [g.to_dict() for g in self.gate_results] if self.gate_results else [],
         }
@@ -146,6 +148,8 @@ class ConvictionEngine:
         max_extension_pct: float = 3.0,
         min_days_above_emas: int = 5,
         max_days_above_emas: int = 10,
+        pullback_csp_enabled: bool = True,
+        min_prior_streak: int = 5,
     ) -> None:
         self._fast = ema_fast
         self._slow = ema_slow
@@ -154,6 +158,8 @@ class ConvictionEngine:
         self._max_extension_pct = max_extension_pct
         self._min_days_above = min_days_above_emas
         self._max_days_above = max_days_above_emas
+        self._pullback_csp_enabled = pullback_csp_enabled
+        self._min_prior_streak = min_prior_streak
 
     def analyze(self, ticker: str, df: pd.DataFrame) -> ConvictionSignal:
         """Analyze a single ticker's OHLCV DataFrame and return a conviction signal.
@@ -228,6 +234,15 @@ class ConvictionEngine:
         )
         conviction = raw_conviction
 
+        is_pullback = trend_state in (
+            TrendState.PULLBACK_TO_8EMA,
+            TrendState.PULLBACK_TO_21EMA,
+        )
+
+        prior_streak_val = 0
+        if is_pullback:
+            prior_streak_val = self._compute_prior_streak(above_both)
+
         eligible_trends = (
             TrendState.STRONG_UPTREND,
             TrendState.UPTREND,
@@ -247,8 +262,8 @@ class ConvictionEngine:
             reason=f"Trend is {trend_label}" if trend_passed else f"{trend_label} is not an eligible trend state",
         ))
 
-        # Gate 2: Extension Cap
-        if trend_passed:
+        # Gate 2: Extension Cap (only applies to uptrend path)
+        if trend_passed and not is_pullback:
             ext_passed = price_to_8 <= self._max_extension_pct
             gates.append(GateResult(
                 gate="Extension Cap",
@@ -259,12 +274,22 @@ class ConvictionEngine:
                 if ext_passed
                 else f"Over-extended at {price_to_8:.2f}% above 8-EMA (max {self._max_extension_pct}%)",
             ))
+        elif trend_passed and is_pullback:
+            ext_passed = True
+            gates.append(GateResult(
+                gate="Extension Cap",
+                passed=True,
+                actual="n/a (pullback)",
+                threshold=f"≤{self._max_extension_pct}%",
+                reason="Extension cap not applied on pullback path",
+            ))
         else:
             ext_passed = False
             gates.append(GateResult(gate="Extension Cap", passed=False, actual="—", threshold=f"≤{self._max_extension_pct}%", reason="Skipped — failed prior gate"))
 
-        # Gate 3: Days Above EMAs
-        if trend_passed and ext_passed:
+        # Gate 3a: Days Above EMAs (uptrend path — stock currently above both)
+        # Gate 3b: Pullback path — prior streak + rising 21-EMA slope
+        if trend_passed and ext_passed and not is_pullback:
             streak_passed = self._min_days_above <= streak <= self._max_days_above
             gates.append(GateResult(
                 gate="Days Above EMAs",
@@ -279,9 +304,45 @@ class ConvictionEngine:
                     else f"{streak}d above both EMAs — overdue for reversal (max {self._max_days_above})"
                 ),
             ))
+        elif trend_passed and ext_passed and is_pullback:
+            if self._pullback_csp_enabled:
+                pullback_passed = (
+                    prior_streak_val >= self._min_prior_streak
+                    and ema_21_slope > 0
+                )
+                streak_passed = pullback_passed
+                reason_parts = []
+                if prior_streak_val < self._min_prior_streak:
+                    reason_parts.append(
+                        f"Prior streak {prior_streak_val}d < min {self._min_prior_streak}d"
+                    )
+                if ema_21_slope <= 0:
+                    reason_parts.append("21-EMA slope is flat/declining")
+                gates.append(GateResult(
+                    gate="Pullback Prior Streak",
+                    passed=pullback_passed,
+                    actual=f"{prior_streak_val}d prior streak, 21-EMA slope={ema_21_slope:.4f}",
+                    threshold=f"≥{self._min_prior_streak}d + rising 21-EMA",
+                    reason=(
+                        f"Pullback CSP eligible: {prior_streak_val}d prior uptrend, rising 21-EMA"
+                        if pullback_passed
+                        else f"Pullback CSP ineligible: {'; '.join(reason_parts)}"
+                    ),
+                ))
+            else:
+                streak_passed = False
+                gates.append(GateResult(
+                    gate="Pullback Prior Streak",
+                    passed=False,
+                    actual="disabled",
+                    threshold="pullback_csp_enabled=true",
+                    reason="Pullback CSP path is disabled",
+                ))
         else:
             streak_passed = False
-            gates.append(GateResult(gate="Days Above EMAs", passed=False, actual="—", threshold=f"{self._min_days_above}–{self._max_days_above}d", reason="Skipped — failed prior gate"))
+            gate_name = "Pullback Prior Streak" if is_pullback else "Days Above EMAs"
+            threshold = f"≥{self._min_prior_streak}d + rising 21-EMA" if is_pullback else f"{self._min_days_above}–{self._max_days_above}d"
+            gates.append(GateResult(gate=gate_name, passed=False, actual="—", threshold=threshold, reason="Skipped — failed prior gate"))
 
         csp_eligible = trend_passed and ext_passed and streak_passed
         if not csp_eligible and trend_passed:
@@ -308,6 +369,7 @@ class ConvictionEngine:
             avg_volume_20d=avg_vol_20,
             latest_volume=last_volume,
             days_above_both_emas=streak,
+            prior_streak=prior_streak_val,
             as_of_date=as_of,
             gate_results=gates,
         )
@@ -361,7 +423,15 @@ class ConvictionEngine:
                 ))
 
         conviction_order = {"high": 0, "medium": 1, "low": 2, "none": 3}
-        signals.sort(key=lambda s: conviction_order.get(s.conviction_level, 99))
+        pullback_priority = {
+            TrendState.PULLBACK_TO_21EMA: 0,
+            TrendState.PULLBACK_TO_8EMA: 1,
+        }
+        signals.sort(key=lambda s: (
+            conviction_order.get(s.conviction_level, 99),
+            pullback_priority.get(s.trend_state, 2),
+            -s.prior_streak,
+        ))
 
         logger.info(
             "conviction_batch_complete",
@@ -433,6 +503,26 @@ class ConvictionEngine:
                 return "none"
             case _:
                 return "none"
+
+    @staticmethod
+    def _compute_prior_streak(above_both: pd.Series) -> int:
+        """Count the uptrend streak that ended before the current pullback.
+
+        Scans backward from the most recent bar. Skips any trailing
+        ``False`` values (the current pullback), then counts consecutive
+        ``True`` values (the prior uptrend run).
+        """
+        vals = above_both.tolist()
+        idx = len(vals) - 1
+
+        while idx >= 0 and not vals[idx]:
+            idx -= 1
+
+        streak = 0
+        while idx >= 0 and vals[idx]:
+            streak += 1
+            idx -= 1
+        return streak
 
     def _is_volume_declining_on_pullback(
         self,

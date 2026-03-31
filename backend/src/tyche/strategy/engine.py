@@ -125,6 +125,7 @@ class StrategyEngine:
         strike_range_pct: float = 15.0,
         expiration_mode: str = "friday_target",
         csp_strike_preference: str = "legacy",
+        pullback_strike_offset_pct: float = 5.0,
     ) -> list[ScoredCandidate]:
         """Scan the watchlist for CSP opportunities.
 
@@ -146,6 +147,8 @@ class StrategyEngine:
             csp_strike_preference: Strike scoring preference.
                 "near_21ema" boosts strikes closer to the 21-EMA (ideal assignment level).
                 "otm_target" uses default OTM scoring. "legacy" = no bonus.
+            pullback_strike_offset_pct: For pullback CSPs, only consider strikes
+                within this % below the support EMA. Default 5%.
 
         Returns:
             Scored and ranked CSP candidates.
@@ -167,10 +170,33 @@ class StrategyEngine:
                     target_exps = expirations[:max_expirations]
 
                 sig = conviction_signals.get(symbol)
-                reference_price = quote.last
-                if sig and hasattr(sig, "ema_8") and sig.ema_8 > 0:
-                    reference_price = sig.ema_8
-                strike_floor = reference_price * (1 - strike_range_pct / 100)
+                is_pullback = sig and hasattr(sig, "trend_state") and sig.trend_state in (
+                    "pullback_to_8ema", "pullback_to_21ema",
+                )
+
+                if is_pullback and sig:
+                    support_ema = (
+                        sig.ema_21
+                        if sig.trend_state == "pullback_to_21ema"
+                        else sig.ema_8
+                    )
+                    strike_floor = support_ema * (1 - pullback_strike_offset_pct / 100)
+                    strike_ceiling = support_ema
+                    logger.info(
+                        "pullback_strike_targeting",
+                        symbol=symbol,
+                        trend=sig.trend_state,
+                        support_ema=round(support_ema, 2),
+                        strike_floor=round(strike_floor, 2),
+                        strike_ceiling=round(strike_ceiling, 2),
+                        offset_pct=pullback_strike_offset_pct,
+                    )
+                else:
+                    reference_price = quote.last
+                    if sig and hasattr(sig, "ema_8") and sig.ema_8 > 0:
+                        reference_price = sig.ema_8
+                    strike_floor = reference_price * (1 - strike_range_pct / 100)
+                    strike_ceiling = None
 
                 for exp_str in target_exps:
                     try:
@@ -185,6 +211,10 @@ class StrategyEngine:
                     raw = self.csp.identify_candidates(
                         chain, quote, strike_floor=strike_floor
                     )
+
+                    if strike_ceiling is not None:
+                        raw = [c for c in raw if c.strike <= strike_ceiling]
+
                     filtered = self.csp.apply_filters(raw, min_oi, min_volume, max_spread_pct)
                     scored = self.csp.score(filtered, available_cash)
 

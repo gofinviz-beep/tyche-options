@@ -73,10 +73,18 @@ The `data/` directory contains raw market data (Parquet files only).
 | `TYCHE_EMA_FAST_PERIOD` | int | `8` | Fast EMA period (days) |
 | `TYCHE_EMA_SLOW_PERIOD` | int | `21` | Slow EMA period (days) |
 | `TYCHE_PULLBACK_PROXIMITY_PCT` | float | `2.0` | Max % distance to consider a "pullback" to an EMA |
-| `TYCHE_MAX_EXTENSION_PCT` | float | `3.0` | Max % above 8-EMA for CSP eligibility |
-| `TYCHE_MIN_DAYS_ABOVE_EMAS` | int | `5` | Minimum consecutive days above both EMAs |
-| `TYCHE_MAX_DAYS_ABOVE_EMAS` | int | `10` | Maximum consecutive days above both EMAs |
+| `TYCHE_MAX_EXTENSION_PCT` | float | `3.0` | Max % above 8-EMA for CSP eligibility (uptrend path only) |
+| `TYCHE_MIN_DAYS_ABOVE_EMAS` | int | `5` | Minimum consecutive days above both EMAs (uptrend path only) |
+| `TYCHE_MAX_DAYS_ABOVE_EMAS` | int | `10` | Maximum consecutive days above both EMAs (uptrend path only) |
 | `TYCHE_BOOTSTRAP_DAYS` | int | `120` | Calendar days of history to fetch on bootstrap |
+
+## Pullback CSP
+
+| Env Var | Type | Default | Description |
+|---|---|---|---|
+| `TYCHE_PULLBACK_CSP_ENABLED` | bool | `true` | Enable the pullback CSP eligibility path. When disabled, only the uptrend path (Gate 3a) is active. |
+| `TYCHE_MIN_PRIOR_STREAK` | int | `5` | Minimum days the stock must have been above both EMAs before the pullback for pullback CSP eligibility. |
+| `TYCHE_PULLBACK_STRIKE_OFFSET_PCT` | float | `5.0` | For pullback CSPs, only consider strikes within this % below the support EMA. E.g., 5% means for a stock with 21-EMA at $100, strikes between $95 and $100 are considered. |
 
 ## Capital and Risk Limits
 
@@ -143,10 +151,15 @@ TYCHE_MAX_OPEN_POSITIONS=8
 TYCHE_MAX_CONCENTRATION_PER_TICKER_PCT=25.0
 TYCHE_PREVIEW_ONLY_MODE=true
 
-# Conviction
+# Conviction (uptrend path)
 TYCHE_MAX_EXTENSION_PCT=3.0
 TYCHE_MIN_DAYS_ABOVE_EMAS=5
 TYCHE_MAX_DAYS_ABOVE_EMAS=10
+
+# Pullback CSP (primary path)
+TYCHE_PULLBACK_CSP_ENABLED=true
+TYCHE_MIN_PRIOR_STREAK=5
+TYCHE_PULLBACK_STRIKE_OFFSET_PCT=5.0
 
 # Scanner Options
 TYCHE_MAX_EXPIRATION_DATES=2

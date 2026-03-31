@@ -1,0 +1,65 @@
+---
+description: Core trading strategy philosophy — EMA pullback model for stocks AND options
+alwaysApply: true
+---
+
+# Strategy Philosophy
+
+## Core Thesis: "Buy Strength on Dips"
+
+Based on the 8/21 EMA pullback model. Strong stocks in confirmed uptrends pull back to their moving averages — these dips are buying opportunities, not sell signals.
+
+## Two Paths to CSP Eligibility
+
+### Path A — Uptrend CSP (Legacy)
+- Stock is **above** both 8-EMA and 21-EMA
+- Price ≤ 3% above 8-EMA (extension cap)
+- 5-10 day streak above both EMAs (sweet spot, not overdue for reversal)
+- Gate flow: Trend State → Extension Cap → Days Above EMAs
+
+### Path B — Pullback CSP (Primary, Backtest-Validated)
+- Stock in `PULLBACK_TO_8EMA` or `PULLBACK_TO_21EMA` trend state
+- **Prior streak** ≥ 5 days above both EMAs before the pullback started
+- 21-EMA slope is rising (uptrend still intact)
+- Strike set at **5% below the support EMA** (not at-the-money)
+- Extension cap is bypassed (stock is pulling back, not extended)
+- Gate flow: Trend State → Extension Cap (auto-pass) → Pullback Prior Streak
+
+## Why Pullback CSPs Work
+
+Backtest results on $5B+ market cap stocks (2024-2026 data):
+- **5% below EMA, 5-day DTE: 76.8% win rate** across 35,324 trades
+- At-the-money pullback CSPs (0% offset) have very high assignment rates — avoid
+- 8-EMA pullbacks outperform 21-EMA pullbacks for CSPs
+- Larger market cap stocks consistently show higher win rates
+
+## Conviction Ranking (Highest to Lowest)
+
+1. `PULLBACK_TO_21EMA` + volume declining + rising 21-EMA slope → **high**
+2. `PULLBACK_TO_21EMA` + rising 21-EMA slope → **medium**
+3. `PULLBACK_TO_8EMA` + rising 21-EMA slope → **medium**
+4. `STRONG_UPTREND` with 5+ day streak → **high** (uptrend path)
+5. `UPTREND` with rising 21-EMA slope → **medium** (uptrend path)
+
+Within the same conviction level, pullback CSPs are sorted first (safer per backtest data), with prior streak as tiebreaker (longer prior uptrend = stronger setup).
+
+## Strike Selection
+
+- **Pullback CSPs:** Strike = support_EMA × (1 - `pullback_strike_offset_pct` / 100). Default 5% below support.
+  Only strikes between this floor and the support EMA are considered (no ITM puts).
+- **Uptrend CSPs:** Strike within `strike_range_pct` (15%) below 8-EMA, with `near_21ema` bonus.
+
+## Assignment Philosophy
+
+If assigned on a pullback CSP, the stock was bought at 5% below a rising EMA on a quality large-cap name — exactly where we'd want to own it anyway. Enter the wheel: sell covered calls on the assigned shares.
+
+## Config Knobs
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `pullback_csp_enabled` | `true` | Feature flag for pullback CSP path |
+| `min_prior_streak` | `5` | Min days above both EMAs before pullback |
+| `pullback_strike_offset_pct` | `5.0` | Strike distance below support EMA |
+| `max_extension_pct` | `3.0` | Max % above 8-EMA for uptrend path |
+| `min_days_above_emas` | `5` | Min streak for uptrend path (Gate 3a) |
+| `max_days_above_emas` | `10` | Max streak for uptrend path (Gate 3a) |

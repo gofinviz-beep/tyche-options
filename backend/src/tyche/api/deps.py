@@ -242,6 +242,8 @@ def get_conviction_engine(
             max_extension_pct=settings.max_extension_pct,
             min_days_above_emas=settings.min_days_above_emas,
             max_days_above_emas=settings.max_days_above_emas,
+            pullback_csp_enabled=settings.pullback_csp_enabled,
+            min_prior_streak=settings.min_prior_streak,
         )
         logger.info(
             "conviction_engine_initialized",

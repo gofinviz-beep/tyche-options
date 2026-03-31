@@ -39,6 +39,7 @@ class ConvictionSignalResponse(BaseModel):
     avg_volume_20d: int
     latest_volume: int
     days_above_both_emas: int
+    prior_streak: int = 0
     as_of_date: str | None = None
     gate_results: list[GateResultResponse] = []
 

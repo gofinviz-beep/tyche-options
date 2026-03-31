@@ -67,6 +67,7 @@ async def _scheduled_morning_scan() -> None:
         conviction_engine=get_conviction_engine(settings),
         data_store=get_data_store(settings),
         top_n=5,
+        pullback_strike_offset_pct=settings.pullback_strike_offset_pct,
     )
 
     intents_created = 0
