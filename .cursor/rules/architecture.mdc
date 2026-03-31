@@ -8,7 +8,7 @@ alwaysApply: false
 
 # System Architecture
 
-Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy (Cash-Secured Puts + Covered Calls). It uses 8/21 EMA conviction-based stock screening followed by MILP portfolio optimization.
+Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy (Cash-Secured Puts + Covered Calls) with integrated stock-buying on EMA pullbacks. It uses 8/21 EMA conviction-based stock screening followed by MILP portfolio optimization for options, and data-driven exit targets (p75 historical bounce) for stock positions.
 
 ## Module Map
 
@@ -17,16 +17,23 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 - `conviction/engine.py` — 8/21 EMA trend classification + CSP eligibility. The primary screening gate.
 - `strategy/allocator.py` — MILP optimizer (scipy). Maximizes risk-adjusted premium across CSPs and CCs. Risk weight includes conviction, EMA extension, liquidity, and **delta penalty** (lower |delta| preferred to minimize assignment).
 - `strategy/engine.py` — Orchestrates CSP/CC candidate scanning via broker API. Supports `max_expiration_dates`, `strike_range_pct`, and `expiration_mode` (`friday_target` default: day-of-week-aware expiration selection).
-- `market_data/data_store.py` — OHLCVStore + IntradayStore (per-ticker Parquet dirs) + TickerMetaStore + `_MetadataCache` for fast status queries.
+- `market_data/data_store.py` — OHLCVStore + IntradayStore (per-ticker Parquet dirs) + TickerMetaStore + `_MetadataCache` for fast status queries. `bootstrap_ohlcv(include_today=True)` fetches grouped daily bars including today (use after market close).
 - `market_data/polygon.py` — Polygon.io client for historical bars and ticker reference. NOT used for live trading.
 - `broker/tradier/client.py` — Tradier API for live quotes, options chains, account ops. Handle `None` responses (market closed).
 - `workflow/morning_scan.py` — Full morning scan pipeline: universe filter → conviction → options scan → allocator → **per-ticker parallel LLM** (semaphore-controlled).
 - `workflow/intent_builder.py` — Converts scan results to OrderIntents. **Critical: all numerical fields from broker, not LLM.**
 - `workflow/active_monitor.py` — Real-time position monitoring. In-memory only, lost on restart.
+- `workflow/exit_monitor.py` — Daily check of active stock positions against profit targets (p75 from backtest) and 8-EMA stop loss. Refreshes OHLCV data before checking. Returns `ExitCheckResult` with triggered signals.
+- `workflow/conviction_batch.py` — Batch conviction engine run across all tickers. Reads from local OHLCV store, persists snapshots and transitions to `conviction.db`.
 - `risk/engine.py` + `risk/rules.py` — Deterministic risk rule chain (max positions, concentration, etc.).
 - `models/scan.py` — SQLAlchemy ORM models: `ScanRun`, `ScanCandidate`, `LLMAnalysisRecord`.
+- `models/backtest.py` — `PullbackEvent`, `TickerPullbackProfile` (backtest data), `StockPosition`, `ExitSignal` (position tracking). All in `backtest.db`.
+- `models/conviction.py` — `ConvictionSnapshot`, `ConvictionTransition`. In `conviction.db`.
 - `persistence/database.py` — Multi-engine registry for distributed SQLite (named engines per domain). Includes `check_db_health()` for readiness probes.
 - `persistence/scan_repository.py` — Save/load/cleanup scan results across `scans.db`, `candidates.db`, `analyses.db`.
+- `persistence/position_repository.py` — CRUD for `StockPosition` and `ExitSignal`. Auto-looks up backtest profile on position creation to set p75 exit target.
+- `persistence/backtest_repository.py` — Read queries for `PullbackEvent` and `TickerPullbackProfile`.
+- `persistence/conviction_repository.py` — CRUD for conviction snapshots and transitions.
 - `telemetry.py` — OpenTelemetry configuration (traces + metrics). Pre-creates histograms and counters. GCP exporters when `gcp_project_id` is set, console exporters otherwise.
 - `logging.py` — Structured logging (structlog + JSON). Injects OTel `trace_id`/`span_id` into every log event for Cloud Trace correlation.
 - `api/middleware.py` — `RequestTimingMiddleware` (request duration, `X-Request-Id`, structlog context) and `global_exception_handler` (catches unhandled 500s).
@@ -47,6 +54,14 @@ All routes are mounted under `/api/v1`. Health endpoints are at the root.
 | `/api/v1/account/balances` | GET | Account balances from Tradier |
 | `/api/v1/system/config` | GET/PATCH | Read/update system configuration |
 | `/api/v1/telemetry/events` | POST | Ingest batched frontend telemetry |
+| `/api/v1/stocks/positions` | GET/POST | List/create stock positions |
+| `/api/v1/stocks/positions/active` | GET | Active positions with exit targets |
+| `/api/v1/stocks/positions/{id}/exit` | POST | Mark position as sold |
+| `/api/v1/stocks/positions/check-exits` | POST | On-demand exit signal check |
+| `/api/v1/stocks/positions/signals` | GET | Recent exit signals |
+| `/api/v1/stocks/ohlcv/refresh` | POST | On-demand OHLCV data refresh from Polygon |
+| `/api/v1/stocks/backtest/profiles` | GET | Pullback backtest profiles |
+| `/api/v1/stocks/pullbacks/active` | GET | Active pullback alerts with bounce stats |
 | `/health` | GET | Liveness probe (shallow) |
 | `/health/ready` | GET | Readiness probe (checks DB) |
 
@@ -69,6 +84,8 @@ The Scanner calls Conviction Engine internally — no need to run conviction fir
   - `scans.db` — scan runs, pipeline stages, allocation summary
   - `candidates.db` — scored option candidates per scan
   - `analyses.db` — LLM analysis records per ticker per scan
+  - `conviction.db` — conviction snapshots + transitions
+  - `backtest.db` — pullback events, ticker profiles, stock positions, exit signals
 - Multi-engine registry: `register_engine("scans", url)` → `get_session("scans")`
 - Scan retention: last N scans kept (default 5, `scan_retention_count` setting)
 - **PostgreSQL migration:** Replace `init_scanner_dbs()` with single `init_db(pg_url)`, schemas are PG-compatible.
@@ -88,6 +105,24 @@ The Scanner calls Conviction Engine internally — no need to run conviction fir
 - **Observability stack.** OpenTelemetry SDK for metrics (histograms, counters) and traces. Auto-instrumented: FastAPI inbound, httpx outbound. Custom metrics: `scanner.stage.duration`, `scanner.total.duration`, `scanner.errors`, `api.errors`, `llm.call.duration`, `broker.call.duration`, `http.server.request.duration`. GCP: export via OTLP to Cloud Monitoring + Cloud Trace; logs via structured JSON stdout to Cloud Logging.
 - **Health endpoints.** `GET /health` (liveness, shallow), `GET /health/ready` (readiness, checks DB connectivity).
 - **Start scripts:** `./scripts/start-backend.sh`, `./scripts/start-frontend.sh`, `./scripts/start-all.sh`
+
+## Scheduled Jobs (APScheduler, US/Eastern)
+
+| Time | Job | What it does |
+|---|---|---|
+| 9:35 AM | Morning Scan | Full CSP/CC pipeline with broker + LLM |
+| 4:00 PM | Daily Digest | Email active pullbacks + transitions |
+| 4:02 PM | OHLCV Refresh | Fetch today's grouped daily bars from Polygon |
+| 4:05 PM | Exit Monitor | Refresh OHLCV (safety net), check active stock positions against profit targets + 8-EMA stop loss |
+
+## Stock Position Exit Monitor
+
+Tracks purchased stocks with data-driven exit signals:
+
+- **Profit target** = `purchase_price * (1 + p75_peak_gain_pct / 100)` — set once at position creation from the ticker's backtest profile. Static per position.
+- **Stop loss** = current 8-EMA value — updated daily. If close < 8-EMA, bounce has failed.
+- **Profile refresh** (backtest recomputation) is monthly via CLI: `python scripts/backtest_pullbacks.py --force`
+- Position recording: one-click "I Bought This" from pullback alerts + manual entry form
 
 ## Import Conventions
 

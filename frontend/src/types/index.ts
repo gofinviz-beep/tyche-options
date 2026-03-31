@@ -69,6 +69,7 @@ export interface ConvictionSignal {
   ticker: string;
   trend_state: string;
   conviction_level: string;
+  raw_conviction: string;
   csp_eligible: boolean;
   last_close: number;
   ema_8: number;
@@ -422,4 +423,261 @@ export interface TrackedPositionsResult {
   tracked_count: number;
   positions: TrackedPositionStatus[];
   alerts: TrackedPositionAlert[];
+}
+
+// --- Pullback Alerts & Stock Buy Recommendations ---
+
+export interface HistoricalBounceStats {
+  pullback_type: string;
+  event_count: number;
+  median_peak_gain_pct: number;
+  mean_peak_gain_pct: number;
+  p25_peak_gain_pct: number;
+  p75_peak_gain_pct: number;
+  median_exit_gain_pct: number;
+  win_rate_5pct: number;
+  win_rate_10pct: number;
+  median_days_to_peak: number;
+  median_days_to_exit: number;
+  avg_max_drawdown_pct: number;
+  suggested_exit_pct: number;
+}
+
+export interface BacktestProfile {
+  ticker: string;
+  pullback_type: string;
+  event_count: number;
+  median_peak_gain_pct: number;
+  mean_peak_gain_pct: number;
+  p25_peak_gain_pct: number;
+  p75_peak_gain_pct: number;
+  median_exit_gain_pct: number;
+  win_rate_5pct: number;
+  win_rate_10pct: number;
+  median_days_to_peak: number;
+  median_days_to_exit: number;
+  avg_max_drawdown_pct: number;
+  last_computed: string | null;
+}
+
+export interface BacktestTickerDetail {
+  ticker: string;
+  profiles: BacktestProfile[];
+  recent_events: BacktestEvent[];
+}
+
+export interface BacktestEvent {
+  ticker: string;
+  pullback_type: string;
+  entry_date: string;
+  entry_price: number;
+  peak_date: string;
+  peak_price: number;
+  peak_gain_pct: number;
+  exit_date: string;
+  exit_price: number;
+  exit_gain_pct: number;
+  days_to_peak: number;
+  days_to_exit: number;
+  max_drawdown_pct: number;
+  volume_declining_at_entry: number;
+}
+
+export interface PullbackAlert {
+  ticker: string;
+  alert_type: "pullback_8ema" | "pullback_21ema";
+  severity: "info" | "high";
+  trend_state: string;
+  conviction_level: string;
+  raw_conviction: string;
+  last_close: number;
+  ema_8: number;
+  ema_21: number;
+  ema_8_slope: number;
+  ema_21_slope: number;
+  volume_declining: boolean;
+  institutional_pct: number | null;
+  institutional_label: string;
+  suggested_action: string;
+  position_size_hint: "standard" | "large";
+  stop_loss_level: number;
+  detected_at: string;
+  market_cap: number | null;
+  market_cap_label: string;
+  exchange: string;
+  name: string;
+  days_above_both_emas: number;
+  avg_volume_20d: number;
+  price_to_8ema_pct: number;
+  price_to_21ema_pct: number;
+  historical_bounce: HistoricalBounceStats | null;
+}
+
+export interface StockBuyRecommendation {
+  ticker: string;
+  entry_type: "pullback_8ema" | "pullback_21ema";
+  entry_price: number;
+  target_ema_value: number;
+  stop_loss: number;
+  conviction: string;
+  institutional_pct: number | null;
+  institutional_label: string;
+  volume_confirmation: boolean;
+  position_size_hint: "standard" | "large";
+  days_above_emas: number;
+  ema_8_slope: number;
+  ema_21_slope: number;
+  related_csp_strike: number | null;
+  has_active_csp: boolean;
+  recommendation: string;
+  risk_reward_note: string;
+  created_at: string;
+}
+
+export interface CSPFallbackAlert {
+  ticker: string;
+  expired_strike: number;
+  expiry_date: string;
+  premium_collected: number;
+  pullback_alert: PullbackAlert;
+  message: string;
+}
+
+export interface ExpiredCSP {
+  ticker: string;
+  expired_strike: number;
+  expiry_date: string;
+  premium_collected: number;
+  recorded_at: string;
+}
+
+export interface PullbackScanResult {
+  scan_id: string;
+  scanned_at: string;
+  pullback_alerts: PullbackAlert[];
+  stock_recommendations: StockBuyRecommendation[];
+  csp_fallback_alerts: CSPFallbackAlert[];
+  total_signals_analyzed: number;
+}
+
+// --- Conviction Snapshots & Transitions ---
+
+export interface ConvictionSnapshot {
+  ticker: string;
+  as_of_date: string | null;
+  trend_state: string;
+  conviction_level: string;
+  raw_conviction: string;
+  csp_eligible: boolean;
+  last_close: number;
+  ema_8: number;
+  ema_21: number;
+  ema_8_slope: number;
+  ema_21_slope: number;
+  price_to_8ema_pct: number;
+  price_to_21ema_pct: number;
+  volume_declining: boolean;
+  days_above_both_emas: number;
+  avg_volume_20d: number;
+  latest_volume: number;
+  computed_at: string | null;
+}
+
+export interface ConvictionTransition {
+  id: string;
+  ticker: string;
+  from_state: string;
+  to_state: string;
+  transition_date: string | null;
+  last_close: number;
+  ema_8: number;
+  ema_21: number;
+  ema_8_slope: number;
+  ema_21_slope: number;
+  conviction_level: string;
+  raw_conviction: string;
+  detected_at: string | null;
+}
+
+export interface ActivePullbacksResult {
+  watchlist: PullbackAlert[];
+  universe: PullbackAlert[];
+  transitions_today: ConvictionTransition[];
+  as_of_date: string;
+}
+
+export interface ConvictionBatchStatus {
+  as_of_date: string;
+  total_tickers_in_store: number;
+  tickers_after_market_cap_filter: number;
+  tickers_after_price_volume_filter: number;
+  signals_computed: number;
+  snapshots_upserted: number;
+  transitions_detected: number;
+  new_pullback_transitions: number;
+  duration_ms: number;
+  errors: string[];
+}
+
+export interface ConvictionHistory {
+  ticker: string;
+  snapshots: ConvictionSnapshot[];
+  transitions: ConvictionTransition[];
+}
+
+export interface TransitionsList {
+  transitions: ConvictionTransition[];
+  from_date: string;
+  to_date: string;
+}
+
+export interface StockRecommendationsResult {
+  recommendations: StockBuyRecommendation[];
+  as_of_date: string;
+}
+
+export interface TickerGatesResult {
+  ticker: string;
+  gate_results: GateResult[];
+  error?: string;
+}
+
+export interface StockPosition {
+  id: string;
+  ticker: string;
+  quantity: number;
+  purchase_date: string | null;
+  purchase_price: number;
+  pullback_type: string;
+  target_exit_pct: number | null;
+  target_exit_price: number | null;
+  stop_loss_price: number | null;
+  current_price: number | null;
+  current_gain_pct: number | null;
+  status: string;
+  exit_date: string | null;
+  exit_price: number | null;
+  exit_reason: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ExitSignal {
+  id: string;
+  position_id: string;
+  ticker: string;
+  signal_type: string;
+  trigger_price: number;
+  current_price: number;
+  gain_pct: number;
+  triggered_at: string | null;
+}
+
+export interface ExitCheckResult {
+  positions_checked: number;
+  prices_updated: number;
+  profit_targets_hit: number;
+  stop_losses_hit: number;
+  errors: number;
+  signals: ExitSignal[];
 }

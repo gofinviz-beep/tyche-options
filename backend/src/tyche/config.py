@@ -50,6 +50,7 @@ class TycheSettings(BaseSettings):
 
     # --- Institutional Ownership ---
     min_institutional_pct: float = 0.40  # 40% minimum institutional ownership
+    min_institutional_pct_stock_buy: float = 0.50  # 50% for stock buy recommendations
 
     # --- Conviction Engine ---
     ema_fast_period: int = 8
@@ -85,9 +86,16 @@ class TycheSettings(BaseSettings):
     expiration_mode: str = "friday_target"  # "friday_target" or "max_n"
     strike_range_pct: float = 15.0  # Only consider strikes within X% below the 8-EMA
     llm_concurrency: int = 5  # Max parallel LLM calls
+    csp_strike_preference: str = "near_21ema"  # "near_21ema", "otm_target", or "legacy"
 
     # --- Scan Persistence ---
     scan_retention_count: int = 5
+
+    # --- Conviction Batch ---
+    conviction_batch_min_market_cap_millions: float = 500.0
+    conviction_batch_min_price: float = 5.0
+    conviction_batch_min_avg_volume: int = 500_000
+    conviction_snapshot_retention_days: int = 90
 
     # --- Workflow ---
     morning_scan_time: str = "09:35"
@@ -97,6 +105,17 @@ class TycheSettings(BaseSettings):
 
     # --- Watchlist ---
     watchlist_symbols: list[str] = Field(default_factory=list)
+
+    # --- Notifications ---
+    notification_email_enabled: bool = False
+    notification_email_to: str = ""
+    notification_smtp_host: str = "smtp.gmail.com"
+    notification_smtp_port: int = 587
+    notification_smtp_user: str = ""
+    notification_smtp_password: str = ""
+    notification_pullback_alert_enabled: bool = True
+    daily_digest_enabled: bool = False
+    daily_digest_time: str = "16:00"
 
     # --- Observability ---
     log_level: str = "INFO"

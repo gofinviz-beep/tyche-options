@@ -11,7 +11,7 @@ alwaysApply: true
 - **Pydantic-settings list parsing:** List fields in `.env` must be JSON arrays (e.g. `TYCHE_WATCHLIST_SYMBOLS=["AAPL","FSLY"]`), NOT comma-separated. The `PATCH /api/v1/system/config` endpoint handles this via `json.dumps()`.
 - **Do NOT `source .env` in shell scripts.** Pydantic-settings reads `.env` directly. Shell-sourcing mangles JSON arrays.
 - **Tradier `get_options_chain` can return `None` options data** when market is closed. Always use `options_data = data.get("options") or {}` pattern.
-- **Position Monitor is in-memory only.** Tracked positions are lost on backend restart. Future: persist to SQLite.
+- **Options Position Monitor is in-memory only.** Tracked options positions (Monitor page) are lost on backend restart. Stock positions (Stocks Dashboard) are persisted to `backtest.db`.
 - **Scanner results are now persisted** to distributed SQLite (`db/scans.db`, `db/candidates.db`, `db/analyses.db`). Results survive restarts. Last 5 scans retained by default (`scan_retention_count`).
 - **`GET /scanner/latest` returns 200 + null** when no scan exists (not 404). Frontend handles this gracefully.
 - **Market cap filter passes tickers with missing data.** Tickers without market cap in `TickerMetaStore` are NOT dropped — only tickers with valid data below the threshold are excluded. Pipeline stage detail reports which passed with "no data".
@@ -20,6 +20,12 @@ alwaysApply: true
 - **Expiration targeting.** Default mode is `friday_target` (`TYCHE_EXPIRATION_MODE`). Sat–Wed scans fetch `max_expiration_dates` nearest expirations; Thu–Fri scans fetch `max_expiration_dates + 1`. Set to `max_n` for legacy first-N behavior. Tickers without weekly options (monthly only) still get their nearest expiration; the DTE filter (3-14d) culls anything too far out.
 - **Allocator uses delta penalty.** `_compute_risk_weight` now includes a delta factor: `delta_w = 1.0 - |delta| * 0.6` (floored at 0.4). Lower delta (more OTM) is preferred to minimize assignment probability and maximize capital recycling. The MILP objective is `premium * conviction * extension * liquidity * delta_w`.
 - **Allocator runs BEFORE LLM.** Pipeline order: options scan → allocator → LLM. Allocator cannot use LLM confidence/comfort. Delta penalty partially compensates for this gap.
+- **`bootstrap_ohlcv` has `include_today` flag.** Default is `False` (stops at yesterday). Set `include_today=True` after market close (4 PM ET). The scheduled OHLCV refresh and exit monitor both use `include_today=True`.
+- **Stock positions are persisted to `backtest.db`.** `StockPosition` and `ExitSignal` tables auto-created on startup. Positions survive restarts.
+- **Exit target is set once at position creation.** `target_exit_pct` comes from the ticker's `TickerPullbackProfile.p75_peak_gain_pct`. If no profile exists, `target_exit_pct` is `None` and only stop-loss (8-EMA) is active.
+- **Exit monitor refreshes OHLCV before checking.** Both the scheduled job (4:05 PM) and the on-demand `POST /stocks/positions/check-exits` call `bootstrap_ohlcv(include_today=True)` as a safety net before evaluating positions.
+- **Conviction is separate for CSP vs stock pullback.** CSP eligibility uses extension cap + days-above streak. Stock pullback conviction uses trend state + volume confirmation. Same engine, different assessment criteria.
+- **`POST /stocks/ohlcv/refresh` returns all zeros when up-to-date.** Early return in `bootstrap_ohlcv` short-circuits before counting tickers. Not an error — means no new data to fetch.
 
 ## Frontend
 
@@ -27,6 +33,7 @@ alwaysApply: true
 - **Conviction scan "Run Scan" with blank field:** Scans watchlist tickers (not full universe) if watchlist is configured. Only scans full universe when watchlist is empty.
 - **Scanner allocation types.** `ScanResult` includes typed `allocation: AllocationSummary | null` and `allocated_trades: AllocatedTrade[]`. Persisted scans have a slimmer `AllocationSummary` (missing `trades`, `total_collateral`, `positions_used`) — use optional fields.
 - **Allocation Playground is client-side only.** The "Customize Allocation" playground in the Scanner page is purely frontend state. No backend API call — all math (premium, commission, collateral) is computed locally using `bid * 100` for premium and `strike * 100` for collateral per contract. Commission is hardcoded at `$0.65/contract`.
+- **"I Bought This" modal pre-fills from pullback alert data.** Price = `last_close`, date = today, pullback_type from alert type. User can edit before confirming.
 
 ## Observability
 
@@ -47,7 +54,7 @@ alwaysApply: true
 
 ## Testing
 
-- **245 unit tests, 69% overall coverage.** Run with `cd backend && pytest tests/unit/`.
+- **475 unit tests, 70% overall coverage.** Run with `cd backend && pytest tests/unit/`.
 - **`morning_scan.py` and `analysis/client.py` are at 100% coverage.** Every error branch, timing path, retry/fallback, and LLM integration path is tested.
 - **MockBroker provides deterministic test data.** Uses PL and AAPL positions with realistic prices. Located in `broker/mock.py`.
 - **Tests never hit real APIs.** External calls (Tradier, Gemini, yfinance) are mocked via `unittest.mock.AsyncMock` / `MagicMock`.

@@ -12,7 +12,7 @@ alwaysApply: false
 
 - pytest with `pytest-asyncio` (mode=auto), `pytest-cov` for coverage
 - Config in `backend/pyproject.toml` under `[tool.pytest.ini_options]`
-- Run: `cd backend && pytest tests/unit/` (245 tests, ~35s)
+- Run: `cd backend && pytest tests/unit/` (475 tests, ~50s)
 - Coverage report included automatically via `--cov` flags in pyproject.toml
 
 ## Test File Layout
@@ -34,6 +34,10 @@ tests/unit/
 ├── test_scan_repository.py        # Scan persistence CRUD
 ├── test_models.py                 # ORM model construction
 ├── test_mock_broker.py            # MockBroker contract compliance
+├── test_backtest_models.py        # PullbackEvent, TickerPullbackProfile, StockPosition, ExitSignal models
+├── test_backtest_routes.py        # Backtest + position API endpoint tests
+├── test_backtest_pullbacks.py     # Backtest pullback scan logic (trend classify, EMA, aggregation)
+├── test_exit_monitor.py           # Exit monitor workflow (profit target, stop loss, edge cases)
 └── ...
 ```
 
@@ -45,7 +49,8 @@ tests/unit/
 | `analysis/client.py` | 100% | Maintain |
 | `conviction/engine.py` | 88% | 95%+ |
 | `strategy/allocator.py` | 76% | 85%+ |
-| Overall | 69% | 85% |
+| `workflow/exit_monitor.py` | 95% | Maintain |
+| Overall | 70% | 85% |
 
 ## Mock Strategy
 

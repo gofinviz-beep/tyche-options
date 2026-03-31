@@ -249,6 +249,7 @@ async def _run(
     status: bool,
     intraday: bool = False,
     intraday_tickers: str | None = None,
+    no_conviction: bool = False,
 ) -> None:
     settings = TycheSettings()
     store = OHLCVStore(data_dir=settings.data_dir)
@@ -339,7 +340,60 @@ async def _run(
         else:
             click.echo("Intraday store already up to date.")
 
+    if not status and not no_conviction and store.exists:
+        click.echo("\nRunning conviction batch...")
+        try:
+            await _run_conviction_batch(store, meta_store, settings)
+        except Exception as exc:
+            click.echo(f"  Warning: conviction batch failed — {exc}", err=True)
+
     _print_status(store, meta_store, intraday_store)
+
+
+async def _run_conviction_batch(
+    store: OHLCVStore,
+    meta_store: TickerMetaStore,
+    settings: TycheSettings,
+) -> None:
+    """Run conviction batch after daily OHLCV ingest."""
+    from tyche.persistence.database import init_conviction_db, create_tables_for_models
+    from tyche.models.conviction import ConvictionSnapshot, ConvictionTransition
+    from tyche.workflow.conviction_batch import run_conviction_batch
+
+    init_conviction_db(settings.db_dir)
+    await create_tables_for_models(
+        "conviction", ConvictionSnapshot, ConvictionTransition
+    )
+
+    engine = ConvictionEngine(
+        ema_fast=settings.ema_fast_period,
+        ema_slow=settings.ema_slow_period,
+        pullback_proximity_pct=settings.pullback_proximity_pct,
+        max_extension_pct=settings.max_extension_pct,
+        min_days_above_emas=settings.min_days_above_emas,
+        max_days_above_emas=settings.max_days_above_emas,
+    )
+
+    result = await run_conviction_batch(
+        data_store=store,
+        conviction_engine=engine,
+        ticker_meta_store=meta_store,
+        min_market_cap=settings.conviction_batch_min_market_cap_millions * 1_000_000,
+        min_price=settings.conviction_batch_min_price,
+        min_avg_volume=settings.conviction_batch_min_avg_volume,
+        retention_days=settings.conviction_snapshot_retention_days,
+    )
+
+    click.echo(
+        f"\nConviction batch: {result.signals_computed} signals, "
+        f"{result.snapshots_upserted} snapshots, "
+        f"{result.transitions_detected} transitions "
+        f"({result.new_pullback_transitions} new pullbacks), "
+        f"{result.duration_ms:.0f}ms"
+    )
+    if result.errors:
+        for err in result.errors:
+            click.echo(f"  Warning: {err}", err=True)
 
 
 @click.command()
@@ -357,6 +411,8 @@ async def _run(
               help="Also fetch 5-min intraday bars for CSP-eligible tickers.")
 @click.option("--intraday-tickers", type=str, default=None,
               help="Comma-separated tickers for intraday fetch (overrides auto-discovery).")
+@click.option("--no-conviction", is_flag=True, default=False,
+              help="Skip conviction batch after OHLCV ingest.")
 def main(
     from_date: click.DateTime | None,
     to_date: click.DateTime | None,
@@ -365,11 +421,12 @@ def main(
     status: bool,
     intraday: bool,
     intraday_tickers: str | None,
+    no_conviction: bool,
 ) -> None:
     """Ingest OHLCV daily bars, intraday bars, and ticker metadata from Polygon.io."""
     fd = from_date.date() if from_date else None
     td = to_date.date() if to_date else None
-    asyncio.run(_run(fd, td, days, meta, status, intraday, intraday_tickers))
+    asyncio.run(_run(fd, td, days, meta, status, intraday, intraday_tickers, no_conviction))
 
 
 if __name__ == "__main__":

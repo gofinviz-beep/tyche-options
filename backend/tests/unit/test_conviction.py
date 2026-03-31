@@ -115,11 +115,35 @@ class TestConvictionEngine:
         assert signal.avg_volume_20d > 0
         assert signal.as_of_date is not None
 
+    def test_raw_conviction_preserved_on_csp_override(self, engine):
+        """raw_conviction keeps genuine assessment even when conviction_level is overridden."""
+        prices = _uptrend(70, start=100.0, gain=0.5)
+        peak = prices[-1]
+        for i in range(10):
+            prices.append(peak - (i + 1) * 0.05)
+        signal = engine.analyze("PB", _make_ohlcv(prices))
+        if signal.trend_state in (TrendState.PULLBACK_TO_8EMA, TrendState.PULLBACK_TO_21EMA):
+            assert signal.raw_conviction in ("high", "medium", "low")
+            if not signal.csp_eligible:
+                assert signal.conviction_level == "low"
+                assert signal.raw_conviction != "none"
+
+    def test_raw_conviction_matches_when_csp_eligible(self, engine):
+        signal = engine.analyze("UP", _make_ohlcv(_fresh_uptrend(80)))
+        if signal.csp_eligible:
+            assert signal.raw_conviction == signal.conviction_level
+
+    def test_raw_conviction_in_insufficient_data(self, engine):
+        signal = engine.analyze("X", _make_ohlcv([100.0] * 10))
+        assert signal.raw_conviction == "none"
+        assert signal.conviction_level == "none"
+
     def test_to_dict(self, engine):
         d = engine.analyze("D", _make_ohlcv(_uptrend(80))).to_dict()
         assert d["ticker"] == "D"
         assert isinstance(d["trend_state"], str)
         assert "ema_8" in d
+        assert "raw_conviction" in d
 
     def test_batch(self, engine):
         data = {

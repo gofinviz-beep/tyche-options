@@ -62,8 +62,9 @@ class ConvictionSignal:
 
     ticker: str
     trend_state: TrendState
-    conviction_level: str  # high, medium, low, none
-    csp_eligible: bool
+    conviction_level: str  # high, medium, low, none — CSP-adjusted
+    raw_conviction: str = "none"  # genuine EMA quality assessment before CSP override
+    csp_eligible: bool = False
 
     # Price and EMA values
     last_close: float = 0.0
@@ -93,6 +94,7 @@ class ConvictionSignal:
             "ticker": self.ticker,
             "trend_state": self.trend_state.value,
             "conviction_level": self.conviction_level,
+            "raw_conviction": self.raw_conviction,
             "csp_eligible": self.csp_eligible,
             "last_close": round(self.last_close, 2),
             "ema_8": round(self.ema_8, 4),
@@ -169,6 +171,7 @@ class ConvictionEngine:
                 ticker=ticker,
                 trend_state=TrendState.INSUFFICIENT_DATA,
                 conviction_level="none",
+                raw_conviction="none",
                 csp_eligible=False,
                 gate_results=[
                     GateResult(
@@ -219,10 +222,11 @@ class ConvictionEngine:
             ema_8_slope, ema_21_slope, price_to_8, price_to_21,
         )
 
-        conviction = self._assess_conviction(
+        raw_conviction = self._assess_conviction(
             trend_state, ema_8_slope, ema_21_slope,
             pullback_declining, streak,
         )
+        conviction = raw_conviction
 
         eligible_trends = (
             TrendState.STRONG_UPTREND,
@@ -291,6 +295,7 @@ class ConvictionEngine:
             ticker=ticker,
             trend_state=trend_state,
             conviction_level=conviction,
+            raw_conviction=raw_conviction,
             csp_eligible=csp_eligible,
             last_close=last_close,
             ema_8=last_ema_8,

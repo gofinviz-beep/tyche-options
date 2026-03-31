@@ -9,6 +9,9 @@ import { Intents } from "@/pages/Intents";
 import { Conviction } from "@/pages/Conviction";
 import { Settings } from "@/pages/Settings";
 import { ResearchHome } from "@/pages/research/ResearchHome";
+import { StocksDashboard } from "@/pages/stocks/Dashboard";
+import { StocksConviction } from "@/pages/stocks/Conviction";
+import { ConvictionHistory } from "@/pages/stocks/History";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -34,19 +37,26 @@ export default function App() {
             <Route path="/options/monitor" element={<Monitor />} />
             <Route path="/options/settings" element={<Settings />} />
 
+            {/* Stocks module */}
+            <Route path="/stocks" element={<StocksDashboard />} />
+            <Route path="/stocks/scanner" element={<Navigate to="/stocks" replace />} />
+            <Route path="/stocks/conviction" element={<StocksConviction />} />
+            <Route path="/stocks/history" element={<ConvictionHistory />} />
+
             {/* Research module */}
             <Route path="/research" element={<ResearchHome />} />
 
             {/* Root redirect */}
             <Route path="/" element={<Navigate to="/options" replace />} />
 
-            {/* Legacy redirects for old bookmarks */}
+            {/* Legacy redirects */}
             <Route path="/scanner" element={<Navigate to="/options/scanner" replace />} />
             <Route path="/conviction" element={<Navigate to="/options/conviction" replace />} />
             <Route path="/intents" element={<Navigate to="/options/intents" replace />} />
             <Route path="/orders" element={<Navigate to="/options/orders" replace />} />
             <Route path="/monitor" element={<Navigate to="/options/monitor" replace />} />
             <Route path="/settings" element={<Navigate to="/options/settings" replace />} />
+            <Route path="/options/alerts" element={<Navigate to="/stocks" replace />} />
           </Route>
         </Routes>
       </BrowserRouter>

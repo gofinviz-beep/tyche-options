@@ -40,13 +40,15 @@ The frontend uses a **modular sidebar** with collapsible sections:
 
 | Page | Purpose | Key hooks |
 |---|---|---|
-| Dashboard | Overview, quick links | `useOrderIntents("pending")` |
-| Scanner | Full scan (broker + LLM) → persisted results | `useTriggerScan`, `useLatestScan`, `useScanHistory`, `useScanById` |
-| Conviction | EMA trend analysis with ladder view | `useConvictionScan`, `useTriggerConvictionScan` |
+| Dashboard (Options) | Overview, quick links | `useOrderIntents("pending")` |
+| Scanner (Options) | Full scan (broker + LLM) → persisted results | `useTriggerScan`, `useLatestScan`, `useScanHistory`, `useScanById` |
+| Conviction (Options) | EMA trend analysis with ladder view | `useConvictionScan`, `useTriggerConvictionScan` |
 | Intents | Approve/reject trade recommendations | `useOrderIntents`, `useApproveIntent`, `useRejectIntent` |
 | Orders | Open orders + executed trades | `useOpenOrders`, `useOrderIntents("executed")` |
-| Monitor | Track positions, real-time P&L + alerts | `useTrackedPositions`, `useTrackPosition` |
+| Monitor | Track options positions, real-time P&L + alerts | `useTrackedPositions`, `useTrackPosition` |
 | Settings | Editable config (watchlist, capital, risk, universe filters) | `useSystemConfig`, `useUpdateConfig` |
+| Dashboard (Stocks) | Pullback alerts + stock positions + exit signals | `useActivePullbacks`, `useActivePositions`, `useCreatePosition`, `useCheckExits`, `useRecentSignals` |
+| Conviction (Stocks) | Conviction snapshots with backtest bounce profiles | `useConvictionSnapshots`, `useBacktestProfile` |
 
 ## UI Conventions
 
@@ -89,3 +91,14 @@ The frontend uses a **modular sidebar** with collapsible sections:
 Tracked positions are **in-memory only** on the backend — lost on restart. The position card shows live data from Tradier (underlying price, option bid/ask, greeks, P&L). When Tradier data is unavailable (market closed), a fallback status is returned with an info alert.
 
 Option symbol matching: first tries exact match, then falls back to strike + option type match (handles format mismatches between user input and Tradier OCC format).
+
+## Stock Positions UI (Stocks Dashboard)
+
+- **"I Bought This" button** on each pullback alert expanded row — opens a modal pre-filled with ticker, price (last_close), date (today), pullback_type
+- **PositionsPanel** — table of active positions with entry price, current price, gain %, target exit price (p75), stop loss (8-EMA), status badges
+- **Exit signal banners** — highlighted alerts when profit target or stop loss is triggered (green for profit, red for stop)
+- **"Mark as Sold" button** per position — opens inline sell price input
+- **Manual "Add Position" form** — collapsible form for positions taken outside the system
+- **"Check Exit Signals" button** — on-demand trigger of the exit monitor
+- Types: `StockPosition`, `ExitSignal`, `ExitCheckResult` in `types/index.ts`
+- Hooks: `useActivePositions`, `useCreatePosition`, `useExitPosition`, `useDeletePosition`, `useCheckExits`, `useRecentSignals`

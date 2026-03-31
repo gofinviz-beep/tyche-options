@@ -13,7 +13,8 @@
 - **Workflows** (`workflow/`) orchestrate multi-step pipelines — they call engines, brokers, and agents
 - **Engines** (`conviction/`, `strategy/`, `risk/`) are stateless and testable in isolation
 - **Clients** (`broker/tradier/`, `analysis/client.py`, `market_data/polygon.py`) wrap external APIs with retry/error handling
-- **Persistence** (`persistence/`) uses distributed SQLite with named engines — `register_engine("scans", url)` → `get_session("scans")`
+- **Persistence** (`persistence/`) uses distributed SQLite with named engines — `register_engine("scans", url)` → `get_session("scans")`. Includes `position_repository.py` (stock positions), `backtest_repository.py` (pullback profiles), `conviction_repository.py` (snapshots/transitions).
+- **Models** (`models/`) — `backtest.py` has both backtest data (`PullbackEvent`, `TickerPullbackProfile`) and position tracking (`StockPosition`, `ExitSignal`)
 
 ## Data Sources
 
@@ -32,10 +33,10 @@
 
 ## Testing
 
-- 245 unit tests in `tests/unit/`, run with `pytest`
+- 475 unit tests in `tests/unit/`, run with `pytest`
 - External APIs are always mocked — no network calls in tests
 - Use `AsyncMock` for async broker/LLM calls, `MagicMock` for data stores
-- `morning_scan.py` and `analysis/client.py` have 100% coverage
+- `morning_scan.py`, `analysis/client.py` have 100% coverage; `exit_monitor.py` at 95%
 - Conviction tests use `_fresh_uptrend()` helper to generate valid EMA streak data
 
 ## Observability

@@ -83,6 +83,72 @@ class WorkflowScheduler:
         self._jobs["midday_review"] = job.id
         logger.info("scheduled_midday_review", time=f"{hour:02d}:{minute:02d} ET")
 
+    def schedule_daily_digest(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 16,
+        minute: int = 0,
+    ) -> None:
+        """Schedule the daily conviction digest email (default 4:00 PM ET)."""
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="daily_digest",
+            replace_existing=True,
+            name="Daily Conviction Digest",
+        )
+        self._jobs["daily_digest"] = job.id
+        logger.info("scheduled_daily_digest", time=f"{hour:02d}:{minute:02d} ET")
+
+    def schedule_ohlcv_refresh(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 16,
+        minute: int = 2,
+    ) -> None:
+        """Schedule the OHLCV data refresh (default 4:02 PM ET, right after close)."""
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="ohlcv_refresh",
+            replace_existing=True,
+            name="OHLCV Daily Refresh",
+        )
+        self._jobs["ohlcv_refresh"] = job.id
+        logger.info("scheduled_ohlcv_refresh", time=f"{hour:02d}:{minute:02d} ET")
+
+    def schedule_exit_monitor(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 16,
+        minute: int = 5,
+    ) -> None:
+        """Schedule the stock exit monitor (default 4:05 PM ET, after close)."""
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="exit_monitor",
+            replace_existing=True,
+            name="Stock Exit Monitor",
+        )
+        self._jobs["exit_monitor"] = job.id
+        logger.info("scheduled_exit_monitor", time=f"{hour:02d}:{minute:02d} ET")
+
     def schedule_eod_journal(
         self,
         func: Callable[..., Coroutine[Any, Any, Any]],

@@ -70,6 +70,11 @@ async def trigger_scan(
     else:
         watchlist = settings.watchlist_symbols
 
+    notification_dispatcher = None
+    if settings.notification_pullback_alert_enabled:
+        from tyche.notification.dispatcher import NotificationDispatcher
+        notification_dispatcher = NotificationDispatcher.from_settings(settings)
+
     result = await run_morning_scan(
         broker=broker,
         strategy_engine=strategy,
@@ -89,6 +94,9 @@ async def trigger_scan(
         expiration_mode=settings.expiration_mode,
         strike_range_pct=settings.strike_range_pct,
         llm_concurrency=settings.llm_concurrency,
+        csp_strike_preference=settings.csp_strike_preference,
+        min_institutional_pct_stock_buy=settings.min_institutional_pct_stock_buy,
+        notification_dispatcher=notification_dispatcher,
     )
 
     intents_created = 0
@@ -245,4 +253,7 @@ def _serialize_scan_result(result: MorningScanResult) -> dict[str, Any]:
         ],
         "errors": result.errors,
         "total_duration_ms": round(result.total_duration_ms, 2),
+        "pullback_alerts": [a.to_dict() for a in result.pullback_alerts],
+        "stock_recommendations": [r.to_dict() for r in result.stock_recommendations],
+        "csp_fallback_alerts": [f.to_dict() for f in result.csp_fallback_alerts],
     }

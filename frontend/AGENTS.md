@@ -22,12 +22,14 @@ Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, 
 
 | Page | Key Hooks |
 |---|---|
-| Scanner | `useTriggerScan`, `useLatestScan`, `useScanHistory`, `useScanById` |
-| Conviction | `useConvictionScan`, `useTriggerConvictionScan` |
+| Scanner (Options) | `useTriggerScan`, `useLatestScan`, `useScanHistory`, `useScanById` |
+| Conviction (Options) | `useConvictionScan`, `useTriggerConvictionScan` |
 | Intents | `useOrderIntents`, `useApproveIntent`, `useRejectIntent` |
 | Orders | `useOpenOrders`, `useOrderIntents("executed")` |
 | Monitor | `useTrackedPositions`, `useTrackPosition` |
 | Settings | `useSystemConfig`, `useUpdateConfig` |
+| Dashboard (Stocks) | `useActivePullbacks`, `useActivePositions`, `useCreatePosition`, `useExitPosition`, `useCheckExits`, `useRecentSignals` |
+| Conviction (Stocks) | `useConvictionSnapshots`, `useBacktestProfile` |
 
 ## UI Conventions
 

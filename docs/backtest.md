@@ -244,3 +244,49 @@ This backtest should be re-run periodically (monthly or quarterly) to validate t
 | Starting capital | $100,000 | For capital-aware simulation |
 | Max positions | 8 | For capital-aware simulation |
 | Max concentration | 25% | For capital-aware simulation |
+
+## Pullback Bounce Backtest
+
+**Source:** `backend/scripts/backtest_pullbacks.py`
+
+### Purpose
+
+Measures how high stocks bounce after 8-EMA and 21-EMA pullbacks, providing data-driven exit targets for the stock position tracker. Instead of a generic "sell at 10%" rule, each ticker gets its own profile based on historical behavior.
+
+### Methodology
+
+For each ticker with sufficient OHLCV history (≥60 bars):
+
+1. **Compute EMAs:** 8-day and 21-day exponential moving averages
+2. **Detect pullbacks:** Price crosses below the EMA (close < EMA after being above)
+3. **Measure bounce:** Track price from entry until close < 8-EMA (bounce has failed)
+4. **Record metrics:** Peak gain, exit gain, days to peak, days to exit, max drawdown
+
+### Data Models
+
+Stored in `backtest.db`:
+
+- **`PullbackEvent`** — One row per historical pullback instance with entry/peak/exit data
+- **`TickerPullbackProfile`** — Aggregated per-ticker statistics: median/mean/p25/p75 peak gain, win rates (≥5%, ≥10%), median days to peak/exit, avg max drawdown
+
+### Usage
+
+```bash
+cd backend
+python scripts/backtest_pullbacks.py           # Incremental (skip existing)
+python scripts/backtest_pullbacks.py --force    # Recompute all profiles
+```
+
+### How Profiles Drive Exit Targets
+
+When a stock position is recorded (`create_position`), the system looks up the ticker's `TickerPullbackProfile` to compute:
+
+- **Profit target:** `purchase_price * (1 + p75_peak_gain_pct / 100)` — the 75th percentile historical bounce gives a realistic, ticker-specific exit target
+- **Stop loss:** Current 8-EMA value (updated daily by exit monitor) — if close < 8-EMA, the bounce has statistically failed
+
+Profile recomputation is recommended monthly (`--force` flag). The p75 is statistically stable over time since it's based on years of data.
+
+### Frontend Integration
+
+- **Stocks Dashboard:** Historical bounce stats (median gain, win rates, suggested exit %) shown on each pullback alert
+- **Stocks Conviction:** Lazy-loaded bounce profiles per ticker in expanded snapshot rows

@@ -177,6 +177,39 @@ result = await bootstrap_ohlcv(polygon, store, days=120, meta_store=meta)
 
 If the store already contains data, bootstrap only fetches dates after the latest stored date. This makes it safe to run repeatedly — it will only fetch missing days.
 
+### Fetching Today's Data
+
+By default, `bootstrap_ohlcv()` stops at yesterday (`end = date.today() - 1`). To include today's data (after market close), use `include_today=True`:
+
+```python
+result = await bootstrap_ohlcv(polygon, store, days=5, meta_store=meta, include_today=True)
+```
+
+Or via API:
+```bash
+curl -X POST http://localhost:8000/api/v1/stocks/ohlcv/refresh
+```
+
+### Scheduled Refresh
+
+The OHLCV refresh is scheduled automatically via APScheduler:
+
+| Time (ET) | Job | Behavior |
+|---|---|---|
+| 4:02 PM | `ohlcv_refresh` | Calls `bootstrap_ohlcv(include_today=True)` after market close |
+| 4:05 PM | `exit_monitor` | Also calls `bootstrap_ohlcv(include_today=True)` as safety net before checking positions |
+
+This ensures the exit monitor always operates on fresh data.
+
+### Historical Data Scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/ingest_data.py` | Primary OHLCV + meta bootstrap from Polygon |
+| `scripts/ingest_infiniti.py` | Ingest historical OHLCV from local infiniti Parquet store |
+| `scripts/bridge_ohlcv_gap.py` | Fill gaps between infiniti data and Polygon data |
+| `scripts/backtest_pullbacks.py` | Scan history for pullback events, compute per-ticker bounce profiles |
+
 ## Data Directory
 
 All Parquet files live under `backend/data/` (configurable via `TYCHE_DATA_DIR`). This directory is gitignored to avoid committing large binary files.

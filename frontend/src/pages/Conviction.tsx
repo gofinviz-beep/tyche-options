@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Card } from "@/components/Card";
 import { StatusBadge } from "@/components/StatusBadge";
+import { DataTable, type DataTableColumn } from "@/components/DataTable";
 import {
   useDataStoreStatus,
   useBootstrapData,
@@ -8,8 +9,129 @@ import {
   useConvictionScan,
   useTriggerConvictionScan,
 } from "@/hooks/useApi";
-import type { ConvictionSignal, GateResult } from "@/types";
+import type { ConvictionSignal } from "@/types";
 import { ChevronDown, ChevronRight, Check, X, Minus, Database } from "lucide-react";
+import { convictionSortValue } from "@/lib/format";
+
+const TREND_VARIANT: Record<string, "success" | "warning" | "danger" | "neutral" | "info"> = {
+  strong_uptrend: "success",
+  uptrend: "success",
+  pullback_to_8ema: "warning",
+  pullback_to_21ema: "warning",
+  consolidation: "neutral",
+  downtrend: "danger",
+  insufficient_data: "neutral",
+};
+
+const signalColumns: DataTableColumn<ConvictionSignal>[] = [
+  {
+    key: "ticker",
+    header: "Ticker",
+    accessor: (r) => r.ticker,
+    sortable: true,
+    width: "90px",
+    render: (r) => (
+      <span className="font-mono font-bold text-gray-900">{r.ticker}</span>
+    ),
+  },
+  {
+    key: "trend_state",
+    header: "Trend",
+    accessor: (r) => r.trend_state,
+    sortable: true,
+    render: (r) => (
+      <StatusBadge
+        label={r.trend_state.replace(/_/g, " ")}
+        variant={TREND_VARIANT[r.trend_state] ?? "neutral"}
+      />
+    ),
+  },
+  {
+    key: "conviction_level",
+    header: "Conviction",
+    accessor: (r) => convictionSortValue(r.conviction_level),
+    sortable: true,
+    render: (r) => {
+      const colors: Record<string, string> = {
+        high: "text-emerald-600",
+        medium: "text-amber-600",
+        low: "text-red-600",
+        none: "text-gray-400",
+      };
+      return (
+        <span className={`font-medium ${colors[r.conviction_level] ?? "text-gray-400"}`}>
+          {r.conviction_level}
+        </span>
+      );
+    },
+  },
+  {
+    key: "last_close",
+    header: "Price",
+    accessor: (r) => r.last_close,
+    sortable: true,
+    align: "right",
+    render: (r) =>
+      r.last_close > 0 ? (
+        <span className="font-mono text-gray-700">${r.last_close.toFixed(2)}</span>
+      ) : (
+        <span className="text-gray-300">—</span>
+      ),
+  },
+  {
+    key: "price_to_8ema_pct",
+    header: "% to 8-EMA",
+    accessor: (r) => r.price_to_8ema_pct,
+    sortable: true,
+    align: "right",
+    render: (r) =>
+      r.last_close > 0 ? (
+        <span className="font-mono text-xs text-gray-400">
+          {r.price_to_8ema_pct >= 0 ? "+" : ""}
+          {r.price_to_8ema_pct.toFixed(2)}%
+        </span>
+      ) : (
+        <span className="text-gray-300">—</span>
+      ),
+  },
+  {
+    key: "days_above_both_emas",
+    header: "Days Above",
+    accessor: (r) => r.days_above_both_emas,
+    sortable: true,
+    align: "right",
+    render: (r) =>
+      r.last_close > 0 ? (
+        <span className="text-gray-700">{r.days_above_both_emas}d</span>
+      ) : (
+        <span className="text-gray-300">—</span>
+      ),
+  },
+  {
+    key: "csp_eligible",
+    header: "CSP",
+    accessor: (r) => (r.csp_eligible ? 1 : 0),
+    sortable: true,
+    render: (r) => {
+      if (r.csp_eligible) {
+        return (
+          <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-600 border border-emerald-200">
+            <Check className="h-3 w-3" /> Eligible
+          </span>
+        );
+      }
+      const failedGate = r.gate_results?.find((g) => !g.passed && g.actual !== "—");
+      if (failedGate) {
+        return (
+          <span className="text-xs text-gray-400 truncate max-w-48">
+            Failed: {failedGate.gate}
+          </span>
+        );
+      }
+      return <span className="text-xs text-gray-300">—</span>;
+    },
+  },
+];
 
 export function Conviction() {
   const { data: status, isLoading: statusLoading } = useDataStoreStatus();
@@ -44,7 +166,6 @@ export function Conviction() {
         </p>
       </div>
 
-      {/* Bootstrap prompt — only shown when data store is empty */}
       {!statusLoading && !storeReady && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
           <p className="text-sm font-medium text-amber-700">
@@ -73,7 +194,6 @@ export function Conviction() {
         </div>
       )}
 
-      {/* Scan input — the primary action */}
       {(storeReady || statusLoading) && (
         <div className="flex items-center gap-3">
           <input
@@ -105,10 +225,8 @@ export function Conviction() {
         </div>
       )}
 
-      {/* Results */}
       {scanData && !scanLoading && (
         <>
-          {/* Summary stats */}
           <div className="flex flex-wrap gap-3 text-sm">
             <div className="rounded-lg border border-gray-200 bg-white px-4 py-2 shadow-sm">
               <span className="text-gray-400">Screened: </span>
@@ -132,29 +250,36 @@ export function Conviction() {
             )}
           </div>
 
-          {/* Eligible tickers */}
           {eligible.length > 0 && (
             <Card title="CSP Eligible" subtitle={`${eligible.length} ticker(s) passed all gates`}>
-              <div className="space-y-0">
-                {eligible.map((s) => (
-                  <ExpandableSignalRow key={s.ticker} signal={s} />
-                ))}
-              </div>
+              <DataTable
+                data={eligible}
+                columns={signalColumns}
+                searchField={(r) => r.ticker}
+                rowKey={(r) => r.ticker}
+                defaultSortKey="conviction_level"
+                defaultSortDir="desc"
+                defaultPageSize={15}
+                expandedRow={(r) => <SignalDetail signal={r} />}
+              />
             </Card>
           )}
 
-          {/* Excluded tickers */}
           {excluded.length > 0 && (
             <Card title="Excluded" subtitle={`${excluded.length} ticker(s) failed one or more gates — expand to see why`}>
-              <div className="space-y-0">
-                {excluded.map((s) => (
-                  <ExpandableSignalRow key={s.ticker} signal={s} />
-                ))}
-              </div>
+              <DataTable
+                data={excluded}
+                columns={signalColumns}
+                searchField={(r) => r.ticker}
+                rowKey={(r) => r.ticker}
+                defaultSortKey="conviction_level"
+                defaultSortDir="desc"
+                defaultPageSize={15}
+                expandedRow={(r) => <SignalDetail signal={r} />}
+              />
             </Card>
           )}
 
-          {/* No results at all */}
           {scanData.signals.length === 0 && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
               <p className="text-sm font-medium text-amber-600">
@@ -170,7 +295,6 @@ export function Conviction() {
         </>
       )}
 
-      {/* Data Store — collapsible section at the bottom */}
       {storeReady && (
         <div className="rounded-lg border border-gray-200 bg-white">
           <button
@@ -224,112 +348,13 @@ export function Conviction() {
   );
 }
 
-function ExpandableSignalRow({ signal: s }: { signal: ConvictionSignal }) {
-  const [expanded, setExpanded] = useState(false);
-
-  const convictionColor: Record<string, string> = {
-    high: "text-emerald-600",
-    medium: "text-amber-600",
-    low: "text-red-600",
-    none: "text-gray-400",
-  };
-
-  const trendVariant: Record<string, "success" | "warning" | "danger" | "neutral" | "info"> = {
-    strong_uptrend: "success",
-    uptrend: "success",
-    pullback_to_8ema: "warning",
-    pullback_to_21ema: "warning",
-    consolidation: "neutral",
-    downtrend: "danger",
-    insufficient_data: "neutral",
-  };
-
-  const failedGate = s.gate_results?.find((g) => !g.passed && g.actual !== "—");
-  const Chevron = expanded ? ChevronDown : ChevronRight;
-
-  return (
-    <div className="border-b border-gray-100 last:border-b-0">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-4 px-1 py-3 text-left text-sm transition-colors hover:bg-gray-50"
-      >
-        <Chevron className="h-4 w-4 shrink-0 text-gray-400" />
-
-        <span className="w-16 font-semibold text-gray-900">{s.ticker}</span>
-
-        <span className="w-36">
-          <StatusBadge
-            label={s.trend_state.replace(/_/g, " ")}
-            variant={trendVariant[s.trend_state] ?? "neutral"}
-          />
-        </span>
-
-        <span className={`w-16 font-medium ${convictionColor[s.conviction_level] ?? "text-gray-400"}`}>
-          {s.conviction_level}
-        </span>
-
-        {s.last_close > 0 ? (
-          <>
-            <span className="w-20 text-right font-mono text-gray-700">${s.last_close.toFixed(2)}</span>
-            <span className="w-20 text-right font-mono text-xs text-gray-400">
-              {s.price_to_8ema_pct >= 0 ? "+" : ""}{s.price_to_8ema_pct.toFixed(2)}%
-            </span>
-            <span className="w-14 text-right text-gray-700">{s.days_above_both_emas}d</span>
-          </>
-        ) : (
-          <>
-            <span className="w-20 text-right text-gray-300">—</span>
-            <span className="w-20 text-right text-gray-300">—</span>
-            <span className="w-14 text-right text-gray-300">—</span>
-          </>
-        )}
-
-        <span className="ml-auto flex items-center gap-2">
-          {s.csp_eligible ? (
-            <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-600 border border-emerald-200">
-              <Check className="h-3 w-3" /> Eligible
-            </span>
-          ) : failedGate ? (
-            <span className="text-xs text-gray-400 truncate max-w-48">
-              Failed: {failedGate.gate}
-            </span>
-          ) : (
-            <span className="text-xs text-gray-300">—</span>
-          )}
-        </span>
-      </button>
-
-      {expanded && (
-        <div className="ml-5 mb-4 mr-1">
-          <GateLadder
-            gates={s.gate_results ?? []}
-            eligible={s.csp_eligible}
-            ticker={s.ticker}
-            signal={s}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function GateLadder({
-  gates,
-  eligible,
-  ticker,
-  signal,
-}: {
-  gates: GateResult[];
-  eligible: boolean;
-  ticker: string;
-  signal: ConvictionSignal;
-}) {
+function SignalDetail({ signal: s }: { signal: ConvictionSignal }) {
   return (
     <div className="flex gap-6">
       <div className="flex-1 rounded-lg border border-gray-200 bg-gray-50 p-4">
         <div className="mb-3 flex items-center gap-2">
-          <span className="text-sm font-semibold text-gray-900">{ticker}</span>
-          {eligible ? (
+          <span className="text-sm font-semibold text-gray-900">{s.ticker}</span>
+          {s.csp_eligible ? (
             <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-medium text-emerald-600">
               CSP ELIGIBLE
             </span>
@@ -341,8 +366,8 @@ function GateLadder({
         </div>
 
         <div className="relative">
-          {gates.map((gate, i) => {
-            const isLast = i === gates.length - 1;
+          {(s.gate_results ?? []).map((gate, i) => {
+            const isLast = i === (s.gate_results?.length ?? 0) - 1;
             const isSkipped = gate.actual === "—";
             return (
               <div key={gate.gate} className="relative flex gap-3">
@@ -397,19 +422,19 @@ function GateLadder({
         </div>
       </div>
 
-      {signal.last_close > 0 && (
+      {s.last_close > 0 && (
         <div className="w-52 shrink-0 rounded-lg border border-gray-200 bg-white p-4">
           <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">
             Metrics
           </h4>
           <div className="space-y-2.5 text-sm">
-            <MetricRow label="Close" value={`$${signal.last_close.toFixed(2)}`} />
-            <MetricRow label="EMA 8" value={`$${signal.ema_8.toFixed(2)}`} />
-            <MetricRow label="EMA 21" value={`$${signal.ema_21.toFixed(2)}`} />
-            <MetricRow label="8-EMA Dist" value={`${signal.price_to_8ema_pct.toFixed(2)}%`} />
-            <MetricRow label="Days Above" value={`${signal.days_above_both_emas}d`} />
-            <MetricRow label="Volume" value={signal.latest_volume.toLocaleString()} />
-            <MetricRow label="Avg Vol 20d" value={signal.avg_volume_20d.toLocaleString()} />
+            <MetricRow label="Close" value={`$${s.last_close.toFixed(2)}`} />
+            <MetricRow label="EMA 8" value={`$${s.ema_8.toFixed(2)}`} />
+            <MetricRow label="EMA 21" value={`$${s.ema_21.toFixed(2)}`} />
+            <MetricRow label="8-EMA Dist" value={`${s.price_to_8ema_pct.toFixed(2)}%`} />
+            <MetricRow label="Days Above" value={`${s.days_above_both_emas}d`} />
+            <MetricRow label="Volume" value={s.latest_volume.toLocaleString()} />
+            <MetricRow label="Avg Vol 20d" value={s.avg_volume_20d.toLocaleString()} />
           </div>
         </div>
       )}

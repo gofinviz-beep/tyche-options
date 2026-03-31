@@ -66,6 +66,29 @@ def init_scanner_dbs(db_dir: str) -> None:
         register_engine(name, url)
 
 
+def init_conviction_db(db_dir: str) -> None:
+    """Register the conviction-domain engine (conviction snapshots + transitions).
+
+    Stores daily EMA conviction snapshots and state transition events in a
+    dedicated SQLite file under the given directory.
+    """
+    db_path = Path(db_dir)
+    db_path.mkdir(parents=True, exist_ok=True)
+    file_path = db_path / "conviction.db"
+    register_engine("conviction", f"sqlite+aiosqlite:///{file_path}")
+
+
+def init_backtest_db(db_dir: str) -> None:
+    """Register the backtest-domain engine (pullback events + profiles).
+
+    Stores historical pullback backtest results in a dedicated SQLite file.
+    """
+    db_path = Path(db_dir)
+    db_path.mkdir(parents=True, exist_ok=True)
+    file_path = db_path / "backtest.db"
+    register_engine("backtest", f"sqlite+aiosqlite:///{file_path}")
+
+
 @asynccontextmanager
 async def get_session(db: str = "default") -> AsyncGenerator[AsyncSession, None]:
     """Provide an async session as a context manager.

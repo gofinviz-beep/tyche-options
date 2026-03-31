@@ -820,6 +820,7 @@ async def bootstrap_ohlcv(
     store: OHLCVStore,
     days: int = 120,
     meta_store: TickerMetaStore | None = None,
+    include_today: bool = False,
 ) -> dict[str, int]:
     """Bootstrap the data store by fetching N trading days of grouped daily bars.
 
@@ -827,9 +828,13 @@ async def bootstrap_ohlcv(
     Also fetches ticker reference data (market cap, exchange, type) and
     persists it in the TickerMetaStore for backtesting and screening.
 
+    Args:
+        include_today: When True, fetch up to today (use after market close).
+            When False (default), stop at yesterday for safety during market hours.
+
     Returns stats dict with dates_fetched, bars_stored, tickers_found, tickers_meta.
     """
-    end = date.today() - timedelta(days=1)
+    end = date.today() if include_today else date.today() - timedelta(days=1)
     start = end - timedelta(days=int(days * 1.5))
 
     latest_stored = store.get_latest_date()

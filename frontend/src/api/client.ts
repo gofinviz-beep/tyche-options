@@ -182,6 +182,96 @@ export const api = {
       ),
   },
 
+  stocks: {
+    getActivePullbacks: () =>
+      request<import("@/types").ActivePullbacksResult>("/stocks/pullbacks/active"),
+    getRecommendations: () =>
+      request<import("@/types").StockRecommendationsResult>("/stocks/recommendations"),
+    getConvictionHistory: (ticker: string, days = 30) =>
+      request<import("@/types").ConvictionHistory>(
+        `/stocks/conviction/history?ticker=${encodeURIComponent(ticker)}&days=${days}`,
+      ),
+    getTransitions: (days = 7, toStates?: string) => {
+      const params = new URLSearchParams({ days: String(days) });
+      if (toStates) params.set("to_states", toStates);
+      return request<import("@/types").TransitionsList>(
+        `/stocks/transitions?${params}`,
+      );
+    },
+    refreshConviction: () =>
+      request<import("@/types").ConvictionBatchStatus>("/stocks/conviction/refresh", {
+        method: "POST",
+      }),
+    getCspFallbacks: () =>
+      request<import("@/types").CSPFallbackAlert[]>("/stocks/csp-fallbacks"),
+    getExpiredCsps: () =>
+      request<import("@/types").ExpiredCSP[]>("/stocks/csp-expiries"),
+    recordCspExpiry: (data: {
+      ticker: string;
+      strike: number;
+      expiry_date: string;
+      premium_collected: number;
+    }) =>
+      request<import("@/types").ExpiredCSP>("/stocks/csp-expiries", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    removeCspExpiry: (ticker: string) =>
+      request<Record<string, string | number>>(
+        `/stocks/csp-expiries/${encodeURIComponent(ticker)}`,
+        { method: "DELETE" },
+      ),
+    getConvictionSnapshots: (asOfDate?: string) => {
+      const params = asOfDate ? `?as_of_date=${asOfDate}` : "";
+      return request<import("@/types").ConvictionSnapshot[]>(
+        `/stocks/conviction/snapshots${params}`,
+      );
+    },
+    getTickerGates: (ticker: string) =>
+      request<import("@/types").TickerGatesResult>(
+        `/stocks/conviction/${encodeURIComponent(ticker)}/gates`,
+      ),
+    getBacktestProfiles: () =>
+      request<import("@/types").BacktestProfile[]>("/stocks/backtest/profiles"),
+    getBacktestProfile: (ticker: string) =>
+      request<import("@/types").BacktestTickerDetail>(
+        `/stocks/backtest/profile/${encodeURIComponent(ticker)}`,
+      ),
+    getPositions: (activeOnly = false) =>
+      request<import("@/types").StockPosition[]>(
+        `/stocks/positions${activeOnly ? "?active_only=true" : ""}`,
+      ),
+    getActivePositions: () =>
+      request<import("@/types").StockPosition[]>("/stocks/positions/active"),
+    createPosition: (data: {
+      ticker: string;
+      purchase_price: number;
+      quantity: number;
+      purchase_date: string;
+      pullback_type: string;
+    }) =>
+      request<import("@/types").StockPosition>("/stocks/positions", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    exitPosition: (id: string, exitPrice: number, exitReason = "manual") =>
+      request<Record<string, string>>(
+        `/stocks/positions/${id}/exit?exit_price=${exitPrice}&exit_reason=${encodeURIComponent(exitReason)}`,
+        { method: "POST" },
+      ),
+    deletePosition: (id: string) =>
+      request<Record<string, string>>(`/stocks/positions/${id}`, {
+        method: "DELETE",
+      }),
+    checkExits: () =>
+      request<import("@/types").ExitCheckResult>(
+        "/stocks/positions/check-exits",
+        { method: "POST" },
+      ),
+    getRecentSignals: () =>
+      request<import("@/types").ExitSignal[]>("/stocks/positions/signals"),
+  },
+
   system: {
     getConfig: () => request<import("@/types").SystemConfig>("/system/config"),
     updateConfig: (data: import("@/types").ConfigUpdateRequest) =>

@@ -107,11 +107,16 @@ backend/
 │   ├── models/
 │   │   ├── order_intent.py      # OrderIntent ORM model (intents for human approval)
 │   │   ├── scan.py              # ScanRun, ScanCandidate, LLMAnalysisRecord ORM models
+│   │   ├── conviction.py        # ConvictionSnapshot, ConvictionTransition
+│   │   ├── backtest.py          # PullbackEvent, TickerPullbackProfile, StockPosition, ExitSignal
 │   │   └── ...                  # Account, candidate, journal, etc.
 │   │
 │   ├── persistence/
 │   │   ├── database.py          # Multi-engine registry (named engines per SQLite file)
-│   │   └── scan_repository.py   # Save/load/cleanup scan results across distributed DBs
+│   │   ├── scan_repository.py   # Save/load/cleanup scan results across distributed DBs
+│   │   ├── conviction_repository.py  # Conviction snapshot/transition CRUD
+│   │   ├── backtest_repository.py    # Pullback event/profile queries
+│   │   └── position_repository.py    # Stock position CRUD + backtest profile lookup on create
 │   │
 │   ├── schemas/                 # Pydantic request/response schemas
 │   │
@@ -130,11 +135,15 @@ backend/
 │   │
 │   └── workflow/
 │       ├── active_monitor.py    # Real-time position/order monitoring
+│       ├── conviction_batch.py  # Batch conviction engine run across all tickers
 │       ├── eod_journal.py       # End-of-day journaling
+│       ├── exit_monitor.py      # Stock position exit signal checker (profit target + stop loss)
+│       ├── expiry_tracker.py    # CSP expiry tracking for fallback alerts
 │       ├── intent_builder.py    # Order intent generation from recommendations
 │       ├── morning_scan.py      # Full morning scan pipeline orchestration
 │       ├── order_monitor.py     # Open order tracking
 │       ├── scheduler.py         # APScheduler-based workflow scheduling
+│       ├── stock_recommender.py # Stock buy recommendations from pullback alerts
 │       └── wheel_tracker.py     # Wheel strategy lifecycle tracking
 │
 ├── tests/unit/                  # pytest unit tests for all major components
@@ -160,6 +169,8 @@ Tyche uses **separate SQLite files per domain** rather than one monolithic datab
 | `db/scans.db` | `scan_runs` | Scan metadata, pipeline stages, allocation summary |
 | `db/candidates.db` | `scan_candidates` | One row per scored option contract per scan |
 | `db/analyses.db` | `llm_analyses` | One row per ticker per scan (LLM reasoning + status) |
+| `db/conviction.db` | `conviction_snapshots`, `conviction_transitions` | Daily conviction state per ticker |
+| `db/backtest.db` | `pullback_events`, `ticker_pullback_profiles`, `stock_positions`, `exit_signals` | Historical backtest data + stock position tracking |
 
 The multi-engine registry in `persistence/database.py` manages named engines:
 

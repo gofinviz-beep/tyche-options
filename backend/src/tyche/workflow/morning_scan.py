@@ -17,6 +17,7 @@ import structlog
 
 from tyche.analysis.agent import AnalysisAgent
 from tyche.broker.base import BrokerClient
+from tyche.conviction.alerts import PullbackAlert, detect_pullback_alerts
 from tyche.conviction.engine import ConvictionEngine, ConvictionSignal
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.earnings import EarningsCalendarClient
@@ -33,6 +34,12 @@ from tyche.telemetry import (
     scanner_stage_duration,
     scanner_total_duration,
 )
+from tyche.persistence.conviction_repository import (
+    upsert_snapshots as _upsert_conviction_snapshots,
+    detect_and_record_transitions as _detect_conviction_transitions,
+)
+from tyche.workflow.expiry_tracker import CSPFallbackAlert, ExpiryTracker
+from tyche.workflow.stock_recommender import StockBuyRecommendation, generate_stock_recommendations
 
 logger = structlog.get_logger()
 
@@ -88,6 +95,9 @@ class MorningScanResult:
         self.errors: list[str] = []
         self.pipeline_stages: list[PipelineStage] = []
         self.total_duration_ms: float = 0.0
+        self.pullback_alerts: list[PullbackAlert] = []
+        self.stock_recommendations: list[StockBuyRecommendation] = []
+        self.csp_fallback_alerts: list[CSPFallbackAlert] = []
 
 
 async def run_morning_scan(
@@ -109,6 +119,9 @@ async def run_morning_scan(
     expiration_mode: str = "friday_target",
     strike_range_pct: float = 15.0,
     llm_concurrency: int = 5,
+    csp_strike_preference: str = "legacy",
+    min_institutional_pct_stock_buy: float = 0.50,
+    notification_dispatcher: Any | None = None,
 ) -> MorningScanResult:
     """Execute the full morning scan pipeline.
 
@@ -344,6 +357,7 @@ async def run_morning_scan(
             max_expirations=max_expiration_dates,
             strike_range_pct=strike_range_pct,
             expiration_mode=expiration_mode,
+            csp_strike_preference=csp_strike_preference,
         )
         result.csp_candidates = csp_candidates
     except Exception as exc:
@@ -471,6 +485,110 @@ async def run_morning_scan(
             duration_ms=round(llm_dur * 1000, 2),
         )
 
+    # ── 7b. Persist conviction snapshots + detect transitions ──────────
+    conviction_transitions: list = []
+    if result.conviction_signals:
+        t0 = time.perf_counter()
+        try:
+            from datetime import date as _date
+
+            sigs = list(result.conviction_signals.values())
+            as_of = sigs[0].as_of_date or _date.today() if sigs else _date.today()
+            await _upsert_conviction_snapshots(sigs, as_of)
+            conviction_transitions = await _detect_conviction_transitions(as_of)
+
+            persist_dur = time.perf_counter() - t0
+            _record_stage("conviction_persistence", persist_dur)
+            result.pipeline_stages.append(
+                PipelineStage(
+                    "Conviction Persistence",
+                    len(sigs),
+                    len(sigs),
+                    detail=(
+                        f"{len(sigs)} snapshots persisted, "
+                        f"{len(conviction_transitions)} transition(s) detected"
+                    ),
+                    duration_ms=persist_dur * 1000,
+                )
+            )
+        except Exception:
+            persist_dur = time.perf_counter() - t0
+            _record_stage("conviction_persistence", persist_dur)
+            scanner_errors.add(
+                1, {"stage": "conviction_persistence", "error_type": "exception"}
+            )
+            logger.warning("conviction_persistence_failed", exc_info=True)
+
+    # ── 8. Pullback detection + stock recommendations ──────────────────
+    if result.conviction_signals:
+        t0 = time.perf_counter()
+        try:
+            pullback_alerts = detect_pullback_alerts(
+                result.conviction_signals,
+                institutional_map=result.institutional_ownership,
+                min_institutional_pct=min_institutional_pct_stock_buy,
+            )
+            result.pullback_alerts = pullback_alerts
+
+            if pullback_alerts:
+                result.stock_recommendations = generate_stock_recommendations(
+                    alerts=pullback_alerts,
+                    conviction_signals=result.conviction_signals,
+                )
+
+            pullback_dur = time.perf_counter() - t0
+            _record_stage("pullback_detection", pullback_dur)
+            result.pipeline_stages.append(
+                PipelineStage(
+                    "Pullback Detection",
+                    len(result.conviction_signals),
+                    len(pullback_alerts),
+                    detail=f"{len(pullback_alerts)} pullback alert(s) detected",
+                    duration_ms=pullback_dur * 1000,
+                )
+            )
+
+            if pullback_alerts and notification_dispatcher:
+                try:
+                    await notification_dispatcher.dispatch_pullback_alerts(
+                        pullback_alerts,
+                        context={"scan_id": result.scan_id},
+                    )
+                except Exception:
+                    logger.warning("pullback_notification_failed", exc_info=True)
+
+        except Exception:
+            pullback_dur = time.perf_counter() - t0
+            _record_stage("pullback_detection", pullback_dur)
+            scanner_errors.add(1, {"stage": "pullback_detection", "error_type": "exception"})
+            logger.warning("pullback_detection_failed", exc_info=True)
+
+    # ── 9. CSP expiry fallback check ──────────────────────────────────
+    if result.pullback_alerts:
+        t0 = time.perf_counter()
+        try:
+            from tyche.config import get_settings as _get_settings
+            _settings = _get_settings()
+            expiry_tracker = ExpiryTracker(db_dir=_settings.db_dir)
+            fallbacks = expiry_tracker.generate_fallback_alerts(result.pullback_alerts)
+            result.csp_fallback_alerts = fallbacks
+            expiry_dur = time.perf_counter() - t0
+            _record_stage("csp_expiry_fallback", expiry_dur)
+            if fallbacks:
+                result.pipeline_stages.append(
+                    PipelineStage(
+                        "CSP Expiry Fallback",
+                        len(result.pullback_alerts),
+                        len(fallbacks),
+                        detail=f"{len(fallbacks)} fallback alert(s) for expired CSPs",
+                        duration_ms=expiry_dur * 1000,
+                    )
+                )
+        except Exception:
+            expiry_dur = time.perf_counter() - t0
+            _record_stage("csp_expiry_fallback", expiry_dur)
+            logger.warning("csp_expiry_fallback_failed", exc_info=True)
+
     # ── Summary ───────────────────────────────────────────────────────
     total_dur = time.perf_counter() - scan_start
     result.total_duration_ms = total_dur * 1000
@@ -483,6 +601,9 @@ async def run_morning_scan(
         cc_candidates=len(result.cc_candidates),
         llm_analyses=len(result.csp_analyses),
         conviction_signals=len(result.conviction_signals),
+        pullback_alerts=len(result.pullback_alerts),
+        stock_recommendations=len(result.stock_recommendations),
+        csp_fallback_alerts=len(result.csp_fallback_alerts),
         errors=len(result.errors),
         duration_ms=round(result.total_duration_ms, 2),
     )

@@ -1,6 +1,6 @@
 # Tyche Options
 
-Options trading copilot for the Wheel Strategy (Cash-Secured Puts + Covered Calls). Uses 8/21 EMA conviction-based stock screening, MILP portfolio optimization, and LLM-assisted analysis to identify high-probability trades on quality large-cap stocks.
+Options trading copilot for the Wheel Strategy (Cash-Secured Puts + Covered Calls) with integrated stock-buying on EMA pullbacks. Uses 8/21 EMA conviction-based stock screening, MILP portfolio optimization, LLM-assisted analysis, and data-driven exit signals (per-ticker historical bounce profiles) to manage both options trades and stock positions.
 
 ## Repository Structure
 
@@ -13,15 +13,15 @@ tyche-options/
 │   │   ├── broker/      Tradier client + mock broker
 │   │   ├── conviction/  8/21 EMA conviction engine
 │   │   ├── market_data/ Polygon client, data stores, earnings
-│   │   ├── models/      SQLAlchemy ORM models
-│   │   ├── persistence/ Database engines + scan repository
+│   │   ├── models/      SQLAlchemy ORM models (scan, conviction, backtest, positions)
+│   │   ├── persistence/ Database engines + scan/conviction/position repositories
 │   │   ├── risk/        Deterministic risk rules
 │   │   ├── strategy/    CSP/CC engine + MILP allocator
-│   │   ├── workflow/    Morning scan, order monitor, intent builder
+│   │   ├── workflow/    Morning scan, exit monitor, order monitor, intent builder
 │   │   ├── telemetry.py OpenTelemetry configuration
 │   │   └── config.py    TYCHE_* env settings (pydantic-settings)
-│   ├── tests/unit/      245 unit tests (69% coverage)
-│   ├── scripts/         CLI tools (ingest_data, backtest, live_scan)
+│   ├── tests/unit/      475 unit tests (70% coverage)
+│   ├── scripts/         CLI tools (ingest_data, backtest_pullbacks, backtest_ema, live_scan)
 │   └── db/              SQLite databases (gitignored)
 ├── frontend/            React + TypeScript + Vite
 │   └── src/
@@ -82,6 +82,9 @@ Market cap ≥ $5B → Exchange → Price ≥ $15 → Volume ≥ 500K
 - **Allocator runs before LLM.** MILP optimization uses delta penalty to compensate for missing LLM insight.
 - **Combined conviction = min(EMA, LLM).** Never shows the optimistic signal when the other disagrees.
 - **Preview-only by default.** Live order placement requires explicit opt-in.
+- **Data-driven exit targets.** Per-ticker p75 bounce from historical backtest — not a one-size-fits-all percentage.
+- **Stock positions are persisted.** Tracked in `backtest.db` with daily exit monitoring (profit target + 8-EMA stop loss).
+- **Automated OHLCV refresh.** Daily at 4:02 PM ET after market close, with safety-net refresh before exit monitor.
 
 ## Configuration
 
@@ -97,15 +100,16 @@ All settings via `TYCHE_*` environment variables in `backend/.env`. See `backend
 
 ## Cursor AI Rules
 
-Six domain-specific rules in `.cursor/rules/`:
+Seven domain-specific rules in `.cursor/rules/`:
 
 | Rule | Scope | Purpose |
 |---|---|---|
-| `architecture.mdc` | `backend/src/tyche/**` | Module map, pipeline, API routes, storage |
+| `architecture.mdc` | `backend/src/tyche/**` | Module map, pipeline, API routes, storage, scheduled jobs |
 | `known-issues.mdc` | Always applied | Gotchas, workarounds, test notes |
 | `trading-rules.mdc` | `backend/src/tyche/**` | Risk constraints, filter pipeline, day guidance |
 | `conviction-rules.mdc` | `conviction/**`, `scripts/` | EMA thresholds, eligibility gates |
 | `intent-risk-pipeline.mdc` | `workflow/`, `schemas/`, `api/routes/` | LLM guardrails, numerical validation |
-| `frontend-patterns.mdc` | `frontend/src/**` | UI patterns, hooks, component conventions |
+| `testing-patterns.mdc` | `backend/tests/**` | Test conventions, fixtures, coverage targets |
+| `frontend-patterns.mdc` | `frontend/src/**` | UI patterns, hooks, component conventions, stock positions UI |
 
 Nested `AGENTS.md` files in `backend/` and `frontend/` provide directory-scoped context.

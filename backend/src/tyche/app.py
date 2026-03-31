@@ -12,12 +12,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from tyche.api.middleware import RequestTimingMiddleware, global_exception_handler
 from tyche.config import get_settings
 from tyche.logging import configure_logging
+from tyche.models.backtest import (
+    ExitSignal,
+    PullbackEvent,
+    StockPosition,
+    TickerPullbackProfile,
+)
+from tyche.models.conviction import ConvictionSnapshot, ConvictionTransition
 from tyche.models.scan import LLMAnalysisRecord, ScanCandidate, ScanRun
 from tyche.persistence.database import (
     check_db_health,
     create_tables,
     create_tables_for_models,
     dispose_engine,
+    init_backtest_db,
+    init_conviction_db,
     init_db,
     init_scanner_dbs,
 )
@@ -90,6 +99,110 @@ async def _scheduled_morning_scan() -> None:
     )
 
 
+async def _scheduled_ohlcv_refresh() -> None:
+    """Fetch today's OHLCV data from Polygon after market close."""
+    from tyche.api.deps import get_data_store, get_polygon, get_ticker_meta_store
+    from tyche.config import get_settings as _gs
+    from tyche.market_data.data_store import bootstrap_ohlcv
+
+    settings = _gs()
+    try:
+        polygon = get_polygon(settings)
+        if polygon is None:
+            logger.warning("ohlcv_refresh_skipped_no_polygon_key")
+            return
+        store = get_data_store(settings)
+        meta_store = get_ticker_meta_store(settings)
+        result = await bootstrap_ohlcv(
+            polygon, store, days=5, meta_store=meta_store, include_today=True,
+        )
+        logger.info("scheduled_ohlcv_refresh_complete", **result)
+    except Exception:
+        logger.error("scheduled_ohlcv_refresh_failed", exc_info=True)
+
+
+async def _scheduled_exit_monitor() -> None:
+    """Check active stock positions for exit signals after market close.
+
+    Refreshes OHLCV data first as a safety net, in case the scheduled
+    refresh job hasn't run or failed.
+    """
+    from tyche.api.deps import get_data_store, get_polygon, get_ticker_meta_store
+    from tyche.config import get_settings as _gs
+    from tyche.market_data.data_store import bootstrap_ohlcv
+    from tyche.workflow.exit_monitor import check_exit_signals
+
+    settings = _gs()
+    try:
+        polygon = get_polygon(settings)
+        store = get_data_store(settings)
+        if polygon is not None:
+            meta_store = get_ticker_meta_store(settings)
+            await bootstrap_ohlcv(
+                polygon, store, days=5, meta_store=meta_store, include_today=True,
+            )
+        result = await check_exit_signals(store)
+        logger.info(
+            "scheduled_exit_monitor_complete",
+            checked=result.positions_checked,
+            profit_targets=result.profit_targets_hit,
+            stop_losses=result.stop_losses_hit,
+        )
+    except Exception:
+        logger.error("scheduled_exit_monitor_failed", exc_info=True)
+
+
+async def _scheduled_daily_digest() -> None:
+    """Send a daily digest email with active pullbacks and transitions."""
+    from datetime import date
+
+    from tyche.config import get_settings as _gs
+    from tyche.notification.dispatcher import NotificationDispatcher
+    from tyche.persistence.conviction_repository import (
+        get_active_pullbacks,
+        get_transitions,
+    )
+
+    settings = _gs()
+    today = date.today()
+
+    try:
+        pullbacks = await get_active_pullbacks(today)
+        transitions = await get_transitions(
+            from_date=today,
+            to_date=today,
+        )
+
+        dispatcher = NotificationDispatcher.from_settings(settings)
+        if dispatcher.channel_count > 0:
+            await dispatcher.dispatch_daily_digest(
+                pullbacks, transitions, context={"date": today.isoformat()}
+            )
+    except Exception:
+        logger.error("scheduled_daily_digest_failed", exc_info=True)
+
+
+async def _migrate_conviction_raw_column() -> None:
+    """Add raw_conviction column to existing conviction tables if missing."""
+    from tyche.persistence.database import _engines
+
+    engine = _engines.get("conviction")
+    if engine is None:
+        return
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+
+    async with engine.begin() as conn:
+        for table in ("conviction_snapshots", "conviction_transitions"):
+            try:
+                await conn.execute(text(
+                    f"ALTER TABLE {table} ADD COLUMN raw_conviction VARCHAR(10) DEFAULT 'none'"
+                ))
+                logger.info("migration_column_added", table=table, column="raw_conviction")
+            except OperationalError:
+                pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
@@ -119,10 +232,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await create_tables_for_models("candidates", ScanCandidate)
     await create_tables_for_models("analyses", LLMAnalysisRecord)
 
+    init_conviction_db(settings.db_dir)
+    await create_tables_for_models(
+        "conviction", ConvictionSnapshot, ConvictionTransition
+    )
+    await _migrate_conviction_raw_column()
+
+    init_backtest_db(settings.db_dir)
+    await create_tables_for_models(
+        "backtest", PullbackEvent, TickerPullbackProfile,
+        StockPosition, ExitSignal,
+    )
+
     from tyche.api.deps import get_scheduler
 
     scheduler = get_scheduler()
     scheduler.schedule_morning_scan(_scheduled_morning_scan)
+    scheduler.schedule_ohlcv_refresh(_scheduled_ohlcv_refresh)
+    scheduler.schedule_exit_monitor(_scheduled_exit_monitor)
+
+    if settings.daily_digest_enabled:
+        parts = settings.daily_digest_time.split(":")
+        digest_h = int(parts[0]) if len(parts) >= 1 else 16
+        digest_m = int(parts[1]) if len(parts) >= 2 else 0
+        scheduler.schedule_daily_digest(
+            _scheduled_daily_digest, hour=digest_h, minute=digest_m
+        )
+
     scheduler.start()
 
     logger.info("tyche_ready")
@@ -178,12 +314,14 @@ def create_app() -> FastAPI:
         monitor,
         orders,
         scanner,
+        stocks,
         system,
         telemetry,
         watchlist,
     )
 
     app.include_router(account.router, prefix="/api/v1")
+    app.include_router(stocks.router, prefix="/api/v1")
     app.include_router(scanner.router, prefix="/api/v1")
     app.include_router(orders.router, prefix="/api/v1")
     app.include_router(watchlist.router, prefix="/api/v1")

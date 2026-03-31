@@ -169,6 +169,120 @@ export function useTriggerConvictionScan() {
   });
 }
 
+// --- Stocks module hooks ---
+
+export function useActivePullbacks() {
+  return useQuery({
+    queryKey: ["stocks", "pullbacks"],
+    queryFn: api.stocks.getActivePullbacks,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useStockRecommendations() {
+  return useQuery({
+    queryKey: ["stocks", "recommendations"],
+    queryFn: api.stocks.getRecommendations,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useConvictionHistory(ticker: string, days = 30) {
+  return useQuery({
+    queryKey: ["stocks", "history", ticker, days],
+    queryFn: () => api.stocks.getConvictionHistory(ticker, days),
+    enabled: !!ticker,
+  });
+}
+
+export function useConvictionTransitions(days = 7, toStates?: string) {
+  return useQuery({
+    queryKey: ["stocks", "transitions", days, toStates],
+    queryFn: () => api.stocks.getTransitions(days, toStates),
+  });
+}
+
+export function useRefreshConviction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.stocks.refreshConviction(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["stocks"] });
+    },
+  });
+}
+
+export function useCspFallbacks() {
+  return useQuery({
+    queryKey: ["stocks", "csp-fallbacks"],
+    queryFn: api.stocks.getCspFallbacks,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useExpiredCsps() {
+  return useQuery({
+    queryKey: ["stocks", "expired-csps"],
+    queryFn: api.stocks.getExpiredCsps,
+  });
+}
+
+export function useRecordCspExpiry() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      ticker: string;
+      strike: number;
+      expiry_date: string;
+      premium_collected: number;
+    }) => api.stocks.recordCspExpiry(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["stocks"] });
+    },
+  });
+}
+
+export function useRemoveCspExpiry() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ticker: string) => api.stocks.removeCspExpiry(ticker),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["stocks"] });
+    },
+  });
+}
+
+export function useConvictionSnapshots(asOfDate?: string) {
+  return useQuery({
+    queryKey: ["stocks", "conviction-snapshots", asOfDate],
+    queryFn: () => api.stocks.getConvictionSnapshots(asOfDate),
+  });
+}
+
+export function useTickerGates(ticker: string | null) {
+  return useQuery({
+    queryKey: ["stocks", "gates", ticker],
+    queryFn: () => api.stocks.getTickerGates(ticker!),
+    enabled: !!ticker,
+  });
+}
+
+export function useBacktestProfiles() {
+  return useQuery({
+    queryKey: ["stocks", "backtest-profiles"],
+    queryFn: () => api.stocks.getBacktestProfiles(),
+    staleTime: 1000 * 60 * 60,
+  });
+}
+
+export function useBacktestProfile(ticker: string | null) {
+  return useQuery({
+    queryKey: ["stocks", "backtest-profile", ticker],
+    queryFn: () => api.stocks.getBacktestProfile(ticker!),
+    enabled: !!ticker,
+  });
+}
+
 // --- Position Monitor hooks ---
 
 export function useTrackedPositions() {
@@ -281,5 +395,84 @@ export function useBulkExpireIntents() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["intents"] });
     },
+  });
+}
+
+export function useStockPositions(activeOnly = false) {
+  return useQuery({
+    queryKey: ["stockPositions", activeOnly],
+    queryFn: () => api.stocks.getPositions(activeOnly),
+    staleTime: 30_000,
+  });
+}
+
+export function useActivePositions() {
+  return useQuery({
+    queryKey: ["stockPositions", "active"],
+    queryFn: () => api.stocks.getActivePositions(),
+    staleTime: 30_000,
+  });
+}
+
+export function useCreatePosition() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      ticker: string;
+      purchase_price: number;
+      quantity: number;
+      purchase_date: string;
+      pullback_type: string;
+    }) => api.stocks.createPosition(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["stockPositions"] });
+    },
+  });
+}
+
+export function useExitPosition() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      exitPrice,
+      exitReason,
+    }: {
+      id: string;
+      exitPrice: number;
+      exitReason?: string;
+    }) => api.stocks.exitPosition(id, exitPrice, exitReason),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["stockPositions"] });
+    },
+  });
+}
+
+export function useDeletePosition() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.stocks.deletePosition(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["stockPositions"] });
+    },
+  });
+}
+
+export function useCheckExits() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.stocks.checkExits(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["stockPositions"] });
+      queryClient.invalidateQueries({ queryKey: ["exitSignals"] });
+    },
+  });
+}
+
+export function useRecentSignals() {
+  return useQuery({
+    queryKey: ["exitSignals"],
+    queryFn: () => api.stocks.getRecentSignals(),
+    staleTime: 30_000,
   });
 }

@@ -72,6 +72,33 @@ def target_expiration_dates(
     return result
 
 
+def _apply_21ema_strike_bonus(
+    candidates: list[ScoredCandidate],
+    conviction_signals: dict[str, Any],
+) -> list[ScoredCandidate]:
+    """Boost scores for strikes near the 21-EMA — the ideal assignment level.
+
+    Strikes within 3% of the 21-EMA get up to a 20% score bonus. This aligns
+    CSP assignment prices with the institutional defense zone, so if assigned,
+    the user buys at the price where they'd want to own the stock anyway.
+    """
+    for sc in candidates:
+        sig = conviction_signals.get(sc.symbol)
+        if sig is None:
+            continue
+
+        ema_21 = getattr(sig, "ema_21", 0) if hasattr(sig, "ema_21") else 0
+        if ema_21 <= 0:
+            continue
+
+        distance_pct = abs(sc.strike - ema_21) / ema_21 * 100
+        if distance_pct <= 3.0:
+            bonus = 1.0 + (0.20 * (1.0 - distance_pct / 3.0))
+            sc.score = round(sc.score * bonus, 4)
+
+    return candidates
+
+
 class StrategyEngine:
     """Orchestrates the scan-filter-score pipeline across watchlist symbols."""
 
@@ -97,6 +124,7 @@ class StrategyEngine:
         max_expirations: int = 2,
         strike_range_pct: float = 15.0,
         expiration_mode: str = "friday_target",
+        csp_strike_preference: str = "legacy",
     ) -> list[ScoredCandidate]:
         """Scan the watchlist for CSP opportunities.
 
@@ -115,6 +143,9 @@ class StrategyEngine:
             expiration_mode: "friday_target" uses smart Friday-targeting
                 (Sat-Wed → this Friday, Thu-Fri → this + next Friday).
                 "max_n" uses the legacy first-N expirations approach.
+            csp_strike_preference: Strike scoring preference.
+                "near_21ema" boosts strikes closer to the 21-EMA (ideal assignment level).
+                "otm_target" uses default OTM scoring. "legacy" = no bonus.
 
         Returns:
             Scored and ranked CSP candidates.
@@ -171,6 +202,11 @@ class StrategyEngine:
                 logger.warning("symbol_scan_failed", symbol=symbol, exc_info=True)
                 continue
 
+        if csp_strike_preference == "near_21ema" and conviction_signals:
+            all_scored = _apply_21ema_strike_bonus(
+                all_scored, conviction_signals
+            )
+
         all_scored.sort(key=lambda x: x.score, reverse=True)
         logger.info(
             "csp_scan_complete",
@@ -179,6 +215,7 @@ class StrategyEngine:
             top_n=top_n,
             expiration_mode=expiration_mode,
             strike_range_pct=strike_range_pct,
+            strike_preference=csp_strike_preference,
         )
         return all_scored[:top_n]
 
