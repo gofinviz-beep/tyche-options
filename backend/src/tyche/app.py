@@ -183,8 +183,8 @@ async def _scheduled_daily_digest() -> None:
         logger.error("scheduled_daily_digest_failed", exc_info=True)
 
 
-async def _migrate_conviction_raw_column() -> None:
-    """Add raw_conviction column to existing conviction tables if missing."""
+async def _migrate_conviction_columns() -> None:
+    """Add missing columns to existing conviction tables."""
     from tyche.persistence.database import _engines
 
     engine = _engines.get("conviction")
@@ -193,13 +193,19 @@ async def _migrate_conviction_raw_column() -> None:
     from sqlalchemy import text
     from sqlalchemy.exc import OperationalError
 
+    migrations = [
+        ("conviction_snapshots", "raw_conviction", "VARCHAR(10) DEFAULT 'none'"),
+        ("conviction_transitions", "raw_conviction", "VARCHAR(10) DEFAULT 'none'"),
+        ("conviction_snapshots", "prior_streak", "INTEGER DEFAULT 0"),
+    ]
+
     async with engine.begin() as conn:
-        for table in ("conviction_snapshots", "conviction_transitions"):
+        for table, column, col_type in migrations:
             try:
                 await conn.execute(text(
-                    f"ALTER TABLE {table} ADD COLUMN raw_conviction VARCHAR(10) DEFAULT 'none'"
+                    f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
                 ))
-                logger.info("migration_column_added", table=table, column="raw_conviction")
+                logger.info("migration_column_added", table=table, column=column)
             except OperationalError:
                 pass
 
@@ -237,7 +243,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await create_tables_for_models(
         "conviction", ConvictionSnapshot, ConvictionTransition
     )
-    await _migrate_conviction_raw_column()
+    await _migrate_conviction_columns()
 
     init_backtest_db(settings.db_dir)
     await create_tables_for_models(

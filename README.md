@@ -11,7 +11,7 @@ tyche-options/
 │   │   ├── api/         FastAPI routes + middleware
 │   │   ├── analysis/    Gemini LLM client + analysis agent
 │   │   ├── broker/      Tradier client + mock broker
-│   │   ├── conviction/  8/21 EMA conviction engine
+│   │   ├── conviction/  8/21 EMA conviction engine (features + CSP policy + compat wrapper)
 │   │   ├── market_data/ Polygon client, data stores, earnings
 │   │   ├── models/      SQLAlchemy ORM models (scan, conviction, backtest, positions)
 │   │   ├── persistence/ Database engines + scan/conviction/position repositories
@@ -20,7 +20,7 @@ tyche-options/
 │   │   ├── workflow/    Morning scan, exit monitor, order monitor, intent builder
 │   │   ├── telemetry.py OpenTelemetry configuration
 │   │   └── config.py    TYCHE_* env settings (pydantic-settings)
-│   ├── tests/unit/      475 unit tests (70% coverage)
+│   ├── tests/unit/      556 unit tests (70% coverage)
 │   ├── scripts/         CLI tools (ingest_data, backtest_pullbacks, backtest_ema, live_scan)
 │   └── db/              SQLite databases (gitignored)
 ├── frontend/            React + TypeScript + Vite
@@ -32,7 +32,7 @@ tyche-options/
 │       ├── pages/       Dashboard, Scanner, Conviction, Intents, etc.
 │       └── navigation/  Modular sidebar
 ├── scripts/             Start/stop helpers
-└── .cursor/rules/       Cursor AI rules (6 domain-specific .mdc files)
+└── .cursor/rules/       Cursor AI rules (8 domain-specific .mdc files)
 ```
 
 ## Quick Start
@@ -100,7 +100,7 @@ All settings via `TYCHE_*` environment variables in `backend/.env`. See `backend
 
 ## Cursor AI Rules
 
-Seven domain-specific rules in `.cursor/rules/`:
+Eight domain-specific rules in `.cursor/rules/`:
 
 | Rule | Scope | Purpose |
 |---|---|---|

@@ -13,8 +13,8 @@ Tyche Options is a laptop-based options trading copilot that combines determinis
 | API | FastAPI, Pydantic, uvicorn |
 | Broker (real-time) | Tradier API — quotes, options chains, account ops, order execution |
 | Market data (historical) | Polygon.io — grouped daily OHLCV bars, ticker reference metadata |
-| Data stores | Apache Parquet via PyArrow (OHLCVStore, TickerMetaStore) |
-| Conviction engine | pandas, numpy — 8/21 EMA trend classification |
+| Data stores | Apache Parquet via PyArrow (OHLCVStore, TickerMetaStore, ConvictionSignalStore) |
+| Conviction engine | pandas, numpy — 8/21 EMA trend classification (three-layer: features, CSP policy, compat wrapper) |
 | Portfolio optimization | scipy.optimize.milp (HiGHS MILP solver) |
 | LLM analysis | Google Gemini (gemini-3-flash-preview / gemini-3.1-pro-preview) via google-genai |
 | Database (operational) | Distributed SQLite (per-domain files) + SQLAlchemy 2.0 async + Alembic |
@@ -97,10 +97,13 @@ backend/
 │   │       └── symbols.py       # OCC symbol parsing utilities
 │   │
 │   ├── conviction/
-│   │   └── engine.py            # ConvictionEngine — 8/21 EMA trend + conviction scoring
+│   │   ├── features.py          # ConvictionFeatureEngine — pure EMA/trend computation + cache
+│   │   ├── csp_policy.py        # CSPEligibilityPolicy — stateless CSP gate evaluation
+│   │   ├── engine.py            # ConvictionEngine — backward-compat wrapper (delegates to above)
+│   │   └── alerts.py            # PullbackAlert detection from conviction signals
 │   │
 │   ├── market_data/
-│   │   ├── data_store.py        # OHLCVStore + TickerMetaStore (Parquet) + bootstrap_ohlcv()
+│   │   ├── data_store.py        # OHLCVStore + TickerMetaStore + ConvictionSignalStore (Parquet) + bootstrap_ohlcv()
 │   │   ├── earnings.py          # EarningsCalendarClient (Alpha Vantage)
 │   │   ├── institutional.py     # Institutional ownership filter
 │   │   ├── polygon.py           # PolygonClient — grouped daily, ticker reference, market caps
@@ -190,7 +193,7 @@ async with get_session("scans") as session:
 
 ### Dependency Injection
 
-All service instances are created as singletons in `api/deps.py` and injected via FastAPI's `Depends()`. This includes broker clients, conviction engine, data stores, risk engine, portfolio allocator, and the LLM analysis agent. A `reset_all()` function clears all singletons for testing.
+All service instances are created as singletons in `api/deps.py` and injected via FastAPI's `Depends()`. This includes broker clients, feature engine (`get_feature_engine()`), CSP policy (`get_csp_policy()`), conviction engine (`get_conviction_engine()` — the backward-compat wrapper), data stores, risk engine, portfolio allocator, and the LLM analysis agent. A `reset_all()` function clears all singletons for testing.
 
 ### Hybrid Market Data
 
@@ -200,14 +203,16 @@ Two separate APIs serve different purposes:
 
 ### Conviction-First Filtering
 
-The conviction engine acts as the primary gate. No stock reaches options scanning without first passing through:
+The conviction system acts as the primary gate. No stock reaches options scanning without first passing through:
 1. Universe filters (market cap, exchange, price, volume)
-2. EMA trend classification
-3. CSP eligibility check via one of two paths:
+2. EMA trend classification (`ConvictionFeatureEngine` — computes `FeatureSignal` with trend state, EMAs, slopes, streaks)
+3. CSP eligibility check (`CSPEligibilityPolicy` — applies gates to `FeatureSignal`):
    - **Uptrend path (A):** trend state + extension cap ≤3% + 5-10 day streak above both EMAs. Strikes: 15% below price → 8-EMA ceiling.
    - **Pullback path (B):** pullback to EMA support + prior streak ≥5 days + rising 21-EMA slope. Strikes: 5% below → 1% below support EMA.
 
 The pullback path was added based on backtest validation (76.8% win rate on $5B+ stocks). After collecting candidates from both paths, the engine filters to only the **earliest expiration date** across all tickers (configurable via `TYCHE_EARLIEST_EXPIRATION_ONLY`), maximizing capital recycling speed.
+
+Feature computation (step 2) is expensive and cached. Gate evaluation (step 3) is stateless and microseconds per ticker. This split means config changes to CSP thresholds take effect immediately without re-running EMA computation.
 
 This reduces API calls to Tradier and ensures only high-conviction candidates are evaluated.
 

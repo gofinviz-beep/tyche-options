@@ -9,7 +9,21 @@ alwaysApply: false
 
 # Conviction Engine Rules
 
-The conviction engine (`conviction/engine.py`) determines CSP eligibility using 8/21 EMA analysis. All thresholds are backtest-proven (670+ trades, 90 days).
+## Three-Layer Architecture
+
+The conviction system is split into three modules:
+
+| Module | Class | Responsibility | Has Cache? |
+|---|---|---|---|
+| `conviction/features.py` | `ConvictionFeatureEngine` | Pure EMA/trend computation from OHLCV data. Produces `FeatureSignal` objects. Shared by both options and stocks pipelines. | Yes — own in-memory + optional Parquet disk store |
+| `conviction/csp_policy.py` | `CSPEligibilityPolicy` | Stateless CSP gate evaluation on `FeatureSignal` objects. Only used by options pipeline. | No — stateless, microseconds per ticker |
+| `conviction/engine.py` | `ConvictionEngine` | Backward-compat wrapper. Delegates to the above two. Produces `ConvictionSignal` (with `csp_eligible`, `gate_results`). Re-exports `TrendState`, `GateResult`, `compute_ema`, `compute_slope`. | Delegates to feature engine |
+
+**Import rule:** All existing `from tyche.conviction.engine import ...` statements continue to work. New code that only needs features (stocks pipeline, alerts) can import from `features.py` directly. New code that needs CSP gates can import `CSPEligibilityPolicy` from `csp_policy.py`.
+
+**DI singletons in `deps.py`:** `get_feature_engine()`, `get_csp_policy()`, `get_conviction_engine()`.
+
+The conviction engine determines CSP eligibility using 8/21 EMA analysis. All thresholds are backtest-proven (670+ trades, 90 days).
 
 ## CSP Eligibility — Three Gates
 
@@ -56,3 +70,4 @@ A stock must pass ALL three:
 1. Update `config.py` default or `TYCHE_*` env var
 2. Re-run backtest: `cd backend && python scripts/backtest_ema.py`
 3. Compare win rate, P&L, breakdown metrics against baseline
+4. Note: feature computation thresholds (proximity_pct, min_bars) are in `ConvictionFeatureEngine`. CSP gate thresholds (extension cap, days above, pullback streak) are in `CSPEligibilityPolicy`. Config changes to CSP gates take effect on next evaluation without re-running features (split cache design).

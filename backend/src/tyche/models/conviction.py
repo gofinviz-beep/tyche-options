@@ -43,6 +43,7 @@ class ConvictionSnapshot(Base):
 
     volume_declining: Mapped[bool] = mapped_column(Boolean, default=False)
     days_above_both_emas: Mapped[int] = mapped_column(Integer, default=0)
+    prior_streak: Mapped[int] = mapped_column(Integer, default=0)
     avg_volume_20d: Mapped[int] = mapped_column(Integer, default=0)
     latest_volume: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -65,6 +66,7 @@ class ConvictionSnapshot(Base):
             "price_to_21ema_pct": round(self.price_to_21ema_pct, 2),
             "volume_declining": self.volume_declining,
             "days_above_both_emas": self.days_above_both_emas,
+            "prior_streak": self.prior_streak,
             "avg_volume_20d": self.avg_volume_20d,
             "latest_volume": self.latest_volume,
             "computed_at": self.computed_at.isoformat() if self.computed_at else None,

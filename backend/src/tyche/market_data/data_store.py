@@ -58,6 +58,25 @@ TICKER_META_SCHEMA = pa.schema(
     ]
 )
 
+CONVICTION_SIGNAL_SCHEMA = pa.schema(
+    [
+        ("ticker", pa.string()),
+        ("as_of_date", pa.date32()),
+        ("last_close", pa.float64()),
+        ("ema_8", pa.float64()),
+        ("ema_21", pa.float64()),
+        ("ema_8_slope", pa.float64()),
+        ("ema_21_slope", pa.float64()),
+        ("price_to_8ema_pct", pa.float64()),
+        ("price_to_21ema_pct", pa.float64()),
+        ("volume_declining_on_pullback", pa.bool_()),
+        ("avg_volume_20d", pa.int64()),
+        ("latest_volume", pa.int64()),
+        ("days_above_both_emas", pa.int64()),
+        ("prior_streak", pa.int64()),
+    ]
+)
+
 INTRADAY_SCHEMA = pa.schema(
     [
         ("timestamp", pa.timestamp("us")),
@@ -559,6 +578,124 @@ class TickerMetaStore:
             return meta.num_rows
         except Exception:
             return 0
+
+
+class ConvictionSignalStore:
+    """Disk cache for conviction engine EMA data.
+
+    Persists only the data-derived fields (EMAs, slopes, volumes, streaks)
+    as a single Parquet file.  Config-dependent fields (trend_state,
+    csp_eligible, conviction_level, gate_results) are recomputed on load
+    using the current engine settings, so config changes take effect
+    without needing a cache flush.
+
+    Eviction policy:
+      - New OHLCV date: date mismatch on read → returns None, caller recomputes
+      - Explicit invalidation: ``clear()`` deletes the file
+      - Config changes: no eviction needed (gates recomputed on load)
+    """
+
+    def __init__(self, data_dir: str = "data") -> None:
+        self._data_dir = Path(data_dir)
+        self._data_dir.mkdir(parents=True, exist_ok=True)
+        self._parquet_path = self._data_dir / "conviction_signals.parquet"
+
+    @property
+    def parquet_path(self) -> Path:
+        return self._parquet_path
+
+    @property
+    def exists(self) -> bool:
+        return self._parquet_path.exists()
+
+    def get_cached_date(self) -> date | None:
+        """Return the as_of_date stored in the cache, or None if empty."""
+        if not self.exists:
+            return None
+        try:
+            table = pq.read_table(self._parquet_path, columns=["as_of_date"])
+            if table.num_rows == 0:
+                return None
+            dates = table.column("as_of_date").to_pylist()
+            return max(dates)
+        except Exception:
+            return None
+
+    def write_signals(self, signals: list) -> int:
+        """Persist conviction EMA data to disk.  Overwrites the entire file.
+
+        Args:
+            signals: List of ``ConvictionSignal`` dataclass instances.
+
+        Returns:
+            Number of signals written.
+        """
+        if not signals:
+            return 0
+
+        rows = []
+        for sig in signals:
+            if sig.as_of_date is None:
+                continue
+            rows.append({
+                "ticker": sig.ticker,
+                "as_of_date": sig.as_of_date,
+                "last_close": sig.last_close,
+                "ema_8": sig.ema_8,
+                "ema_21": sig.ema_21,
+                "ema_8_slope": sig.ema_8_slope,
+                "ema_21_slope": sig.ema_21_slope,
+                "price_to_8ema_pct": sig.price_to_8ema_pct,
+                "price_to_21ema_pct": sig.price_to_21ema_pct,
+                "volume_declining_on_pullback": sig.volume_declining_on_pullback,
+                "avg_volume_20d": sig.avg_volume_20d,
+                "latest_volume": sig.latest_volume,
+                "days_above_both_emas": sig.days_above_both_emas,
+                "prior_streak": sig.prior_streak,
+            })
+
+        if not rows:
+            return 0
+
+        df = pd.DataFrame(rows)
+        df["as_of_date"] = pd.to_datetime(df["as_of_date"]).dt.date
+        df = df.sort_values("ticker").reset_index(drop=True)
+        table = pa.Table.from_pandas(df, schema=CONVICTION_SIGNAL_SCHEMA)
+        pq.write_table(table, self._parquet_path, compression="snappy")
+
+        logger.info(
+            "conviction_signal_store_write",
+            signals=len(rows),
+            path=str(self._parquet_path),
+        )
+        return len(rows)
+
+    def read_signals(self, as_of_date: date) -> list[dict] | None:
+        """Read cached EMA data for a given date.
+
+        Returns a list of row dicts if the file contains data for
+        ``as_of_date``, or ``None`` on cache miss (file absent, empty,
+        or date mismatch).
+        """
+        if not self.exists:
+            return None
+
+        try:
+            df = pd.read_parquet(self._parquet_path)
+            df["as_of_date"] = pd.to_datetime(df["as_of_date"]).dt.date
+            df = df[df["as_of_date"] == as_of_date]
+            if df.empty:
+                return None
+            return df.to_dict("records")
+        except Exception:
+            logger.warning("conviction_signal_store_read_error", exc_info=True)
+            return None
+
+    def clear(self) -> None:
+        """Delete the cache file (called on OHLCV update or explicit invalidation)."""
+        if self.exists:
+            self._parquet_path.unlink()
+            logger.info("conviction_signal_store_cleared")
 
 
 class IntradayStore:

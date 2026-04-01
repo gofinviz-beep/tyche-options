@@ -12,7 +12,7 @@ alwaysApply: false
 
 - pytest with `pytest-asyncio` (mode=auto), `pytest-cov` for coverage
 - Config in `backend/pyproject.toml` under `[tool.pytest.ini_options]`
-- Run: `cd backend && pytest tests/unit/` (475 tests, ~50s)
+- Run: `cd backend && pytest tests/unit/` (556 tests, ~5min)
 - Coverage report included automatically via `--cov` flags in pyproject.toml
 
 ## Test File Layout
@@ -22,7 +22,9 @@ tests/unit/
 ├── test_workflows.py              # Morning scan + order monitor (basic happy path)
 ├── test_morning_scan_coverage.py  # Morning scan error branches, timing, allocator, LLM
 ├── test_gemini_client.py          # GeminiClient retry, backoff, fallback, error handling
-├── test_conviction.py             # EMA conviction engine (thresholds, edge cases)
+├── test_conviction.py             # EMA conviction engine (thresholds, edge cases, wrapper compat)
+├── test_feature_policy_split.py  # Feature/policy isolation, blast radius, config recomputation
+├── test_conviction_signal_store.py # Parquet disk cache for FeatureSignal data
 ├── test_intent_builder.py         # Intent creation, numerical resolution, risk gate
 ├── test_strategy.py               # CSP/CC scoring, allocator MILP
 ├── test_risk.py                   # Risk rule chain
@@ -48,6 +50,8 @@ tests/unit/
 | `morning_scan.py` | 100% | Maintain |
 | `analysis/client.py` | 100% | Maintain |
 | `conviction/engine.py` | 88% | 95%+ |
+| `conviction/features.py` | 90%+ | 95%+ |
+| `conviction/csp_policy.py` | 95%+ | 95%+ |
 | `strategy/allocator.py` | 76% | 85%+ |
 | `workflow/exit_monitor.py` | 95% | Maintain |
 | Overall | 70% | 85% |
@@ -145,3 +149,6 @@ Field is `last_close`, NOT `current_price`.
 - **Don't test with `_uptrend(80)` for conviction.** The 80-bar pure uptrend triggers `max_days_above_emas`. Use `_fresh_uptrend` instead.
 - **Don't construct `ServerError("message")`.** It requires `(code, response_json)` positional args.
 - **Don't assert LLM numbers in intent tests.** Intents use broker data via `_resolve_numeric()`. Assert conviction level is `min(EMA, LLM)`.
+- **Don't use `ConvictionEngine._compute_prior_streak()`.** The static method moved to `ConvictionFeatureEngine`. Import from `tyche.conviction.features`.
+- **Don't assert `sig1 is sig2` for ConvictionSignal caching.** The wrapper creates a new `ConvictionSignal` per call from cached features. Use `sig1.to_dict() == sig2.to_dict()` for value equality.
+- **Use `ConvictionFeatureEngine` for feature-only tests.** When testing EMA computation without CSP gates, use `ConvictionFeatureEngine` directly — it returns `FeatureSignal` objects (no `csp_eligible`, no `gate_results`).

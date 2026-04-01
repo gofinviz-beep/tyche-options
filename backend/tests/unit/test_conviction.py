@@ -14,6 +14,7 @@ from tyche.conviction.engine import (
     compute_ema,
     compute_slope,
 )
+from tyche.conviction.features import ConvictionFeatureEngine
 
 
 def _make_ohlcv(prices, volumes=None, start_date=None):
@@ -191,31 +192,31 @@ class TestComputePriorStreak:
 
     def test_simple_pullback_after_uptrend(self):
         above = pd.Series([False] * 5 + [True] * 10 + [False] * 3)
-        assert ConvictionEngine._compute_prior_streak(above) == 10
+        assert ConvictionFeatureEngine._compute_prior_streak(above) == 10
 
     def test_no_prior_uptrend(self):
         above = pd.Series([False] * 10)
-        assert ConvictionEngine._compute_prior_streak(above) == 0
+        assert ConvictionFeatureEngine._compute_prior_streak(above) == 0
 
     def test_all_above(self):
         above = pd.Series([True] * 20)
-        assert ConvictionEngine._compute_prior_streak(above) == 20
+        assert ConvictionFeatureEngine._compute_prior_streak(above) == 20
 
     def test_single_day_pullback(self):
         above = pd.Series([True] * 8 + [False])
-        assert ConvictionEngine._compute_prior_streak(above) == 8
+        assert ConvictionFeatureEngine._compute_prior_streak(above) == 8
 
     def test_multiple_pullback_bars(self):
         above = pd.Series([True] * 6 + [False] * 5)
-        assert ConvictionEngine._compute_prior_streak(above) == 6
+        assert ConvictionFeatureEngine._compute_prior_streak(above) == 6
 
     def test_earlier_streak_ignored(self):
         above = pd.Series([True] * 3 + [False] * 2 + [True] * 7 + [False] * 2)
-        assert ConvictionEngine._compute_prior_streak(above) == 7
+        assert ConvictionFeatureEngine._compute_prior_streak(above) == 7
 
     def test_empty_series(self):
         above = pd.Series([], dtype=bool)
-        assert ConvictionEngine._compute_prior_streak(above) == 0
+        assert ConvictionFeatureEngine._compute_prior_streak(above) == 0
 
 
 class TestPullbackCSPEligibility:
@@ -338,12 +339,12 @@ class TestBatchSortingWithPullbacks:
 class TestEngineCache:
     """Tests for per-ticker conviction result caching."""
 
-    def test_cache_hit_returns_same_signal(self):
+    def test_cache_hit_returns_equivalent_signal(self):
         engine = ConvictionEngine()
         df = _make_ohlcv(_uptrend(80))
         sig1 = engine.analyze("AAPL", df)
         sig2 = engine.analyze("AAPL", df)
-        assert sig1 is sig2
+        assert sig1.to_dict() == sig2.to_dict()
         assert engine.cache_size == 1
 
     def test_different_tickers_cached_separately(self):
@@ -351,9 +352,10 @@ class TestEngineCache:
         df = _make_ohlcv(_uptrend(80))
         sig_a = engine.analyze("AAPL", df)
         sig_b = engine.analyze("GOOG", df)
-        assert sig_a is not sig_b
+        assert sig_a.ticker != sig_b.ticker
         assert engine.cache_size == 2
-        assert engine.analyze("AAPL", df) is sig_a
+        sig_a2 = engine.analyze("AAPL", df)
+        assert sig_a2.to_dict() == sig_a.to_dict()
 
     def test_date_change_invalidates_cache(self):
         engine = ConvictionEngine()
@@ -394,7 +396,7 @@ class TestEngineCache:
         data = {"AAPL": df, "GOOG": df}
         signals = engine.analyze_batch(data)
         aapl_sig = next(s for s in signals if s.ticker == "AAPL")
-        assert aapl_sig is original
+        assert aapl_sig.to_dict() == original.to_dict()
 
     def test_insufficient_data_not_cached(self):
         engine = ConvictionEngine(min_bars=50)

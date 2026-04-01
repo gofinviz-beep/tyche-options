@@ -1,59 +1,38 @@
-"""8/21 EMA Conviction Engine.
+"""8/21 EMA Conviction Engine — backward-compatible wrapper.
 
-Implements a simple, battle-tested conviction signal:
-- Compute 8-day and 21-day Exponential Moving Averages on daily closes
-- Classify stock trend state (uptrend, pullback_8, pullback_21, downtrend)
-- Assess conviction level for CSP selling
+This module preserves the original ``ConvictionEngine`` API so all
+existing consumers (routes, workflows, tests) continue to work.
+Internally it delegates to:
 
-The rule: When price is above both EMAs, it's in a confirmed uptrend.
-Pullbacks to EMAs in an uptrend are opportunities (for buying or selling CSPs).
-Price below both EMAs = trend broken, do not sell CSPs.
+- ``ConvictionFeatureEngine`` (features.py) — pure EMA computation + caching
+- ``CSPEligibilityPolicy`` (csp_policy.py) — stateless CSP gate evaluation
+
+Direct consumers that only need features (stocks pipeline, alerts)
+can import from ``features`` or ``csp_policy`` directly.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from enum import Enum
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import structlog
 
+# Re-export shared types so existing ``from tyche.conviction.engine import ...``
+# statements continue to resolve.
+from tyche.conviction.features import (  # noqa: F401
+    TrendState,
+    GateResult,
+    FeatureSignal,
+    compute_ema,
+    compute_slope,
+    ConvictionFeatureEngine,
+)
+from tyche.conviction.csp_policy import CSPEligibilityPolicy  # noqa: F401
+
 logger = structlog.get_logger()
-
-
-class TrendState(str, Enum):
-    """Stock trend classification based on 8/21 EMA position."""
-
-    STRONG_UPTREND = "strong_uptrend"
-    UPTREND = "uptrend"
-    PULLBACK_TO_8EMA = "pullback_to_8ema"
-    PULLBACK_TO_21EMA = "pullback_to_21ema"
-    CONSOLIDATION = "consolidation"
-    DOWNTREND = "downtrend"
-    INSUFFICIENT_DATA = "insufficient_data"
-
-
-@dataclass
-class GateResult:
-    """Result of a single eligibility gate check."""
-
-    gate: str
-    passed: bool
-    actual: str
-    threshold: str
-    reason: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "gate": self.gate,
-            "passed": self.passed,
-            "actual": self.actual,
-            "threshold": self.threshold,
-            "reason": self.reason,
-        }
 
 
 @dataclass
@@ -66,28 +45,23 @@ class ConvictionSignal:
     raw_conviction: str = "none"  # genuine EMA quality assessment before CSP override
     csp_eligible: bool = False
 
-    # Price and EMA values
     last_close: float = 0.0
     ema_8: float = 0.0
     ema_21: float = 0.0
 
-    # EMA dynamics
     ema_8_slope: float = 0.0
     ema_21_slope: float = 0.0
     price_to_8ema_pct: float = 0.0
     price_to_21ema_pct: float = 0.0
 
-    # Volume analysis
     volume_declining_on_pullback: bool = False
     avg_volume_20d: int = 0
     latest_volume: int = 0
 
-    # Additional context
     days_above_both_emas: int = 0
-    prior_streak: int = 0  # days above both EMAs before pullback started
+    prior_streak: int = 0
     as_of_date: date | None = None
 
-    # Gate-level eligibility results
     gate_results: list[GateResult] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,30 +88,38 @@ class ConvictionSignal:
         }
 
 
-def compute_ema(series: pd.Series, period: int) -> pd.Series:
-    """Compute EMA using Wilder-style smoothing (adjust=False)."""
-    return series.ewm(span=period, adjust=False).mean()
-
-
-def compute_slope(series: pd.Series, periods: int = 3) -> float:
-    """Compute the slope of the last N values via linear regression."""
-    if len(series) < periods:
-        return 0.0
-    y = series.iloc[-periods:].values
-    x = np.arange(periods, dtype=float)
-    if np.std(y) == 0:
-        return 0.0
-    coeffs = np.polyfit(x, y, 1)
-    return float(coeffs[0])
+def _feature_to_signal(feature: FeatureSignal, policy_result: dict) -> ConvictionSignal:
+    """Combine a FeatureSignal with CSP policy results into a ConvictionSignal."""
+    return ConvictionSignal(
+        ticker=feature.ticker,
+        trend_state=feature.trend_state,
+        conviction_level=policy_result["conviction_level"],
+        raw_conviction=feature.raw_conviction,
+        csp_eligible=policy_result["csp_eligible"],
+        last_close=feature.last_close,
+        ema_8=feature.ema_8,
+        ema_21=feature.ema_21,
+        ema_8_slope=feature.ema_8_slope,
+        ema_21_slope=feature.ema_21_slope,
+        price_to_8ema_pct=feature.price_to_8ema_pct,
+        price_to_21ema_pct=feature.price_to_21ema_pct,
+        volume_declining_on_pullback=feature.volume_declining_on_pullback,
+        avg_volume_20d=feature.avg_volume_20d,
+        latest_volume=feature.latest_volume,
+        days_above_both_emas=feature.days_above_both_emas,
+        prior_streak=feature.prior_streak,
+        as_of_date=feature.as_of_date,
+        gate_results=policy_result["gate_results"],
+    )
 
 
 class ConvictionEngine:
-    """Computes 8/21 EMA conviction signals for stock screening.
+    """Backward-compatible conviction engine.
 
-    Per-ticker results are cached keyed by (ticker, as_of_date).
-    When the underlying OHLCV date changes, the cache auto-clears.
-    Both the conviction route and the scanner share this cache
-    since the engine is a singleton.
+    Delegates feature computation to ``ConvictionFeatureEngine`` and
+    CSP gate evaluation to ``CSPEligibilityPolicy``.  Produces
+    ``ConvictionSignal`` objects identical to the original monolithic
+    engine for seamless migration.
 
     Usage:
         engine = ConvictionEngine(ema_fast=8, ema_slow=21)
@@ -155,268 +137,50 @@ class ConvictionEngine:
         max_days_above_emas: int = 10,
         pullback_csp_enabled: bool = True,
         min_prior_streak: int = 5,
+        signal_store: Any | None = None,
     ) -> None:
-        self._fast = ema_fast
-        self._slow = ema_slow
-        self._proximity_pct = pullback_proximity_pct
-        self._min_bars = min_bars
-        self._max_extension_pct = max_extension_pct
-        self._min_days_above = min_days_above_emas
-        self._max_days_above = max_days_above_emas
-        self._pullback_csp_enabled = pullback_csp_enabled
-        self._min_prior_streak = min_prior_streak
+        self._feature_engine = ConvictionFeatureEngine(
+            ema_fast=ema_fast,
+            ema_slow=ema_slow,
+            pullback_proximity_pct=pullback_proximity_pct,
+            min_bars=min_bars,
+            signal_store=signal_store,
+        )
+        self._csp_policy = CSPEligibilityPolicy(
+            max_extension_pct=max_extension_pct,
+            min_days_above_emas=min_days_above_emas,
+            max_days_above_emas=max_days_above_emas,
+            pullback_csp_enabled=pullback_csp_enabled,
+            min_prior_streak=min_prior_streak,
+        )
 
-        self._cache: dict[str, ConvictionSignal] = {}
-        self._cache_date: str | None = None
+    @property
+    def feature_engine(self) -> ConvictionFeatureEngine:
+        """Direct access to the underlying feature engine."""
+        return self._feature_engine
+
+    @property
+    def csp_policy(self) -> CSPEligibilityPolicy:
+        """Direct access to the CSP eligibility policy."""
+        return self._csp_policy
 
     def invalidate_cache(self) -> None:
-        """Clear the per-ticker conviction cache (called after OHLCV updates)."""
-        count = len(self._cache)
-        self._cache.clear()
-        self._cache_date = None
-        if count:
-            logger.info("conviction_engine_cache_cleared", entries=count)
+        """Clear the feature engine's per-ticker cache and disk store."""
+        self._feature_engine.invalidate_cache()
 
     @property
     def cache_size(self) -> int:
-        return len(self._cache)
+        return self._feature_engine.cache_size
 
     def analyze(self, ticker: str, df: pd.DataFrame) -> ConvictionSignal:
-        """Analyze a single ticker's OHLCV DataFrame and return a conviction signal.
+        """Analyze a single ticker's OHLCV data and return a ConvictionSignal.
 
-        Results are cached per (ticker, as_of_date). When the OHLCV date
-        changes across calls, the entire cache is auto-cleared so stale
-        signals are never served.
-
-        Args:
-            ticker: Stock ticker symbol.
-            df: DataFrame with columns: date, open, high, low, close, volume.
-                Must be sorted by date ascending with at least `min_bars` rows.
-
-        Returns:
-            ConvictionSignal with trend state and conviction level.
+        Delegates to the feature engine for EMA computation (cached)
+        and the CSP policy for gate evaluation (stateless).
         """
-        if len(df) < self._min_bars:
-            return ConvictionSignal(
-                ticker=ticker,
-                trend_state=TrendState.INSUFFICIENT_DATA,
-                conviction_level="none",
-                raw_conviction="none",
-                csp_eligible=False,
-                gate_results=[
-                    GateResult(
-                        gate="Trend State",
-                        passed=False,
-                        actual=f"insufficient_data ({len(df)} bars)",
-                        threshold=f"≥{self._min_bars} bars required",
-                        reason=f"Only {len(df)} bars available, need at least {self._min_bars}",
-                    ),
-                    GateResult(gate="Extension Cap", passed=False, actual="—", threshold=f"≤{self._max_extension_pct}%", reason="Skipped — failed prior gate"),
-                    GateResult(gate="Days Above EMAs", passed=False, actual="—", threshold=f"{self._min_days_above}–{self._max_days_above}d", reason="Skipped — failed prior gate"),
-                ],
-            )
-
-        raw_as_of = df["date"].iloc[-1]
-        as_of_str = raw_as_of if isinstance(raw_as_of, str) else raw_as_of.isoformat()
-
-        if self._cache_date is not None and self._cache_date != as_of_str:
-            logger.info(
-                "conviction_engine_cache_date_changed",
-                old=self._cache_date,
-                new=as_of_str,
-                evicted=len(self._cache),
-            )
-            self._cache.clear()
-        self._cache_date = as_of_str
-
-        cache_key = ticker.upper()
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        close = df["close"].astype(float)
-        volume = df["volume"].astype(int)
-
-        ema_8 = compute_ema(close, self._fast)
-        ema_21 = compute_ema(close, self._slow)
-
-        last_close = float(close.iloc[-1])
-        last_ema_8 = float(ema_8.iloc[-1])
-        last_ema_21 = float(ema_21.iloc[-1])
-        last_volume = int(volume.iloc[-1])
-
-        ema_8_slope = compute_slope(ema_8)
-        ema_21_slope = compute_slope(ema_21)
-
-        price_to_8 = ((last_close - last_ema_8) / last_ema_8 * 100) if last_ema_8 else 0
-        price_to_21 = ((last_close - last_ema_21) / last_ema_21 * 100) if last_ema_21 else 0
-
-        avg_vol_20 = int(volume.iloc[-20:].mean()) if len(volume) >= 20 else int(volume.mean())
-
-        above_both = (close > ema_8) & (close > ema_21)
-        streak = 0
-        for val in reversed(above_both.tolist()):
-            if val:
-                streak += 1
-            else:
-                break
-
-        pullback_declining = self._is_volume_declining_on_pullback(
-            close, ema_8, volume
-        )
-
-        trend_state = self._classify_trend(
-            last_close, last_ema_8, last_ema_21,
-            ema_8_slope, ema_21_slope, price_to_8, price_to_21,
-        )
-
-        raw_conviction = self._assess_conviction(
-            trend_state, ema_8_slope, ema_21_slope,
-            pullback_declining, streak,
-        )
-        conviction = raw_conviction
-
-        is_pullback = trend_state in (
-            TrendState.PULLBACK_TO_8EMA,
-            TrendState.PULLBACK_TO_21EMA,
-        )
-
-        prior_streak_val = 0
-        if is_pullback:
-            prior_streak_val = self._compute_prior_streak(above_both)
-
-        eligible_trends = (
-            TrendState.STRONG_UPTREND,
-            TrendState.UPTREND,
-            TrendState.PULLBACK_TO_8EMA,
-            TrendState.PULLBACK_TO_21EMA,
-        )
-        gates: list[GateResult] = []
-
-        # Gate 1: Trend State
-        trend_passed = trend_state in eligible_trends
-        trend_label = trend_state.value.replace("_", " ")
-        gates.append(GateResult(
-            gate="Trend State",
-            passed=trend_passed,
-            actual=trend_label,
-            threshold="uptrend, strong uptrend, pullback to 8ema, or pullback to 21ema",
-            reason=f"Trend is {trend_label}" if trend_passed else f"{trend_label} is not an eligible trend state",
-        ))
-
-        # Gate 2: Extension Cap (only applies to uptrend path)
-        if trend_passed and not is_pullback:
-            ext_passed = price_to_8 <= self._max_extension_pct
-            gates.append(GateResult(
-                gate="Extension Cap",
-                passed=ext_passed,
-                actual=f"{price_to_8:.2f}%",
-                threshold=f"≤{self._max_extension_pct}%",
-                reason=f"Price is {price_to_8:.2f}% above 8-EMA (limit {self._max_extension_pct}%)"
-                if ext_passed
-                else f"Over-extended at {price_to_8:.2f}% above 8-EMA (max {self._max_extension_pct}%)",
-            ))
-        elif trend_passed and is_pullback:
-            ext_passed = True
-            gates.append(GateResult(
-                gate="Extension Cap",
-                passed=True,
-                actual="n/a (pullback)",
-                threshold=f"≤{self._max_extension_pct}%",
-                reason="Extension cap not applied on pullback path",
-            ))
-        else:
-            ext_passed = False
-            gates.append(GateResult(gate="Extension Cap", passed=False, actual="—", threshold=f"≤{self._max_extension_pct}%", reason="Skipped — failed prior gate"))
-
-        # Gate 3a: Days Above EMAs (uptrend path — stock currently above both)
-        # Gate 3b: Pullback path — prior streak + rising 21-EMA slope
-        if trend_passed and ext_passed and not is_pullback:
-            streak_passed = self._min_days_above <= streak <= self._max_days_above
-            gates.append(GateResult(
-                gate="Days Above EMAs",
-                passed=streak_passed,
-                actual=f"{streak}d",
-                threshold=f"{self._min_days_above}–{self._max_days_above}d",
-                reason=f"{streak} consecutive days above both EMAs (sweet spot {self._min_days_above}–{self._max_days_above})"
-                if streak_passed
-                else (
-                    f"Only {streak}d above both EMAs — trend not yet confirmed (need ≥{self._min_days_above})"
-                    if streak < self._min_days_above
-                    else f"{streak}d above both EMAs — overdue for reversal (max {self._max_days_above})"
-                ),
-            ))
-        elif trend_passed and ext_passed and is_pullback:
-            if self._pullback_csp_enabled:
-                pullback_passed = (
-                    prior_streak_val >= self._min_prior_streak
-                    and ema_21_slope > 0
-                )
-                streak_passed = pullback_passed
-                reason_parts = []
-                if prior_streak_val < self._min_prior_streak:
-                    reason_parts.append(
-                        f"Prior streak {prior_streak_val}d < min {self._min_prior_streak}d"
-                    )
-                if ema_21_slope <= 0:
-                    reason_parts.append("21-EMA slope is flat/declining")
-                gates.append(GateResult(
-                    gate="Pullback Prior Streak",
-                    passed=pullback_passed,
-                    actual=f"{prior_streak_val}d prior streak, 21-EMA slope={ema_21_slope:.4f}",
-                    threshold=f"≥{self._min_prior_streak}d + rising 21-EMA",
-                    reason=(
-                        f"Pullback CSP eligible: {prior_streak_val}d prior uptrend, rising 21-EMA"
-                        if pullback_passed
-                        else f"Pullback CSP ineligible: {'; '.join(reason_parts)}"
-                    ),
-                ))
-            else:
-                streak_passed = False
-                gates.append(GateResult(
-                    gate="Pullback Prior Streak",
-                    passed=False,
-                    actual="disabled",
-                    threshold="pullback_csp_enabled=true",
-                    reason="Pullback CSP path is disabled",
-                ))
-        else:
-            streak_passed = False
-            gate_name = "Pullback Prior Streak" if is_pullback else "Days Above EMAs"
-            threshold = f"≥{self._min_prior_streak}d + rising 21-EMA" if is_pullback else f"{self._min_days_above}–{self._max_days_above}d"
-            gates.append(GateResult(gate=gate_name, passed=False, actual="—", threshold=threshold, reason="Skipped — failed prior gate"))
-
-        csp_eligible = trend_passed and ext_passed and streak_passed
-        if not csp_eligible and trend_passed:
-            conviction = "low"
-
-        as_of = raw_as_of
-        if isinstance(as_of, str):
-            as_of = date.fromisoformat(as_of)
-
-        signal = ConvictionSignal(
-            ticker=ticker,
-            trend_state=trend_state,
-            conviction_level=conviction,
-            raw_conviction=raw_conviction,
-            csp_eligible=csp_eligible,
-            last_close=last_close,
-            ema_8=last_ema_8,
-            ema_21=last_ema_21,
-            ema_8_slope=ema_8_slope,
-            ema_21_slope=ema_21_slope,
-            price_to_8ema_pct=price_to_8,
-            price_to_21ema_pct=price_to_21,
-            volume_declining_on_pullback=pullback_declining,
-            avg_volume_20d=avg_vol_20,
-            latest_volume=last_volume,
-            days_above_both_emas=streak,
-            prior_streak=prior_streak_val,
-            as_of_date=as_of,
-            gate_results=gates,
-        )
-        self._cache[cache_key] = signal
-        return signal
+        feature = self._feature_engine.analyze(ticker, df)
+        policy_result = self._csp_policy.evaluate(feature)
+        return _feature_to_signal(feature, policy_result)
 
     def analyze_batch(
         self,
@@ -425,46 +189,17 @@ class ConvictionEngine:
     ) -> list[ConvictionSignal]:
         """Analyze multiple tickers and return signals sorted by conviction.
 
-        Args:
-            ticker_data: Dict of ticker -> OHLCV DataFrame.
-            requested_tickers: Original list of requested tickers. Tickers
-                present here but missing from ticker_data are included with
-                a ``no_data`` status so the caller can see them.
+        Delegates feature computation to the feature engine (handles
+        disk store warming/writing) and gate evaluation to the CSP policy.
         """
+        features = self._feature_engine.analyze_batch(
+            ticker_data, requested_tickers=requested_tickers,
+        )
+
         signals: list[ConvictionSignal] = []
-
-        if requested_tickers:
-            missing = set(t.upper() for t in requested_tickers) - set(ticker_data.keys())
-            for ticker in sorted(missing):
-                signals.append(ConvictionSignal(
-                    ticker=ticker,
-                    trend_state=TrendState.INSUFFICIENT_DATA,
-                    conviction_level="none",
-                    csp_eligible=False,
-                    gate_results=[
-                        GateResult(gate="Trend State", passed=False, actual="no data", threshold="OHLCV data required", reason="No OHLCV data in store — bootstrap or check ticker symbol"),
-                        GateResult(gate="Extension Cap", passed=False, actual="—", threshold="—", reason="Skipped — no data"),
-                        GateResult(gate="Days Above EMAs", passed=False, actual="—", threshold="—", reason="Skipped — no data"),
-                    ],
-                ))
-
-        for ticker, df in ticker_data.items():
-            try:
-                signal = self.analyze(ticker, df)
-                signals.append(signal)
-            except Exception:
-                logger.warning("conviction_analysis_failed", ticker=ticker, exc_info=True)
-                signals.append(ConvictionSignal(
-                    ticker=ticker,
-                    trend_state=TrendState.INSUFFICIENT_DATA,
-                    conviction_level="none",
-                    csp_eligible=False,
-                    gate_results=[
-                        GateResult(gate="Trend State", passed=False, actual="error", threshold="—", reason="Analysis failed — data quality issue"),
-                        GateResult(gate="Extension Cap", passed=False, actual="—", threshold="—", reason="Skipped — analysis error"),
-                        GateResult(gate="Days Above EMAs", passed=False, actual="—", threshold="—", reason="Skipped — analysis error"),
-                    ],
-                ))
+        for feature in features:
+            policy_result = self._csp_policy.evaluate(feature)
+            signals.append(_feature_to_signal(feature, policy_result))
 
         conviction_order = {"high": 0, "medium": 1, "low": 2, "none": 3}
         pullback_priority = {
@@ -481,115 +216,6 @@ class ConvictionEngine:
             "conviction_batch_complete",
             total=len(signals),
             eligible=sum(1 for s in signals if s.csp_eligible),
-            cache_size=len(self._cache),
+            cache_size=self._feature_engine.cache_size,
         )
         return signals
-
-    def _classify_trend(
-        self,
-        price: float,
-        ema_8: float,
-        ema_21: float,
-        slope_8: float,
-        slope_21: float,
-        pct_to_8: float,
-        pct_to_21: float,
-    ) -> TrendState:
-        """Classify the current trend state based on price vs EMAs."""
-        above_8 = price > ema_8
-        above_21 = price > ema_21
-        both_slopes_up = slope_8 > 0 and slope_21 > 0
-
-        if above_8 and above_21:
-            if both_slopes_up and pct_to_8 > 1.0:
-                return TrendState.STRONG_UPTREND
-            return TrendState.UPTREND
-
-        if above_21 and not above_8:
-            if abs(pct_to_8) <= self._proximity_pct:
-                return TrendState.PULLBACK_TO_8EMA
-            if abs(pct_to_21) <= self._proximity_pct:
-                return TrendState.PULLBACK_TO_21EMA
-            return TrendState.CONSOLIDATION
-
-        if not above_21 and abs(pct_to_21) <= self._proximity_pct and slope_21 > 0:
-            return TrendState.PULLBACK_TO_21EMA
-
-        if not above_8 and not above_21:
-            return TrendState.DOWNTREND
-
-        return TrendState.CONSOLIDATION
-
-    def _assess_conviction(
-        self,
-        state: TrendState,
-        slope_8: float,
-        slope_21: float,
-        vol_declining: bool,
-        streak: int,
-    ) -> str:
-        """Map trend state to conviction level for CSP selling."""
-        match state:
-            case TrendState.STRONG_UPTREND:
-                return "high" if streak >= 5 else "medium"
-            case TrendState.UPTREND:
-                return "medium" if slope_21 > 0 else "low"
-            case TrendState.PULLBACK_TO_21EMA:
-                if slope_21 > 0 and vol_declining:
-                    return "high"
-                if slope_21 > 0:
-                    return "medium"
-                return "low"
-            case TrendState.PULLBACK_TO_8EMA:
-                return "medium" if slope_21 > 0 else "low"
-            case TrendState.CONSOLIDATION:
-                return "low"
-            case TrendState.DOWNTREND | TrendState.INSUFFICIENT_DATA:
-                return "none"
-            case _:
-                return "none"
-
-    @staticmethod
-    def _compute_prior_streak(above_both: pd.Series) -> int:
-        """Count the uptrend streak that ended before the current pullback.
-
-        Scans backward from the most recent bar. Skips any trailing
-        ``False`` values (the current pullback), then counts consecutive
-        ``True`` values (the prior uptrend run).
-        """
-        vals = above_both.tolist()
-        idx = len(vals) - 1
-
-        while idx >= 0 and not vals[idx]:
-            idx -= 1
-
-        streak = 0
-        while idx >= 0 and vals[idx]:
-            streak += 1
-            idx -= 1
-        return streak
-
-    def _is_volume_declining_on_pullback(
-        self,
-        close: pd.Series,
-        ema_8: pd.Series,
-        volume: pd.Series,
-        lookback: int = 5,
-    ) -> bool:
-        """Check if volume is declining during the most recent pullback.
-
-        Low volume on a pullback suggests sellers are exhausted —
-        a bullish confirmation signal.
-        """
-        if len(close) < lookback + 5:
-            return False
-
-        recent_close = close.iloc[-lookback:]
-        recent_ema = ema_8.iloc[-lookback:]
-        recent_vol = volume.iloc[-lookback:]
-        prior_avg_vol = volume.iloc[-(lookback + 10) : -lookback].mean()
-
-        is_pulling_back = any(recent_close < recent_ema)
-        vol_below_avg = float(recent_vol.mean()) < float(prior_avg_vol)
-
-        return is_pulling_back and vol_below_avg

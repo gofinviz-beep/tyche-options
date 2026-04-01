@@ -1,6 +1,30 @@
 # Conviction Engine — 8/21 EMA Rules
 
-**Source:** `backend/src/tyche/conviction/engine.py`
+**Source:** `backend/src/tyche/conviction/`
+
+## Architecture
+
+The conviction system uses a three-layer architecture to separate data-derived features from policy-specific logic:
+
+```
+conviction/
+├── features.py    — ConvictionFeatureEngine + FeatureSignal + TrendState + GateResult
+│                    Pure EMA/trend computation. Own cache + Parquet disk store.
+│                    Shared by both options and stocks pipelines.
+├── csp_policy.py  — CSPEligibilityPolicy
+│                    Stateless CSP gate evaluation on FeatureSignal objects.
+│                    No cache. Only used by options pipeline.
+└── engine.py      — ConvictionEngine + ConvictionSignal (backward-compat wrapper)
+                     Delegates to FeatureEngine + CSPPolicy. Re-exports TrendState,
+                     GateResult, compute_ema, compute_slope for import compat.
+```
+
+**Why the split:**
+- **Blast radius isolation:** Small batch doesn't overwrite full feature cache. Options and stocks pipelines have independent caches.
+- **Config changes without recomputation:** CSP gate thresholds (extension cap, days-above range) can change without re-running expensive EMA computation. Policy is reapplied to cached features.
+- **Clean separation of concerns:** `FeatureSignal` has no CSP fields (`csp_eligible`, `gate_results`). Stock pullback alerts consume features directly without CSP baggage.
+
+**Import compatibility:** All existing `from tyche.conviction.engine import TrendState, ConvictionSignal, ...` statements continue to work. The wrapper re-exports everything.
 
 ## Purpose
 
@@ -201,4 +225,15 @@ If you change any conviction threshold:
    - Uptrend path: `cd backend && python scripts/backtest_ema.py`
    - Pullback path: `cd backend && python scripts/backtest_pullback_csp.py`
 3. Compare win rate, P&L, and category breakdowns against the baseline
-4. Both backtests use the same `ConvictionEngine` class, so results are production-identical
+4. Both backtests use `ConvictionEngine` (or `ConvictionFeatureEngine` + `CSPEligibilityPolicy`), so results are production-identical
+5. Feature computation thresholds (`pullback_proximity_pct`, `min_bars`) live in `ConvictionFeatureEngine`. CSP gate thresholds (`max_extension_pct`, `min_days_above_emas`, etc.) live in `CSPEligibilityPolicy`. Config changes to CSP gates take effect on next evaluation without re-running EMA computation (split cache design).
+
+## Disk Cache (ConvictionSignalStore)
+
+Feature signals are optionally persisted to `data/conviction_signals.parquet` via the `ConvictionSignalStore`:
+
+- **Format:** Parquet (consistent with OHLCVStore, TickerMetaStore)
+- **Contents:** Data-derived fields only (EMAs, slopes, volumes, streaks) — no CSP gates or conviction levels
+- **Eviction:** Auto-invalidated when OHLCV date changes. Explicit `clear()` on data refresh.
+- **Warm-on-restart:** `ConvictionFeatureEngine.analyze_batch()` loads from disk if in-memory cache is empty
+- **Config-safe:** CSP gates are recomputed from stored features using current settings, so config changes take effect without cache flush

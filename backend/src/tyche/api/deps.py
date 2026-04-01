@@ -14,7 +14,9 @@ from tyche.broker.base import BrokerClient
 from tyche.broker.mock import MockBroker
 from tyche.config import TycheSettings, get_settings
 from tyche.conviction.engine import ConvictionEngine
-from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
+from tyche.conviction.features import ConvictionFeatureEngine
+from tyche.conviction.csp_policy import CSPEligibilityPolicy
+from tyche.market_data.data_store import ConvictionSignalStore, OHLCVStore, TickerMetaStore
 from tyche.market_data.earnings import EarningsCalendarClient
 from tyche.market_data.polygon import PolygonClient
 from tyche.market_data.universe import UniverseBuilder
@@ -48,8 +50,11 @@ _scheduler: WorkflowScheduler | None = None
 _polygon_client: PolygonClient | None = None
 _data_store: OHLCVStore | None = None
 _conviction_engine: ConvictionEngine | None = None
+_feature_engine: ConvictionFeatureEngine | None = None
+_csp_policy: CSPEligibilityPolicy | None = None
 _active_monitor: ActiveMonitor | None = None
 _ticker_meta_store: TickerMetaStore | None = None
+_conviction_signal_store: ConvictionSignalStore | None = None
 _portfolio_allocator: PortfolioAllocator | None = None
 
 
@@ -230,12 +235,71 @@ def get_ticker_meta_store(
     return _ticker_meta_store
 
 
+def get_conviction_signal_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> ConvictionSignalStore:
+    """Provide the Parquet-backed conviction signal disk cache."""
+    global _conviction_signal_store
+    if _conviction_signal_store is None:
+        _conviction_signal_store = ConvictionSignalStore(data_dir=settings.data_dir)
+        logger.info(
+            "conviction_signal_store_initialized",
+            path=str(_conviction_signal_store.parquet_path),
+            exists=_conviction_signal_store.exists,
+        )
+    return _conviction_signal_store
+
+
+def get_feature_engine(
+    settings: TycheSettings = Depends(get_settings),
+) -> ConvictionFeatureEngine:
+    """Provide the standalone EMA feature engine (no CSP policy)."""
+    global _feature_engine
+    if _feature_engine is None:
+        signal_store = get_conviction_signal_store(settings)
+        _feature_engine = ConvictionFeatureEngine(
+            ema_fast=settings.ema_fast_period,
+            ema_slow=settings.ema_slow_period,
+            pullback_proximity_pct=settings.pullback_proximity_pct,
+            signal_store=signal_store,
+        )
+        logger.info(
+            "feature_engine_initialized",
+            fast=settings.ema_fast_period,
+            slow=settings.ema_slow_period,
+            disk_cache=signal_store.exists,
+        )
+    return _feature_engine
+
+
+def get_csp_policy(
+    settings: TycheSettings = Depends(get_settings),
+) -> CSPEligibilityPolicy:
+    """Provide the stateless CSP eligibility policy."""
+    global _csp_policy
+    if _csp_policy is None:
+        _csp_policy = CSPEligibilityPolicy(
+            max_extension_pct=settings.max_extension_pct,
+            min_days_above_emas=settings.min_days_above_emas,
+            max_days_above_emas=settings.max_days_above_emas,
+            pullback_csp_enabled=settings.pullback_csp_enabled,
+            min_prior_streak=settings.min_prior_streak,
+        )
+        logger.info("csp_policy_initialized")
+    return _csp_policy
+
+
 def get_conviction_engine(
     settings: TycheSettings = Depends(get_settings),
 ) -> ConvictionEngine:
-    """Provide the 8/21 EMA conviction engine."""
+    """Provide the 8/21 EMA conviction engine with disk-backed cache.
+
+    The wrapper composes ``get_feature_engine()`` and ``get_csp_policy()``
+    internally, so all three singletons share config and cache.
+    """
     global _conviction_engine
     if _conviction_engine is None:
+        signal_store = get_conviction_signal_store(settings)
         _conviction_engine = ConvictionEngine(
             ema_fast=settings.ema_fast_period,
             ema_slow=settings.ema_slow_period,
@@ -245,11 +309,13 @@ def get_conviction_engine(
             max_days_above_emas=settings.max_days_above_emas,
             pullback_csp_enabled=settings.pullback_csp_enabled,
             min_prior_streak=settings.min_prior_streak,
+            signal_store=signal_store,
         )
         logger.info(
             "conviction_engine_initialized",
             fast=settings.ema_fast_period,
             slow=settings.ema_slow_period,
+            disk_cache=signal_store.exists,
         )
     return _conviction_engine
 
@@ -293,6 +359,7 @@ def reset_all() -> None:
     global _universe_builder, _scheduler
     global _polygon_client, _data_store, _conviction_engine
     global _active_monitor, _ticker_meta_store, _portfolio_allocator
+    global _conviction_signal_store, _feature_engine, _csp_policy
     _broker_instance = None
     _gemini_instance = None
     _analysis_agent = None
@@ -304,6 +371,9 @@ def reset_all() -> None:
     _polygon_client = None
     _data_store = None
     _conviction_engine = None
+    _feature_engine = None
+    _csp_policy = None
     _active_monitor = None
     _ticker_meta_store = None
+    _conviction_signal_store = None
     _portfolio_allocator = None
