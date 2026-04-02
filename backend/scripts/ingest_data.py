@@ -9,6 +9,7 @@ Usage:
     python scripts/ingest_data.py --meta                   # Also refresh ticker metadata
     python scripts/ingest_data.py --intraday               # Also fetch 5-min intraday bars for eligible tickers
     python scripts/ingest_data.py --intraday --intraday-tickers AAPL,MSFT  # Specific tickers only
+    python scripts/ingest_data.py --institutional          # Backfill institutional ownership for all CS tickers
 """
 
 from __future__ import annotations
@@ -241,6 +242,106 @@ async def _fetch_intraday(
     return {"tickers_fetched": completed["fetched"], "bars_stored": completed["bars"]}
 
 
+async def _backfill_institutional(
+    meta_store: TickerMetaStore,
+    concurrency: int = 5,
+    delay_per_ticker: float = 0.5,
+) -> int:
+    """Fetch institutional ownership from yfinance for all CS tickers in meta store.
+
+    Throttled to stay under Yahoo Finance's rate limits.
+    If rate-limited, backs off exponentially (30s → 60s → 120s, max 5min)
+    and retries. Progress is persisted every batch so re-runs skip completed tickers.
+    """
+    from yfinance.exceptions import YFRateLimitError
+    from tyche.market_data.institutional import get_institutional_ownership
+
+    if not meta_store.exists:
+        click.echo("  No ticker metadata — run with --meta first.", err=True)
+        return 0
+
+    all_tickers = sorted(meta_store.filter_equity_only(
+        list(meta_store.get_ticker_types().keys())
+    ))
+
+    existing = meta_store.get_institutional_pcts(all_tickers)
+    missing = [t for t in all_tickers if t not in existing]
+
+    click.echo(f"  {len(all_tickers):,} CS tickers, {len(existing):,} already have inst %, "
+               f"{len(missing):,} to fetch")
+
+    if not missing:
+        click.echo("  All tickers already have institutional ownership data.")
+        return 0
+
+    sem = asyncio.Semaphore(concurrency)
+    results: dict[str, float] = {}
+    errors = 0
+    rate_limit_backoff = 30.0
+    max_backoff = 300.0
+    rate_limited = asyncio.Event()
+
+    async def _fetch_one(ticker: str) -> None:
+        nonlocal errors, rate_limit_backoff
+        async with sem:
+            if rate_limited.is_set():
+                return
+
+            await asyncio.sleep(delay_per_ticker)
+
+            retries = 0
+            while retries < 3:
+                try:
+                    pct = await get_institutional_ownership(ticker)
+                    if pct is not None:
+                        results[ticker] = pct
+                    return
+                except YFRateLimitError:
+                    rate_limited.set()
+                    return
+                except Exception:
+                    retries += 1
+                    if retries >= 3:
+                        errors += 1
+
+    click.echo(f"  Fetching {len(missing):,} tickers "
+               f"(concurrency={concurrency}, {delay_per_ticker}s delay/ticker)...")
+
+    batch_size = 50
+    i = 0
+    total_persisted = 0
+
+    while i < len(missing):
+        rate_limited.clear()
+        batch = missing[i : i + batch_size]
+        await asyncio.gather(*[_fetch_one(t) for t in batch])
+
+        if results:
+            updated = meta_store.update_institutional_pcts(results)
+            total_persisted += updated
+            results.clear()
+
+        if rate_limited.is_set():
+            wait = min(rate_limit_backoff, max_backoff)
+            click.echo(f"    Rate limited at {i + batch_size:,}/{len(missing):,}. "
+                       f"Persisted so far: {total_persisted:,}. "
+                       f"Waiting {wait:.0f}s before resuming...")
+            await asyncio.sleep(wait)
+            rate_limit_backoff = min(rate_limit_backoff * 2, max_backoff)
+        else:
+            rate_limit_backoff = 30.0
+            i += batch_size
+            click.echo(f"    {min(i, len(missing)):,}/{len(missing):,} done "
+                       f"({total_persisted:,} persisted, {errors} errors)")
+
+    click.echo(f"  Total persisted: {total_persisted:,} institutional ownership values")
+
+    if errors:
+        click.echo(f"  {errors} ticker(s) had non-rate-limit errors", err=True)
+
+    return total_persisted
+
+
 async def _run(
     from_date: date | None,
     to_date: date | None,
@@ -250,6 +351,7 @@ async def _run(
     intraday: bool = False,
     intraday_tickers: str | None = None,
     no_conviction: bool = False,
+    institutional: bool = False,
 ) -> None:
     settings = TycheSettings()
     store = OHLCVStore(data_dir=settings.data_dir)
@@ -340,6 +442,10 @@ async def _run(
         else:
             click.echo("Intraday store already up to date.")
 
+    if institutional:
+        click.echo("\nBackfilling institutional ownership...")
+        await _backfill_institutional(meta_store)
+
     if not status and not no_conviction and store.exists:
         click.echo("\nRunning conviction batch...")
         try:
@@ -413,6 +519,8 @@ async def _run_conviction_batch(
               help="Comma-separated tickers for intraday fetch (overrides auto-discovery).")
 @click.option("--no-conviction", is_flag=True, default=False,
               help="Skip conviction batch after OHLCV ingest.")
+@click.option("--institutional", is_flag=True, default=False,
+              help="Backfill institutional ownership (yfinance) for all CS tickers in meta store.")
 def main(
     from_date: click.DateTime | None,
     to_date: click.DateTime | None,
@@ -422,11 +530,12 @@ def main(
     intraday: bool,
     intraday_tickers: str | None,
     no_conviction: bool,
+    institutional: bool,
 ) -> None:
     """Ingest OHLCV daily bars, intraday bars, and ticker metadata from Polygon.io."""
     fd = from_date.date() if from_date else None
     td = to_date.date() if to_date else None
-    asyncio.run(_run(fd, td, days, meta, status, intraday, intraday_tickers, no_conviction))
+    asyncio.run(_run(fd, td, days, meta, status, intraday, intraday_tickers, no_conviction, institutional))
 
 
 if __name__ == "__main__":

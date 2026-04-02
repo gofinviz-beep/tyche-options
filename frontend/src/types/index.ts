@@ -599,6 +599,8 @@ export interface ConvictionSnapshot {
   avg_volume_20d: number;
   latest_volume: number;
   computed_at: string | null;
+  market_cap: number | null;
+  institutional_pct: number | null;
 }
 
 export interface ConvictionTransition {

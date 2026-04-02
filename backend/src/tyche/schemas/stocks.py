@@ -28,6 +28,8 @@ class ConvictionSnapshotResponse(BaseModel):
     avg_volume_20d: int
     latest_volume: int
     computed_at: str | None = None
+    market_cap: float | None = None
+    institutional_pct: float | None = None
 
 
 class ConvictionTransitionResponse(BaseModel):

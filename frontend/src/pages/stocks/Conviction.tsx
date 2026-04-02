@@ -10,7 +10,7 @@ import {
 } from "@/hooks/useApi";
 import type { ConvictionSnapshot, GateResult, BacktestProfile } from "@/types";
 import { Check, X, Minus } from "lucide-react";
-import { convictionSortValue } from "@/lib/format";
+import { convictionSortValue, formatMarketCap } from "@/lib/format";
 
 const TREND_VARIANT: Record<
   string,
@@ -85,6 +85,39 @@ const snapshotColumns: DataTableColumn<ConvictionSnapshot>[] = [
       ) : (
         <span className="text-gray-300">—</span>
       ),
+  },
+  {
+    key: "market_cap",
+    header: "Mkt Cap",
+    accessor: (r) => r.market_cap ?? 0,
+    sortable: true,
+    align: "right",
+    render: (r) => (
+      <span className="font-mono text-xs text-gray-500">
+        {r.market_cap ? formatMarketCap(r.market_cap) : "—"}
+      </span>
+    ),
+  },
+  {
+    key: "institutional_pct",
+    header: "Inst %",
+    accessor: (r) => r.institutional_pct ?? -1,
+    sortable: true,
+    align: "right",
+    render: (r) => {
+      if (r.institutional_pct == null)
+        return <span className="text-xs text-gray-300">—</span>;
+      const pct = r.institutional_pct * 100;
+      const color =
+        pct >= 60
+          ? "text-emerald-600"
+          : pct >= 40
+            ? "text-amber-600"
+            : "text-red-500";
+      return (
+        <span className={`font-mono text-xs ${color}`}>{pct.toFixed(0)}%</span>
+      );
+    },
   },
   {
     key: "price_to_8ema_pct",
@@ -512,6 +545,18 @@ function SnapshotDetail({ snapshot: s }: { snapshot: ConvictionSnapshot }) {
           </h4>
           <div className="space-y-2.5 text-sm">
             <MetricRow label="Close" value={`$${s.last_close.toFixed(2)}`} />
+            <MetricRow
+              label="Mkt Cap"
+              value={s.market_cap ? formatMarketCap(s.market_cap) : "—"}
+            />
+            <MetricRow
+              label="Inst. Own"
+              value={
+                s.institutional_pct != null
+                  ? `${(s.institutional_pct * 100).toFixed(0)}%`
+                  : "—"
+              }
+            />
             <MetricRow label="EMA 8" value={`$${s.ema_8.toFixed(2)}`} />
             <MetricRow label="EMA 21" value={`$${s.ema_21.toFixed(2)}`} />
             <MetricRow

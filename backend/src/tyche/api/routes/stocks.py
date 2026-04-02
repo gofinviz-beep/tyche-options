@@ -16,7 +16,10 @@ from tyche.config import TycheSettings, get_settings
 from tyche.conviction.alerts import detect_pullback_alerts
 from tyche.conviction.engine import ConvictionEngine
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
-from tyche.market_data.institutional import filter_by_institutional_ownership
+from tyche.market_data.institutional import (
+    filter_by_institutional_ownership,
+    get_cached_ownership_batch,
+)
 from tyche.persistence.conviction_repository import (
     get_active_pullbacks,
     get_snapshots_for_date,
@@ -353,6 +356,7 @@ async def get_stock_recommendations_endpoint(
 )
 async def get_conviction_snapshots_endpoint(
     as_of_date: str | None = Query(None, description="Date in YYYY-MM-DD format (default: latest trading day)"),
+    meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
 ) -> list[ConvictionSnapshotResponse]:
     """Get all conviction snapshots for a given date from the DB."""
     if as_of_date:
@@ -367,7 +371,20 @@ async def get_conviction_snapshots_endpoint(
             yesterday -= timedelta(days=1)
         snaps = await get_snapshots_for_date(yesterday)
 
-    return [_snapshot_to_response(s) for s in snaps]
+    tickers = [s.ticker for s in snaps]
+    market_caps = meta_store.get_market_caps(tickers) if meta_store.exists else {}
+    inst_persisted = meta_store.get_institutional_pcts(tickers) if meta_store.exists else {}
+    inst_cached = get_cached_ownership_batch(tickers)
+    inst_ownership = {**inst_persisted, **inst_cached}
+
+    results = []
+    for s in snaps:
+        resp = _snapshot_to_response(s)
+        resp.market_cap = market_caps.get(s.ticker)
+        resp.institutional_pct = inst_ownership.get(s.ticker)
+        results.append(resp)
+
+    return results
 
 
 # ── On-demand gate computation for a single ticker ────────────────────

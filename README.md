@@ -44,7 +44,8 @@ cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env       # Add API keys: TYCHE_TRADIER_*, TYCHE_POLYGON_*, TYCHE_GEMINI_*
-python scripts/ingest_data.py --days 120 --meta   # Bootstrap market data
+python scripts/ingest_data.py --days 120 --meta              # Bootstrap market data
+python scripts/ingest_data.py --institutional --no-conviction  # Backfill institutional ownership
 uvicorn tyche.app:app --reload
 ```
 
@@ -66,10 +67,10 @@ npm run dev
 ## Pipeline Overview
 
 ```
-Market cap ≥ $5B → Exchange → Price ≥ $15 → Volume ≥ 500K
+Equity filter (CS only, no ETFs) → Market cap ≥ $5B → Exchange → Price ≥ $15 → Volume ≥ 500K
   → 8/21 EMA Conviction (trend + extension ≤ 3% + days-above 5-10)
-  → Institutional ownership ≥ 40%
-  → Tradier options chains (day-aware expiration targeting)
+  → Institutional ownership ≥ 40% (persisted to Parquet)
+  → Tradier options chains (day-aware expiration targeting, min 1 DTE Sat–Wed)
   → MILP Portfolio Allocator (delta-penalized risk weight)
   → Per-ticker parallel LLM analysis (Gemini)
   → Risk gate → OrderIntent → Persist to SQLite

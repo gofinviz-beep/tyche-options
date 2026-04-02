@@ -194,6 +194,7 @@ class TestMarketCapFilter:
     async def test_market_cap_drops_small_caps(self, broker):
         meta_store = MagicMock()
         meta_store.exists = True
+        meta_store.filter_equity_only.side_effect = lambda tickers: tickers
         meta_store.get_market_caps.return_value = {"PL": 2_000_000_000, "AAPL": 3_000_000_000_000}
 
         result = await run_morning_scan(
@@ -215,6 +216,7 @@ class TestMarketCapFilter:
     async def test_market_cap_passes_no_data_tickers(self, broker):
         meta_store = MagicMock()
         meta_store.exists = True
+        meta_store.filter_equity_only.side_effect = lambda tickers: tickers
         meta_store.get_market_caps.return_value = {}
 
         result = await run_morning_scan(
@@ -236,6 +238,7 @@ class TestMarketCapFilter:
     async def test_all_filtered_by_market_cap(self, broker):
         meta_store = MagicMock()
         meta_store.exists = True
+        meta_store.filter_equity_only.side_effect = lambda tickers: tickers
         meta_store.get_market_caps.return_value = {"PL": 100_000}
 
         result = await run_morning_scan(

@@ -104,15 +104,27 @@ async def run_conviction_batch(
 
     logger.info("conviction_batch_start", total_tickers=len(all_tickers))
 
-    # 2. Pre-filter by market cap
+    # 2a. Filter to common stocks only (exclude ETFs, ETNs, warrants, etc.)
+    if ticker_meta_store and ticker_meta_store.exists:
+        equity_tickers = ticker_meta_store.filter_equity_only(all_tickers)
+        logger.info(
+            "conviction_batch_equity_filtered",
+            before=len(all_tickers),
+            after=len(equity_tickers),
+            removed=len(all_tickers) - len(equity_tickers),
+        )
+    else:
+        equity_tickers = all_tickers
+
+    # 2b. Pre-filter by market cap
     filtered_tickers = _filter_by_market_cap(
-        all_tickers, ticker_meta_store, min_market_cap
+        equity_tickers, ticker_meta_store, min_market_cap
     )
     result.tickers_after_market_cap_filter = len(filtered_tickers)
 
     logger.info(
         "conviction_batch_market_cap_filtered",
-        before=len(all_tickers),
+        before=len(equity_tickers),
         after=len(filtered_tickers),
     )
 

@@ -38,9 +38,10 @@ def target_expiration_dates(
     """Pick the nearest useful expiration date(s) from Tradier's list.
 
     Rules:
-      - **Sat → Wed**: pick the nearest expiration >= 2 days out.
-        This naturally selects the coming Friday (or Thursday when
-        Friday is a market holiday, e.g. Good Friday).
+      - **Sat → Wed**: pick the nearest expiration >= 1 day out.
+        This selects the coming Friday, or the holiday-adjusted
+        Thursday (e.g. Good Friday week where expiration moves to
+        Thursday and Wednesday→Thursday is only 1 DTE).
       - **Thu or Fri**: skip this week (0-1 DTE is useless), pick the
         nearest expiration >= 5 days out (next week's cycle).
       - **Monthly-only tickers** have no weekly expirations, so the
@@ -54,7 +55,7 @@ def target_expiration_dates(
     today = today or date.today()
     dow = today.weekday()  # Mon=0 … Sun=6
 
-    min_dte = 5 if dow in (3, 4) else 2
+    min_dte = 5 if dow in (3, 4) else 1
 
     valid = []
     for exp_str in available_expirations:

@@ -55,6 +55,7 @@ TICKER_META_SCHEMA = pa.schema(
         ("exchange", pa.string()),
         ("type", pa.string()),
         ("last_updated", pa.date32()),
+        ("institutional_pct", pa.float64()),
     ]
 )
 
@@ -489,6 +490,7 @@ class TickerMetaStore:
                     "exchange": t.primary_exchange,
                     "type": t.type,
                     "last_updated": today,
+                    "institutional_pct": None,
                 }
                 for t in tickers
             ]
@@ -496,13 +498,28 @@ class TickerMetaStore:
 
         if self.exists:
             existing_df = pd.read_parquet(self._parquet_path)
+            if "institutional_pct" not in existing_df.columns:
+                existing_df["institutional_pct"] = pd.NA
+            # Preserve existing institutional_pct on upsert
+            inst_map = dict(
+                existing_df.dropna(subset=["institutional_pct"])[
+                    ["ticker", "institutional_pct"]
+                ].values
+            )
             combined = pd.concat([existing_df, new_df], ignore_index=True)
             combined = combined.drop_duplicates(subset=["ticker"], keep="last")
+            for ticker, pct in inst_map.items():
+                mask = (combined["ticker"] == ticker) & combined["institutional_pct"].isna()
+                combined.loc[mask, "institutional_pct"] = pct
         else:
             combined = new_df.drop_duplicates(subset=["ticker"], keep="last")
 
         combined = combined.sort_values("ticker").reset_index(drop=True)
         combined["last_updated"] = pd.to_datetime(combined["last_updated"]).dt.date
+        if "institutional_pct" in combined.columns:
+            combined["institutional_pct"] = pd.to_numeric(
+                combined["institutional_pct"], errors="coerce"
+            )
 
         table = pa.Table.from_pandas(combined, schema=TICKER_META_SCHEMA)
         pq.write_table(table, self._parquet_path, compression="snappy")
@@ -518,9 +535,12 @@ class TickerMetaStore:
         """Read all ticker metadata."""
         if not self.exists:
             return pd.DataFrame(
-                columns=["ticker", "name", "market_cap", "exchange", "type", "last_updated"]
+                columns=["ticker", "name", "market_cap", "exchange", "type", "last_updated", "institutional_pct"]
             )
-        return pd.read_parquet(self._parquet_path)
+        df = pd.read_parquet(self._parquet_path)
+        if "institutional_pct" not in df.columns:
+            df["institutional_pct"] = pd.NA
+        return df
 
     def get_market_caps(self, tickers: list[str] | None = None) -> dict[str, float]:
         """Return a ticker -> market_cap mapping.
@@ -567,6 +587,70 @@ class TickerMetaStore:
         pq.write_table(table, self._parquet_path, compression="snappy")
 
         logger.info("ticker_meta_caps_updated", updated=updated, total_caps=len(caps))
+        return updated
+
+    def get_ticker_types(self, tickers: list[str] | None = None) -> dict[str, str]:
+        """Return a ticker -> type mapping (e.g. 'CS' for common stock, 'ETF')."""
+        if not self.exists:
+            return {}
+
+        df = pd.read_parquet(self._parquet_path, columns=["ticker", "type"])
+        if tickers:
+            df = df[df["ticker"].isin(tickers)]
+        return dict(zip(df["ticker"], df["type"]))
+
+    def filter_equity_only(self, tickers: list[str]) -> list[str]:
+        """Return only tickers present in the meta store with type 'CS' (common stock).
+
+        Tickers not in the meta store or with non-CS type are excluded.
+        """
+        if not self.exists:
+            return tickers
+
+        types = self.get_ticker_types(tickers)
+        return [t for t in tickers if types.get(t) == "CS"]
+
+    def get_institutional_pcts(self, tickers: list[str] | None = None) -> dict[str, float]:
+        """Return a ticker -> institutional_pct mapping from persisted data."""
+        if not self.exists:
+            return {}
+
+        cols = ["ticker", "institutional_pct"]
+        try:
+            df = pd.read_parquet(self._parquet_path, columns=cols)
+        except Exception:
+            return {}
+        if tickers:
+            df = df[df["ticker"].isin(tickers)]
+        df = df.dropna(subset=["institutional_pct"])
+        return dict(zip(df["ticker"], df["institutional_pct"]))
+
+    def update_institutional_pcts(self, pcts: dict[str, float]) -> int:
+        """Bulk-update institutional ownership percentages for existing tickers.
+
+        Returns the number of tickers updated.
+        """
+        if not self.exists or not pcts:
+            return 0
+
+        df = pd.read_parquet(self._parquet_path)
+        if "institutional_pct" not in df.columns:
+            df["institutional_pct"] = pd.NA
+
+        updated = 0
+        for ticker, pct in pcts.items():
+            mask = df["ticker"] == ticker
+            if mask.any():
+                df.loc[mask, "institutional_pct"] = pct
+                updated += 1
+
+        df["last_updated"] = pd.to_datetime(df["last_updated"]).dt.date
+        if "institutional_pct" in df.columns:
+            df["institutional_pct"] = pd.to_numeric(df["institutional_pct"], errors="coerce")
+        table = pa.Table.from_pandas(df, schema=TICKER_META_SCHEMA)
+        pq.write_table(table, self._parquet_path, compression="snappy")
+
+        logger.info("ticker_meta_institutional_updated", updated=updated, total=len(pcts))
         return updated
 
     def get_ticker_count(self) -> int:

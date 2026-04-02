@@ -203,8 +203,6 @@ class TestTargetExpirationDates:
         """Tuesday scan: pick Thursday April 2 (Good Friday holiday)."""
         tuesday = date(2026, 3, 31)
         expirations = [
-            "2026-03-31",  # 0 DTE (today)
-            "2026-04-01",  # 1 DTE — too close
             "2026-04-02",  # 2 DTE ← this week's expiry (Thu, Good Friday holiday)
             "2026-04-10",  # 10 DTE
         ]
@@ -218,12 +216,12 @@ class TestTargetExpirationDates:
         result = target_expiration_dates(expirations, today=monday)
         assert result == ["2026-04-02"]
 
-    def test_wednesday_picks_friday(self) -> None:
-        """Wednesday April 1: April 2 is only 1 DTE, so picks April 3 (2 DTE)."""
+    def test_wednesday_picks_thursday_good_friday(self) -> None:
+        """Wednesday April 1: April 2 is 1 DTE (Good Friday adjusted) — selected."""
         wednesday = date(2026, 4, 1)
         expirations = ["2026-04-01", "2026-04-02", "2026-04-03", "2026-04-10"]
         result = target_expiration_dates(expirations, today=wednesday)
-        assert result == ["2026-04-03"]
+        assert result == ["2026-04-02"]
 
     def test_thursday_skips_to_next_week(self) -> None:
         """Thursday scan: this Friday is 1 DTE — skip to next week."""
@@ -259,7 +257,7 @@ class TestTargetExpirationDates:
 
     def test_no_valid_expirations(self) -> None:
         tuesday = date(2026, 3, 31)
-        expirations = ["2026-03-31", "2026-04-01"]  # all < 2 DTE
+        expirations = ["2026-03-31"]  # 0 DTE only
         result = target_expiration_dates(expirations, today=tuesday)
         assert result == []
 

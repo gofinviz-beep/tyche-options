@@ -217,9 +217,13 @@ async def run_morning_scan(
         result.total_duration_ms = (time.perf_counter() - scan_start) * 1000
         return result
 
-    # ── 2b. Filter by market cap ──────────────────────────────────────
+    # ── 2b. Filter by market cap (equity only — excludes ETFs) ──────
     if ticker_meta_store and ticker_meta_store.exists and min_market_cap > 0:
         t0 = time.perf_counter()
+        before_equity = len(screened_symbols)
+        screened_symbols = ticker_meta_store.filter_equity_only(screened_symbols)
+        equity_removed = before_equity - len(screened_symbols)
+
         market_caps = ticker_meta_store.get_market_caps(screened_symbols)
         before = len(screened_symbols)
         passed = []
@@ -236,15 +240,18 @@ async def run_morning_scan(
         _record_stage("market_cap", cap_dur)
 
         detail = f"Min ${min_market_cap/1e6:.0f}M"
+        if equity_removed > 0:
+            detail += f" ({equity_removed} non-equity filtered)"
         if no_data:
             detail += f" ({len(no_data)} passed with no data: {', '.join(no_data[:5])})"
         result.pipeline_stages.append(
-            PipelineStage("Market Cap", before, len(screened_symbols), detail=detail, duration_ms=cap_dur * 1000)
+            PipelineStage("Market Cap", before_equity, len(screened_symbols), detail=detail, duration_ms=cap_dur * 1000)
         )
         logger.info(
             "market_cap_filter_applied",
-            before=before,
+            before=before_equity,
             after=len(screened_symbols),
+            equity_removed=equity_removed,
             no_data=no_data,
             min_market_cap=min_market_cap,
             duration_ms=round(cap_dur * 1000, 2),
@@ -318,6 +325,8 @@ async def run_morning_scan(
                 screened_symbols, min_pct=min_institutional_pct
             )
             result.institutional_ownership = inst_map
+            if inst_map and ticker_meta_store and ticker_meta_store.exists:
+                ticker_meta_store.update_institutional_pcts(inst_map)
             inst_dur = time.perf_counter() - t0
             _record_stage("institutional_ownership", inst_dur)
             result.pipeline_stages.append(
@@ -333,6 +342,7 @@ async def run_morning_scan(
                 "institutional_filter_applied",
                 passed=len(screened_symbols),
                 ownership_data=len(inst_map),
+                persisted=len(inst_map) if inst_map else 0,
                 duration_ms=round(inst_dur * 1000, 2),
             )
         except Exception:

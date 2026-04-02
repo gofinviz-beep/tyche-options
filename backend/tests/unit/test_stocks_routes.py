@@ -353,6 +353,11 @@ class TestRefreshConvictionEndpointUnit:
 
 
 class TestConvictionSnapshotsEndpoint:
+    def _mock_meta_store(self):
+        store = MagicMock()
+        store.exists = False
+        return store
+
     @pytest.mark.asyncio
     @patch("tyche.api.routes.stocks.get_snapshots_for_date", new_callable=AsyncMock)
     async def test_returns_snapshots_for_today(self, mock_snaps):
@@ -360,7 +365,7 @@ class TestConvictionSnapshotsEndpoint:
 
         from tyche.api.routes.stocks import get_conviction_snapshots_endpoint
 
-        resp = await get_conviction_snapshots_endpoint(as_of_date=None)
+        resp = await get_conviction_snapshots_endpoint(as_of_date=None, meta_store=self._mock_meta_store())
         assert len(resp) == 2
         assert resp[0].ticker == "AAPL"
         assert resp[1].ticker == "NVDA"
@@ -372,7 +377,7 @@ class TestConvictionSnapshotsEndpoint:
 
         from tyche.api.routes.stocks import get_conviction_snapshots_endpoint
 
-        resp = await get_conviction_snapshots_endpoint(as_of_date="2026-03-28")
+        resp = await get_conviction_snapshots_endpoint(as_of_date="2026-03-28", meta_store=self._mock_meta_store())
         assert len(resp) == 0
 
     @pytest.mark.asyncio
@@ -382,7 +387,7 @@ class TestConvictionSnapshotsEndpoint:
 
         from tyche.api.routes.stocks import get_conviction_snapshots_endpoint
 
-        resp = await get_conviction_snapshots_endpoint(as_of_date=None)
+        resp = await get_conviction_snapshots_endpoint(as_of_date=None, meta_store=self._mock_meta_store())
         assert len(resp) == 1
         assert mock_snaps.call_count == 2
 
