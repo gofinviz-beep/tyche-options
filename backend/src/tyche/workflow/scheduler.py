@@ -149,6 +149,33 @@ class WorkflowScheduler:
         self._jobs["exit_monitor"] = job.id
         logger.info("scheduled_exit_monitor", time=f"{hour:02d}:{minute:02d} ET")
 
+    def schedule_options_snapshot(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 16,
+        minute: int = 10,
+    ) -> None:
+        """Schedule the daily options chain snapshot (default 4:10 PM ET).
+
+        Runs after OHLCV refresh (4:02) and exit monitor (4:05) to avoid
+        contention.  Captures live options chains from Tradier for all
+        large-cap tickers and persists them to the OptionsChainStore.
+        """
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="options_snapshot",
+            replace_existing=True,
+            name="Options Chain Snapshot",
+        )
+        self._jobs["options_snapshot"] = job.id
+        logger.info("scheduled_options_snapshot", time=f"{hour:02d}:{minute:02d} ET")
+
     def schedule_eod_journal(
         self,
         func: Callable[..., Coroutine[Any, Any, Any]],

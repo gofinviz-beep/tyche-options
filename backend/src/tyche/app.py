@@ -153,6 +153,60 @@ async def _scheduled_exit_monitor() -> None:
         logger.error("scheduled_exit_monitor_failed", exc_info=True)
 
 
+async def _scheduled_options_snapshot() -> None:
+    """Capture daily options chain snapshot from Tradier after market close.
+
+    Fetches live put chains for all large-cap tickers and persists them
+    to the OptionsChainStore.  Runs at ~120 RPM (Tradier hard limit),
+    typically completing in ~30 minutes for ~1,100 tickers.
+    """
+    from tyche.config import get_settings as _gs
+    from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
+    from tyche.workflow.options_snapshot import run_options_snapshot
+
+    settings = _gs()
+
+    if not settings.tradier_api_token:
+        logger.warning("options_snapshot_skipped_no_tradier_token")
+        return
+
+    try:
+        ohlcv_store = OHLCVStore(data_dir=settings.data_dir)
+        meta_store = TickerMetaStore(data_dir=settings.data_dir)
+
+        all_tickers = ohlcv_store.get_all_tickers()
+        if not all_tickers:
+            logger.warning("options_snapshot_skipped_no_ohlcv_tickers")
+            return
+
+        tickers = all_tickers
+        if meta_store.exists:
+            tickers = meta_store.filter_equity_only(tickers)
+            if settings.options_snapshot_min_market_cap > 0:
+                caps = meta_store.get_market_caps(tickers)
+                tickers = [
+                    t for t in tickers
+                    if caps.get(t, 0) >= settings.options_snapshot_min_market_cap
+                ]
+
+        logger.info("options_snapshot_starting", tickers=len(tickers))
+
+        stats = await run_options_snapshot(
+            tickers=tickers,
+            settings=settings,
+        )
+
+        logger.info(
+            "scheduled_options_snapshot_complete",
+            tickers_succeeded=stats.tickers_succeeded,
+            tickers_failed=stats.tickers_failed,
+            contracts_stored=stats.contracts_stored,
+            elapsed_seconds=round(stats.elapsed_seconds, 1),
+        )
+    except Exception:
+        logger.error("scheduled_options_snapshot_failed", exc_info=True)
+
+
 async def _scheduled_daily_digest() -> None:
     """Send a daily digest email with active pullbacks and transitions."""
     from datetime import date
@@ -257,6 +311,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     scheduler.schedule_morning_scan(_scheduled_morning_scan)
     scheduler.schedule_ohlcv_refresh(_scheduled_ohlcv_refresh)
     scheduler.schedule_exit_monitor(_scheduled_exit_monitor)
+
+    if settings.options_snapshot_enabled and settings.tradier_api_token:
+        parts = settings.options_snapshot_time.split(":")
+        snap_h = int(parts[0]) if len(parts) >= 1 else 16
+        snap_m = int(parts[1]) if len(parts) >= 2 else 10
+        scheduler.schedule_options_snapshot(
+            _scheduled_options_snapshot, hour=snap_h, minute=snap_m
+        )
 
     if settings.daily_digest_enabled:
         parts = settings.daily_digest_time.split(":")

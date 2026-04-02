@@ -19,14 +19,18 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 - `conviction/engine.py` — `ConvictionEngine` + `ConvictionSignal`. Backward-compatible wrapper that delegates to `ConvictionFeatureEngine` + `CSPEligibilityPolicy`. Re-exports `TrendState`, `GateResult`, `compute_ema`, `compute_slope` so all existing `from tyche.conviction.engine import ...` statements continue to work. The primary screening gate for the options pipeline.
 - `strategy/allocator.py` — MILP optimizer (scipy). Maximizes risk-adjusted premium across CSPs and CCs. Risk weight includes conviction, EMA extension, liquidity, and **delta penalty** (lower |delta| preferred to minimize assignment).
 - `strategy/engine.py` — Orchestrates CSP/CC candidate scanning via broker API. Supports `max_expiration_dates`, `strike_range_pct`, and `expiration_mode` (`friday_target` default: day-of-week-aware expiration selection).
-- `market_data/data_store.py` — OHLCVStore + IntradayStore (per-ticker Parquet dirs) + TickerMetaStore + ConvictionSignalStore (Parquet disk cache for FeatureSignal data) + `_MetadataCache` for fast status queries. `bootstrap_ohlcv(include_today=True)` fetches grouped daily bars including today (use after market close).
+- `market_data/data_store.py` — OHLCVStore + IntradayStore (per-ticker Parquet dirs) + TickerMetaStore + OptionsChainStore (per-ticker options chain snapshots from Tradier) + ConvictionSignalStore (Parquet disk cache for FeatureSignal data) + `_MetadataCache` for fast status queries. `bootstrap_ohlcv(include_today=True)` fetches grouped daily bars including today (use after market close).
 - `market_data/polygon.py` — Polygon.io client for historical bars and ticker reference. NOT used for live trading.
 - `broker/tradier/client.py` — Tradier API for live quotes, options chains, account ops. Handle `None` responses (market closed).
 - `workflow/morning_scan.py` — Full morning scan pipeline: universe filter → conviction → options scan → allocator → **per-ticker parallel LLM** (semaphore-controlled).
 - `workflow/intent_builder.py` — Converts scan results to OrderIntents. **Critical: all numerical fields from broker, not LLM.**
+- `workflow/options_snapshot.py` — Shared options chain ingestion workflow. `run_options_snapshot()` fetches live chains from Tradier with rate limiting and persists to `OptionsChainStore`. Used by both `scripts/ingest_options.py` (CLI) and the scheduled daily job.
 - `workflow/active_monitor.py` — Real-time position monitoring. In-memory only, lost on restart.
 - `workflow/exit_monitor.py` — Daily check of active stock positions against profit targets (p75 from backtest) and 8-EMA stop loss. Refreshes OHLCV data before checking. Returns `ExitCheckResult` with triggered signals.
 - `workflow/conviction_batch.py` — Batch conviction engine run across all tickers. Reads from local OHLCV store, persists snapshots and transitions to `conviction.db`.
+- `backtest/premium.py` — Pluggable premium models: `FixedPctPremiumModel`, `IVProxyPremiumModel`, `MarketPremiumModel` (real chains from `OptionsChainStore` with fallback). Factory: `get_premium_model(name)`.
+- `backtest/execution.py` — Execution friction models: `optimistic`, `base`, `conservative`. Simulates fill slippage.
+- `backtest/walk_forward.py` — Rolling train/test window harness for backtest stability analysis.
 - `risk/engine.py` + `risk/rules.py` — Deterministic risk rule chain (max positions, concentration, etc.).
 - `models/scan.py` — SQLAlchemy ORM models: `ScanRun`, `ScanCandidate`, `LLMAnalysisRecord`.
 - `models/backtest.py` — `PullbackEvent`, `TickerPullbackProfile` (backtest data), `StockPosition`, `ExitSignal` (position tracking). All in `backtest.db`.
@@ -80,7 +84,7 @@ The Scanner calls Conviction Engine internally — no need to run conviction fir
 
 ## Storage Layout
 
-- `data/` — Raw market data (Parquet files only): `ohlcv_daily/`, `intraday_5min/`, `ticker_meta.parquet`
+- `data/` — Raw market data (Parquet files only): `ohlcv_daily/`, `intraday_5min/`, `options_chains/`, `ticker_meta.parquet`
 - `db/` — All SQLite databases (gitignored):
   - `tyche.db` — order intents
   - `scans.db` — scan runs, pipeline stages, allocation summary
@@ -116,6 +120,7 @@ The Scanner calls Conviction Engine internally — no need to run conviction fir
 | 4:00 PM | Daily Digest | Email active pullbacks + transitions |
 | 4:02 PM | OHLCV Refresh | Fetch today's grouped daily bars from Polygon |
 | 4:05 PM | Exit Monitor | Refresh OHLCV (safety net), check active stock positions against profit targets + 8-EMA stop loss |
+| 4:10 PM | Options Snapshot | Capture live options chains from Tradier for large-cap tickers; persist to per-ticker Parquet |
 
 ## Stock Position Exit Monitor
 

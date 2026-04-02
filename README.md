@@ -12,16 +12,17 @@ tyche-options/
 │   │   ├── analysis/    Gemini LLM client + analysis agent
 │   │   ├── broker/      Tradier client + mock broker
 │   │   ├── conviction/  8/21 EMA conviction engine (features + CSP policy + compat wrapper)
-│   │   ├── market_data/ Polygon client, data stores, earnings
+│   │   ├── market_data/ Polygon client, data stores (OHLCV, meta, options chains), earnings
 │   │   ├── models/      SQLAlchemy ORM models (scan, conviction, backtest, positions)
 │   │   ├── persistence/ Database engines + scan/conviction/position repositories
-│   │   ├── risk/        Deterministic risk rules
-│   │   ├── strategy/    CSP/CC engine + MILP allocator
-│   │   ├── workflow/    Morning scan, exit monitor, order monitor, intent builder
+│   │   ├── risk/        Deterministic risk rules + regime + overlap policy
+│   │   ├── strategy/    CSP/CC engine + MILP allocator + composite ranking
+│   │   ├── backtest/    Premium models (fixed, iv_proxy, market), execution friction, walk-forward
+│   │   ├── workflow/    Morning scan, exit monitor, options snapshot, order monitor, intent builder
 │   │   ├── telemetry.py OpenTelemetry configuration
 │   │   └── config.py    TYCHE_* env settings (pydantic-settings)
-│   ├── tests/unit/      556 unit tests (70% coverage)
-│   ├── scripts/         CLI tools (ingest_data, backtest_pullbacks, backtest_ema, live_scan)
+│   ├── tests/unit/      796 unit tests (72% coverage)
+│   ├── scripts/         CLI tools (ingest_data, ingest_options, backtest_ema, backtest_pullback_csp, live_scan)
 │   └── db/              SQLite databases (gitignored)
 ├── frontend/            React + TypeScript + Vite
 │   └── src/
@@ -46,6 +47,7 @@ pip install -e ".[dev]"
 cp .env.example .env       # Add API keys: TYCHE_TRADIER_*, TYCHE_POLYGON_*, TYCHE_GEMINI_*
 python scripts/ingest_data.py --days 120 --meta              # Bootstrap market data
 python scripts/ingest_data.py --institutional --no-conviction  # Backfill institutional ownership
+python scripts/ingest_options.py --from-ohlcv --min-market-cap 5e9  # Snapshot options chains
 uvicorn tyche.app:app --reload
 ```
 
@@ -86,6 +88,8 @@ Equity filter (CS only, no ETFs) → Market cap ≥ $5B → Exchange → Price �
 - **Data-driven exit targets.** Per-ticker p75 bounce from historical backtest — not a one-size-fits-all percentage.
 - **Stock positions are persisted.** Tracked in `backtest.db` with daily exit monitoring (profit target + 8-EMA stop loss).
 - **Automated OHLCV refresh.** Daily at 4:02 PM ET after market close, with safety-net refresh before exit monitor.
+- **Daily options chain snapshots.** At 4:10 PM ET, captures live put chains from Tradier for all large-cap tickers. Persisted to per-ticker Parquet files for backtest validation with real market premiums.
+- **Pluggable premium models.** Backtests support `fixed_pct`, `iv_proxy`, and `market` (real chain data with simulation fallback) premium models.
 
 ## Configuration
 
@@ -101,12 +105,13 @@ All settings via `TYCHE_*` environment variables in `backend/.env`. See `backend
 
 ## Cursor AI Rules
 
-Eight domain-specific rules in `.cursor/rules/`:
+Domain-specific rules in `.cursor/rules/`:
 
 | Rule | Scope | Purpose |
 |---|---|---|
 | `architecture.mdc` | `backend/src/tyche/**` | Module map, pipeline, API routes, storage, scheduled jobs |
 | `known-issues.mdc` | Always applied | Gotchas, workarounds, test notes |
+| `strategy-philosophy.mdc` | Always applied | Core thesis, two CSP paths, conviction ranking, assignment philosophy |
 | `trading-rules.mdc` | `backend/src/tyche/**` | Risk constraints, filter pipeline, day guidance |
 | `conviction-rules.mdc` | `conviction/**`, `scripts/` | EMA thresholds, eligibility gates |
 | `intent-risk-pipeline.mdc` | `workflow/`, `schemas/`, `api/routes/` | LLM guardrails, numerical validation |

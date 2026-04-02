@@ -115,6 +115,19 @@ The `data/` directory contains raw market data (Parquet files only).
 | `TYCHE_STRIKE_RANGE_PCT` | float | `15.0` | Only consider put strikes within this % below the 8-EMA. E.g., 15% means for a stock with 8-EMA at $100, only strikes >= $85 are scanned. |
 | `TYCHE_LLM_CONCURRENCY` | int | `5` | Maximum parallel LLM analysis calls during scanner pipeline. Controls Gemini API rate. |
 
+## Options Chain Snapshots
+
+| Env Var | Type | Default | Description |
+|---|---|---|---|
+| `TYCHE_OPTIONS_SNAPSHOT_ENABLED` | bool | `true` | Enable daily options chain snapshot job |
+| `TYCHE_OPTIONS_SNAPSHOT_TIME` | str | `16:10` | Time to run snapshot (HH:MM ET). After OHLCV refresh (16:02) and exit monitor (16:05). |
+| `TYCHE_OPTIONS_SNAPSHOT_MAX_EXPIRATIONS` | int | `2` | Max expiration dates to capture per ticker |
+| `TYCHE_OPTIONS_SNAPSHOT_MIN_DTE` | int | `1` | Minimum DTE for captured contracts |
+| `TYCHE_OPTIONS_SNAPSHOT_MAX_DTE` | int | `45` | Maximum DTE for captured contracts |
+| `TYCHE_OPTIONS_SNAPSHOT_CONCURRENCY` | int | `10` | Max concurrent Tradier API calls |
+| `TYCHE_OPTIONS_SNAPSHOT_RPM` | int | `120` | Max requests per minute (Tradier hard limit) |
+| `TYCHE_OPTIONS_SNAPSHOT_MIN_MARKET_CAP` | float | `5e9` | Minimum market cap for tickers to snapshot ($5B) |
+
 ## Workflow Scheduling
 
 | Env Var | Type | Default | Description |
@@ -173,4 +186,10 @@ TYCHE_MAX_EXPIRATION_DATES=1
 TYCHE_STRIKE_RANGE_PCT=15.0
 TYCHE_LLM_CONCURRENCY=5
 TYCHE_SCAN_RETENTION_COUNT=5
+
+# Options Chain Snapshots
+TYCHE_OPTIONS_SNAPSHOT_ENABLED=true
+TYCHE_OPTIONS_SNAPSHOT_TIME=16:10
+TYCHE_OPTIONS_SNAPSHOT_RPM=120
+TYCHE_OPTIONS_SNAPSHOT_MIN_MARKET_CAP=5000000000
 ```

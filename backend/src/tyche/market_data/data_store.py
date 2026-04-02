@@ -1,9 +1,10 @@
-"""Local Parquet data store for cached OHLCV daily bars, intraday bars, and ticker metadata.
+"""Local Parquet data store for cached OHLCV daily bars, intraday bars, ticker metadata, and options chains.
 
 Storage layout:
-  data/ohlcv_daily/{TICKER}.parquet   — one file per ticker, daily bars
-  data/intraday_5min/{TICKER}.parquet — one file per ticker, 5-min bars
-  data/ticker_meta.parquet            — single file, small (~5K rows)
+  data/ohlcv_daily/{TICKER}.parquet     — one file per ticker, daily bars
+  data/intraday_5min/{TICKER}.parquet   — one file per ticker, 5-min bars
+  data/ticker_meta.parquet              — single file, small (~5K rows)
+  data/options_chains/{TICKER}.parquet  — one file per ticker, options chain snapshots
 
 Per-ticker partitioning gives:
   - Zero contention for parallel writes (different tickers = different files)
@@ -12,6 +13,7 @@ Per-ticker partitioning gives:
   - Safe incremental appends without read-entire-store overhead
 
 Ticker metadata remains a single file because it is small and always read in bulk.
+Options chain snapshots are accumulated over time for backtest validation.
 """
 
 from __future__ import annotations
@@ -89,6 +91,28 @@ INTRADAY_SCHEMA = pa.schema(
         ("volume", pa.int64()),
         ("vwap", pa.float64()),
         ("num_transactions", pa.int64()),
+    ]
+)
+
+OPTIONS_CHAIN_SCHEMA = pa.schema(
+    [
+        ("snapshot_date", pa.date32()),
+        ("expiration", pa.date32()),
+        ("strike", pa.float64()),
+        ("option_type", pa.string()),
+        ("bid", pa.float64()),
+        ("ask", pa.float64()),
+        ("mid", pa.float64()),
+        ("last", pa.float64()),
+        ("volume", pa.int64()),
+        ("open_interest", pa.int64()),
+        ("implied_volatility", pa.float64()),
+        ("delta", pa.float64()),
+        ("gamma", pa.float64()),
+        ("theta", pa.float64()),
+        ("vega", pa.float64()),
+        ("rho", pa.float64()),
+        ("underlying_price", pa.float64()),
     ]
 )
 
@@ -1036,12 +1060,361 @@ class IntradayStore:
             return []
 
 
+class OptionsChainStore:
+    """Manages per-ticker Parquet files of options chain snapshots.
+
+    Layout: data/options_chains/{TICKER}.parquet
+    Each file contains timestamped snapshots of that ticker's options chains,
+    deduplicated on (snapshot_date, expiration, strike, option_type).
+
+    Designed for quarterly ingestion to build a historical dataset of real
+    market premiums for backtest validation.  Cloud-ready: the directory
+    can be synced to GCS/S3 as-is.
+    """
+
+    DEDUP_COLS = ["snapshot_date", "expiration", "strike", "option_type"]
+
+    def __init__(self, data_dir: str = "data") -> None:
+        self._data_dir = Path(data_dir)
+        self._store_dir = self._data_dir / "options_chains"
+        self._store_dir.mkdir(parents=True, exist_ok=True)
+        self._cache = _MetadataCache(self._store_dir / "_meta.json")
+
+    @property
+    def store_dir(self) -> Path:
+        return self._store_dir
+
+    @property
+    def exists(self) -> bool:
+        return any(self._store_dir.glob("*.parquet"))
+
+    def rebuild_cache(self) -> dict:
+        """Full scan of all Parquet files to rebuild the metadata cache."""
+        return self._cache.rebuild(self._store_dir, dedup_col="snapshot_date")
+
+    def _ticker_path(self, ticker: str) -> Path:
+        return _ticker_path(self._store_dir, ticker)
+
+    def write_chains(
+        self,
+        ticker: str,
+        snapshot_date: date,
+        contracts: list[dict],
+        underlying_price: float,
+    ) -> int:
+        """Append an options chain snapshot for a ticker.
+
+        Args:
+            ticker: Underlying symbol.
+            snapshot_date: Date the chain was captured.
+            contracts: List of contract dicts with keys matching OptionContract fields.
+            underlying_price: Underlying price at time of snapshot.
+
+        Returns:
+            Number of new rows added.
+        """
+        if not contracts:
+            return 0
+
+        rows = []
+        for c in contracts:
+            exp = c.get("expiration")
+            if isinstance(exp, str):
+                exp = datetime.strptime(exp, "%Y-%m-%d").date()
+            rows.append({
+                "snapshot_date": snapshot_date,
+                "expiration": exp,
+                "strike": float(c.get("strike", 0)),
+                "option_type": c.get("option_type", ""),
+                "bid": float(c.get("bid", 0)),
+                "ask": float(c.get("ask", 0)),
+                "mid": float(c.get("mid", 0)),
+                "last": float(c.get("last", 0)),
+                "volume": int(c.get("volume", 0)),
+                "open_interest": int(c.get("open_interest", 0)),
+                "implied_volatility": float(c.get("implied_volatility", 0)),
+                "delta": float(c.get("delta", 0)),
+                "gamma": float(c.get("gamma", 0)),
+                "theta": float(c.get("theta", 0)),
+                "vega": float(c.get("vega", 0)),
+                "rho": float(c.get("rho", 0)),
+                "underlying_price": underlying_price,
+            })
+
+        new_df = pd.DataFrame(rows)
+        new_df["snapshot_date"] = pd.to_datetime(new_df["snapshot_date"]).dt.date
+        new_df["expiration"] = pd.to_datetime(new_df["expiration"]).dt.date
+
+        path = self._ticker_path(ticker)
+        if path.exists():
+            existing_df = pd.read_parquet(path)
+            existing_df["snapshot_date"] = pd.to_datetime(existing_df["snapshot_date"]).dt.date
+            existing_df["expiration"] = pd.to_datetime(existing_df["expiration"]).dt.date
+            combined = pd.concat([existing_df, new_df], ignore_index=True)
+            combined = combined.drop_duplicates(subset=self.DEDUP_COLS, keep="last")
+            rows_added = len(combined) - len(existing_df)
+        else:
+            combined = new_df.drop_duplicates(subset=self.DEDUP_COLS, keep="last")
+            rows_added = len(combined)
+
+        combined = combined.sort_values(
+            ["snapshot_date", "expiration", "strike", "option_type"]
+        ).reset_index(drop=True)
+        table = pa.Table.from_pandas(combined, schema=OPTIONS_CHAIN_SCHEMA)
+        pq.write_table(table, path, compression="snappy")
+
+        logger.debug(
+            "options_chain_write",
+            ticker=ticker,
+            snapshot_date=str(snapshot_date),
+            contracts=len(rows),
+            rows_added=rows_added,
+        )
+        return rows_added
+
+    def read_ticker(
+        self,
+        ticker: str,
+        snapshot_date: date | None = None,
+        option_type: str | None = None,
+    ) -> pd.DataFrame:
+        """Read options chain data for a ticker.
+
+        Args:
+            ticker: Underlying symbol.
+            snapshot_date: Filter to specific snapshot date.
+            option_type: Filter to 'put' or 'call'.
+
+        Returns:
+            DataFrame with OPTIONS_CHAIN_SCHEMA columns.
+        """
+        path = self._ticker_path(ticker)
+        if not path.exists():
+            return pd.DataFrame(columns=[f.name for f in OPTIONS_CHAIN_SCHEMA])
+
+        df = pd.read_parquet(path)
+        df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
+        df["expiration"] = pd.to_datetime(df["expiration"]).dt.date
+
+        if snapshot_date is not None:
+            df = df[df["snapshot_date"] == snapshot_date]
+        if option_type is not None:
+            df = df[df["option_type"] == option_type]
+
+        return df.sort_values(
+            ["snapshot_date", "expiration", "strike"]
+        ).reset_index(drop=True)
+
+    def get_nearest_snapshot_date(
+        self, ticker: str, target_date: date
+    ) -> date | None:
+        """Find the closest snapshot date to target_date for a ticker."""
+        path = self._ticker_path(ticker)
+        if not path.exists():
+            return None
+
+        try:
+            table = pq.read_table(path, columns=["snapshot_date"])
+            dates = pd.to_datetime(
+                pd.Series(table.column("snapshot_date").to_pylist())
+            ).dt.date.unique()
+        except Exception:
+            return None
+
+        if len(dates) == 0:
+            return None
+
+        sorted_dates = sorted(dates)
+        best = min(sorted_dates, key=lambda d: abs((d - target_date).days))
+        return best
+
+    def get_put_premium(
+        self,
+        ticker: str,
+        snapshot_date: date,
+        target_strike: float,
+        target_expiration: date | None = None,
+        tolerance_pct: float = 2.0,
+    ) -> dict | None:
+        """Look up the closest OTM put premium for backtest use.
+
+        Args:
+            ticker: Underlying symbol.
+            snapshot_date: Which snapshot to query.
+            target_strike: Desired strike price.
+            target_expiration: Desired expiration (nearest if None).
+            tolerance_pct: Max % deviation from target_strike to accept a match.
+
+        Returns:
+            Dict with bid, ask, mid, strike, expiration, iv, delta or None.
+        """
+        df = self.read_ticker(ticker, snapshot_date=snapshot_date, option_type="put")
+        if df.empty:
+            return None
+
+        if target_expiration is not None:
+            exp_df = df[df["expiration"] == target_expiration]
+            if exp_df.empty:
+                exps = sorted(df["expiration"].unique())
+                nearest_exp = min(exps, key=lambda e: abs((e - target_expiration).days))
+                df = df[df["expiration"] == nearest_exp]
+            else:
+                df = exp_df
+        else:
+            nearest_exp = df["expiration"].min()
+            df = df[df["expiration"] == nearest_exp]
+
+        if df.empty:
+            return None
+
+        df = df.copy()
+        df["strike_diff_pct"] = ((df["strike"] - target_strike) / target_strike * 100).abs()
+        within_tol = df[df["strike_diff_pct"] <= tolerance_pct]
+
+        if within_tol.empty:
+            return None
+
+        best = within_tol.loc[within_tol["strike_diff_pct"].idxmin()]
+        return {
+            "bid": float(best["bid"]),
+            "ask": float(best["ask"]),
+            "mid": float(best["mid"]),
+            "strike": float(best["strike"]),
+            "expiration": best["expiration"],
+            "implied_volatility": float(best["implied_volatility"]),
+            "delta": float(best["delta"]),
+            "underlying_price": float(best["underlying_price"]),
+        }
+
+    def list_tickers(self) -> list[str]:
+        """Return sorted list of tickers with options chain data."""
+        return sorted(p.stem for p in self._store_dir.glob("*.parquet"))
+
+    def list_snapshot_dates(self, ticker: str | None = None) -> list[date]:
+        """Return sorted list of unique snapshot dates.
+
+        If ticker is specified, only dates for that ticker.
+        Otherwise, union of all dates across all tickers.
+        """
+        if ticker:
+            path = self._ticker_path(ticker)
+            if not path.exists():
+                return []
+            try:
+                table = pq.read_table(path, columns=["snapshot_date"])
+                dates = pd.to_datetime(
+                    pd.Series(table.column("snapshot_date").to_pylist())
+                ).dt.date.unique()
+                return sorted(dates)
+            except Exception:
+                return []
+
+        all_dates: set[date] = set()
+        for path in self._store_dir.glob("*.parquet"):
+            try:
+                table = pq.read_table(path, columns=["snapshot_date"])
+                dates = pd.to_datetime(
+                    pd.Series(table.column("snapshot_date").to_pylist())
+                ).dt.date.unique()
+                all_dates.update(dates)
+            except Exception:
+                continue
+        return sorted(all_dates)
+
+    def get_ticker_count(self) -> int:
+        """Return count of tickers with options chain data."""
+        return len(list(self._store_dir.glob("*.parquet")))
+
+    def get_stats(self) -> dict:
+        """Return aggregate stats about the options chain store."""
+        cached = self._cache.read()
+        if cached:
+            return cached
+
+        total_rows = 0
+        ticker_count = 0
+        all_dates: set[date] = set()
+
+        for path in self._store_dir.glob("*.parquet"):
+            try:
+                meta = pq.read_metadata(path)
+                total_rows += meta.num_rows
+                ticker_count += 1
+                table = pq.read_table(path, columns=["snapshot_date"])
+                dates = pd.to_datetime(
+                    pd.Series(table.column("snapshot_date").to_pylist())
+                ).dt.date.unique()
+                all_dates.update(dates)
+            except Exception:
+                continue
+
+        stats = {
+            "ticker_count": ticker_count,
+            "total_rows": total_rows,
+            "snapshot_dates": len(all_dates),
+            "earliest_date": min(all_dates).isoformat() if all_dates else None,
+            "latest_date": max(all_dates).isoformat() if all_dates else None,
+        }
+        self._cache.write(stats)
+        return stats
+
+
+async def _backfill_market_caps(
+    polygon: PolygonClient,
+    meta_store: TickerMetaStore,
+    concurrency: int = 20,
+    rate_limit_rpm: int = 500,
+) -> int:
+    """Backfill market caps for tickers that have market_cap == 0.
+
+    Called automatically after write_meta() to populate caps from the
+    per-ticker detail endpoint, since the list endpoint omits market_cap.
+
+    Returns the number of tickers updated.
+    """
+    caps = meta_store.get_market_caps()
+    missing = [t for t, c in caps.items() if c <= 0]
+
+    if not missing:
+        logger.info("market_cap_backfill_skipped", reason="all_caps_present")
+        return 0
+
+    logger.info(
+        "market_cap_backfill_start",
+        total_tickers=len(caps),
+        missing=len(missing),
+        concurrency=concurrency,
+        rate_limit_rpm=rate_limit_rpm,
+    )
+
+    fetched = await polygon.get_batch_market_caps_concurrent(
+        missing,
+        concurrency=concurrency,
+        rate_limit_rpm=rate_limit_rpm,
+    )
+
+    updated = 0
+    if fetched:
+        updated = meta_store.update_market_caps(fetched)
+
+    logger.info(
+        "market_cap_backfill_complete",
+        fetched=len(fetched),
+        updated=updated,
+        still_missing=len(missing) - len(fetched),
+    )
+    return updated
+
+
 async def bootstrap_ohlcv(
     polygon: PolygonClient,
     store: OHLCVStore,
     days: int = 120,
     meta_store: TickerMetaStore | None = None,
     include_today: bool = False,
+    backfill_market_caps: bool = True,
+    market_cap_concurrency: int = 20,
+    market_cap_rpm: int = 500,
 ) -> dict[str, int]:
     """Bootstrap the data store by fetching N trading days of grouped daily bars.
 
@@ -1052,6 +1425,10 @@ async def bootstrap_ohlcv(
     Args:
         include_today: When True, fetch up to today (use after market close).
             When False (default), stop at yesterday for safety during market hours.
+        backfill_market_caps: When True (default), automatically backfill
+            market caps from the per-ticker detail endpoint after write_meta().
+        market_cap_concurrency: Max concurrent requests for market cap backfill.
+        market_cap_rpm: Rate limit for market cap backfill requests.
 
     Returns stats dict with dates_fetched, bars_stored, tickers_found, tickers_meta.
     """
@@ -1102,6 +1479,7 @@ async def bootstrap_ohlcv(
 
     # Fetch and persist ticker reference metadata (market cap, exchange, type)
     tickers_meta = 0
+    market_caps_updated = 0
     if meta_store is None:
         meta_store = TickerMetaStore(data_dir=str(store._data_dir))
 
@@ -1116,6 +1494,18 @@ async def bootstrap_ohlcv(
     except Exception:
         logger.warning("bootstrap_ticker_meta_failed", exc_info=True)
 
+    # Backfill market caps from per-ticker detail endpoint
+    if backfill_market_caps and meta_store.exists:
+        try:
+            market_caps_updated = await _backfill_market_caps(
+                polygon,
+                meta_store,
+                concurrency=market_cap_concurrency,
+                rate_limit_rpm=market_cap_rpm,
+            )
+        except Exception:
+            logger.warning("bootstrap_market_cap_backfill_failed", exc_info=True)
+
     ticker_count = store.get_ticker_count()
     logger.info(
         "bootstrap_complete",
@@ -1123,6 +1513,7 @@ async def bootstrap_ohlcv(
         total_bars=total_bars,
         tickers=ticker_count,
         tickers_meta=tickers_meta,
+        market_caps_updated=market_caps_updated,
     )
     return {
         "dates_fetched": dates_fetched,

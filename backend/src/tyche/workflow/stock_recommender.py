@@ -17,6 +17,7 @@ import structlog
 from tyche.conviction.alerts import PullbackAlert, _compute_stop_loss, _institutional_label
 from tyche.conviction.engine import ConvictionSignal
 from tyche.models.conviction import ConvictionSnapshot
+from tyche.risk.overlap import OverlapDecision, OverlapPolicy, OverlapResult
 
 logger = structlog.get_logger()
 
@@ -42,6 +43,8 @@ class StockBuyRecommendation:
     has_active_csp: bool
     recommendation: str
     risk_reward_note: str
+    overlap_decision: OverlapDecision = "add_standard"
+    overlap_reason: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> dict[str, Any]:
@@ -71,6 +74,8 @@ class StockBuyRecommendation:
             "has_active_csp": self.has_active_csp,
             "recommendation": self.recommendation,
             "risk_reward_note": self.risk_reward_note,
+            "overlap_decision": self.overlap_decision,
+            "overlap_reason": self.overlap_reason,
             "created_at": self.created_at.isoformat(),
         }
 
@@ -160,6 +165,8 @@ def generate_stock_recommendations(
     alerts: list[PullbackAlert],
     conviction_signals: dict[str, ConvictionSignal] | None = None,
     positions: list[dict[str, Any]] | None = None,
+    overlap_policy: OverlapPolicy | None = None,
+    portfolio_value: float = 100_000.0,
 ) -> list[StockBuyRecommendation]:
     """Convert pullback alerts into stock buy recommendations.
 
@@ -167,6 +174,9 @@ def generate_stock_recommendations(
         alerts: PullbackAlert objects from the detector.
         conviction_signals: Full conviction data for additional context.
         positions: Current broker positions for CSP cross-reference.
+        overlap_policy: Optional policy for CSP-vs-stock overlap decisions.
+            When None, overlap fields default to ``add_standard`` (legacy).
+        portfolio_value: Total portfolio value for overlap exposure calc.
 
     Returns:
         List of StockBuyRecommendation objects.
@@ -179,6 +189,19 @@ def generate_stock_recommendations(
         sig = conviction_signals.get(alert.ticker)
 
         target_ema = alert.ema_21 if alert.alert_type == "pullback_21ema" else alert.ema_8
+
+        overlap_decision: OverlapDecision = "add_standard"
+        overlap_reason = ""
+        if overlap_policy is not None:
+            ov = overlap_policy.evaluate(
+                ticker=alert.ticker,
+                entry_price=alert.last_close,
+                conviction=alert.conviction_level,
+                positions=positions,
+                portfolio_value=portfolio_value,
+            )
+            overlap_decision = ov.decision
+            overlap_reason = ov.reason
 
         recs.append(StockBuyRecommendation(
             ticker=alert.ticker,
@@ -198,6 +221,8 @@ def generate_stock_recommendations(
             has_active_csp=has_csp,
             recommendation=_build_recommendation_text(alert, has_csp, csp_strike),
             risk_reward_note=_build_risk_reward_note(alert, has_csp),
+            overlap_decision=overlap_decision,
+            overlap_reason=overlap_reason,
         ))
 
     logger.info(
@@ -205,6 +230,7 @@ def generate_stock_recommendations(
         total=len(recs),
         with_active_csp=sum(1 for r in recs if r.has_active_csp),
         pullback_21ema=sum(1 for r in recs if r.entry_type == "pullback_21ema"),
+        deferred=sum(1 for r in recs if r.overlap_decision == "defer"),
     )
     return recs
 

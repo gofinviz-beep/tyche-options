@@ -4,10 +4,13 @@ The Polygon /v3/reference/tickers list endpoint doesn't return market_cap.
 This script fetches market caps from the individual ticker detail endpoint
 (/v3/reference/tickers/{TICKER}) and writes them back to ticker_meta.parquet.
 
+Uses concurrent async fetching (default 20 concurrent, 500 RPM) for speed.
+
 Usage:
     cd backend && python scripts/backfill_market_caps.py
-    cd backend && python scripts/backfill_market_caps.py --only-missing   # skip tickers that already have caps
-    cd backend && python scripts/backfill_market_caps.py --dry-run        # preview without writing
+    cd backend && python scripts/backfill_market_caps.py --only-missing
+    cd backend && python scripts/backfill_market_caps.py --dry-run
+    cd backend && python scripts/backfill_market_caps.py --concurrency 30 --rpm 500
 """
 
 import argparse
@@ -22,7 +25,12 @@ from tyche.market_data.data_store import TickerMetaStore
 from tyche.market_data.polygon import PolygonClient
 
 
-async def run(only_missing: bool, dry_run: bool) -> None:
+async def run(
+    only_missing: bool,
+    dry_run: bool,
+    concurrency: int | None = None,
+    rpm: int | None = None,
+) -> None:
     settings = TycheSettings()
     meta_store = TickerMetaStore(data_dir=settings.data_dir)
 
@@ -47,9 +55,10 @@ async def run(only_missing: bool, dry_run: bool) -> None:
         print("Nothing to fetch.")
         return
 
-    rpm = settings.polygon_rate_limit_rpm
-    est_minutes = len(target_tickers) / rpm
-    print(f"\nRate limit: {rpm} RPM")
+    effective_rpm = rpm or settings.polygon_rate_limit_rpm
+    effective_concurrency = concurrency or settings.polygon_market_cap_concurrency
+    est_minutes = len(target_tickers) / effective_rpm
+    print(f"\nRate limit: {effective_rpm} RPM, concurrency: {effective_concurrency}")
     print(f"Estimated time: {est_minutes:.0f} minutes ({est_minutes/60:.1f} hours)")
     print(f"Tickers to fetch: {len(target_tickers)}")
 
@@ -60,13 +69,17 @@ async def run(only_missing: bool, dry_run: bool) -> None:
     polygon = PolygonClient(
         api_key=settings.polygon_api_key,
         base_url=settings.polygon_base_url,
-        rate_limit_rpm=rpm,
+        rate_limit_rpm=effective_rpm,
     )
 
-    print(f"\nFetching market caps...")
+    print(f"\nFetching market caps (concurrent)...")
     t0 = time.time()
 
-    caps = await polygon.get_batch_market_caps(target_tickers)
+    caps = await polygon.get_batch_market_caps_concurrent(
+        target_tickers,
+        concurrency=effective_concurrency,
+        rate_limit_rpm=effective_rpm,
+    )
 
     elapsed = time.time() - t0
     print(f"\nFetch complete in {elapsed:.0f}s ({elapsed/60:.1f} min)")
@@ -77,9 +90,8 @@ async def run(only_missing: bool, dry_run: bool) -> None:
         print("No market caps fetched. Nothing to update.")
         return
 
-    # Show distribution
     cap_values = sorted(caps.values(), reverse=True)
-    print(f"\n  Top 10 market caps:")
+    print("\n  Top 10 market caps:")
     top_tickers = sorted(caps.items(), key=lambda x: -x[1])[:10]
     for ticker, cap in top_tickers:
         print(f"    {ticker:6s}: ${cap/1e9:>10.1f}B")
@@ -100,5 +112,9 @@ if __name__ == "__main__":
                         help="Only fetch for tickers with market_cap = 0")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview what would be fetched without making API calls")
+    parser.add_argument("--concurrency", type=int, default=None,
+                        help="Max concurrent requests (default: from config, typically 20)")
+    parser.add_argument("--rpm", type=int, default=None,
+                        help="Rate limit in requests per minute (default: from config, typically 500)")
     args = parser.parse_args()
-    asyncio.run(run(args.only_missing, args.dry_run))
+    asyncio.run(run(args.only_missing, args.dry_run, args.concurrency, args.rpm))

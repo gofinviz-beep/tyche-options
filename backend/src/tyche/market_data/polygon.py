@@ -580,11 +580,7 @@ class PolygonClient:
         self,
         tickers: list[str],
     ) -> dict[str, float]:
-        """Fetch market caps for multiple tickers via individual detail calls.
-
-        Rate-limited to respect RPM. Returns ticker -> market_cap mapping.
-        Tickers that fail or return 0 are excluded from results.
-        """
+        """Fetch market caps sequentially. Deprecated: use get_batch_market_caps_concurrent."""
         result: dict[str, float] = {}
         total = len(tickers)
 
@@ -609,5 +605,103 @@ class PolygonClient:
             "batch_market_caps_complete",
             total=total,
             found=len(result),
+        )
+        return result
+
+    async def get_batch_market_caps_concurrent(
+        self,
+        tickers: list[str],
+        concurrency: int = 20,
+        rate_limit_rpm: int = 500,
+    ) -> dict[str, float]:
+        """Fetch market caps concurrently with semaphore-bounded parallelism.
+
+        Uses a token-bucket style rate limiter that allows parallel requests
+        while staying within the RPM ceiling, unlike the serial _throttle() lock.
+
+        Args:
+            tickers: Ticker symbols to fetch market caps for.
+            concurrency: Max simultaneous in-flight requests.
+            rate_limit_rpm: Requests per minute ceiling.
+
+        Returns:
+            Mapping of ticker -> market_cap (only tickers with cap > 0).
+        """
+        if not tickers:
+            return {}
+
+        result: dict[str, float] = {}
+        failed: int = 0
+        total = len(tickers)
+        semaphore = asyncio.Semaphore(concurrency)
+
+        min_interval = 60.0 / max(rate_limit_rpm, 1)
+        token_lock = asyncio.Lock()
+        last_request_time = 0.0
+
+        async def _acquire_rate_slot() -> None:
+            nonlocal last_request_time
+            async with token_lock:
+                now = time.monotonic()
+                elapsed = now - last_request_time
+                if elapsed < min_interval:
+                    await asyncio.sleep(min_interval - elapsed)
+                last_request_time = time.monotonic()
+
+        async def _fetch_one(ticker: str) -> None:
+            nonlocal failed
+            async with semaphore:
+                await _acquire_rate_slot()
+                try:
+                    url = f"{self._base_url}/v3/reference/tickers/{ticker}"
+                    params = {"apiKey": self._api_key}
+                    async with httpx.AsyncClient(timeout=self._timeout) as client:
+                        resp = await client.get(url, params=params)
+
+                    if resp.status_code == 429:
+                        await asyncio.sleep(2.0)
+                        await _acquire_rate_slot()
+                        async with httpx.AsyncClient(timeout=self._timeout) as client:
+                            resp = await client.get(url, params=params)
+
+                    if resp.status_code >= 400:
+                        failed += 1
+                        return
+
+                    data = resp.json().get("results", {})
+                    cap = float(data.get("market_cap", 0) or 0)
+                    if cap > 0:
+                        result[ticker] = cap
+                except Exception:
+                    failed += 1
+                    logger.debug("market_cap_fetch_failed", ticker=ticker)
+
+        logger.info(
+            "batch_market_caps_concurrent_start",
+            total=total,
+            concurrency=concurrency,
+            rate_limit_rpm=rate_limit_rpm,
+        )
+
+        tasks = [asyncio.create_task(_fetch_one(t)) for t in tickers]
+
+        done_count = 0
+        for coro in asyncio.as_completed(tasks):
+            await coro
+            done_count += 1
+            if done_count % 200 == 0:
+                logger.info(
+                    "batch_market_caps_progress",
+                    done=done_count,
+                    total=total,
+                    found=len(result),
+                    failed=failed,
+                )
+
+        logger.info(
+            "batch_market_caps_concurrent_complete",
+            total=total,
+            found=len(result),
+            failed=failed,
         )
         return result

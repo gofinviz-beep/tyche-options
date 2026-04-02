@@ -230,6 +230,56 @@ python scripts/ingest_data.py --status
 
 This backtest should be re-run periodically (monthly or quarterly) to validate that the optimal entry window has not shifted. Market microstructure changes, new regulations, or shifts in algorithmic trading patterns could alter the intraday dynamics.
 
+## Pluggable Premium Models
+
+**Source:** `backend/src/tyche/backtest/premium.py`
+
+The backtest supports multiple premium estimation strategies via the `--premium-model` (EMA backtest) or `--premium-source` (pullback CSP backtest) flags:
+
+| Model | Flag Value | Description |
+|---|---|---|
+| Fixed % | `fixed_pct` | Constant fraction of notional (default 1.5%). Backward-compatible with original behavior. |
+| IV Proxy | `iv_proxy` | Deterministic formula using DTE, moneyness, and realized volatility from OHLCV data. More realistic than fixed. |
+| Market | `market` | Real options chain data from `OptionsChainStore`. Falls back to `iv_proxy` when no matching snapshot exists. |
+
+### Market Premium Model
+
+When `--premium-source market` is used with `backtest_pullback_csp.py`, the `MarketPremiumModel`:
+
+1. Looks up `OptionsChainStore` for the nearest snapshot date within 7 days of the trade date
+2. Finds matching put contracts within 2% strike tolerance
+3. Uses the contract's `bid` price as the premium
+4. Falls back to `iv_proxy` simulation when no data is available
+5. Reports hit/miss statistics at backtest completion
+
+This becomes increasingly accurate as daily options snapshots accumulate over time.
+
+## Execution Friction Models
+
+**Source:** `backend/src/tyche/backtest/execution.py`
+
+Three execution models simulate realistic fill quality:
+
+| Model | Description |
+|---|---|
+| `optimistic` | Fill at bid (best case for sellers) |
+| `base` | Fill at mid (average case) |
+| `conservative` | Fill at 75% of bid (worst case, reflecting slippage and wide spreads) |
+
+Used via `--execution-model` in backtest scripts.
+
+## Walk-Forward Harness
+
+**Source:** `backend/src/tyche/backtest/walk_forward.py`
+
+Splits backtest data into rolling train/test windows to detect regime-dependent instability:
+
+```bash
+python scripts/backtest_ema.py --walk-forward --train-days 120 --test-days 30
+```
+
+Outputs per-window win rate, P&L, and aggregate stability metrics.
+
 ## Configuration
 
 | Constant | Value | Description |

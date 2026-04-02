@@ -21,7 +21,10 @@ from tyche.conviction.alerts import PullbackAlert, detect_pullback_alerts
 from tyche.conviction.engine import ConvictionEngine, ConvictionSignal
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.earnings import EarningsCalendarClient
-from tyche.market_data.institutional import filter_by_institutional_ownership
+from tyche.market_data.institutional import (
+    filter_by_institutional_ownership,
+    filter_by_institutional_ownership_batched,
+)
 from tyche.market_data.universe import UniverseBuilder
 from tyche.risk.engine import RiskEngine
 from tyche.schemas.analysis import CSPAnalysis
@@ -125,6 +128,10 @@ async def run_morning_scan(
     earliest_expiration_only: bool = True,
     min_institutional_pct_stock_buy: float = 0.50,
     notification_dispatcher: Any | None = None,
+    allow_missing_market_cap: bool = True,
+    institutional_batch_size: int = 20,
+    institutional_max_retries: int = 2,
+    pre_allocator_pool_size: int = 0,
 ) -> MorningScanResult:
     """Execute the full morning scan pipeline.
 
@@ -228,13 +235,17 @@ async def run_morning_scan(
         before = len(screened_symbols)
         passed = []
         no_data = []
+        dropped_below = []
         for sym in screened_symbols:
             cap = market_caps.get(sym)
             if cap is None or cap == 0:
-                passed.append(sym)
+                if allow_missing_market_cap:
+                    passed.append(sym)
                 no_data.append(sym)
             elif cap >= min_market_cap:
                 passed.append(sym)
+            else:
+                dropped_below.append(sym)
         screened_symbols = passed
         cap_dur = time.perf_counter() - t0
         _record_stage("market_cap", cap_dur)
@@ -243,7 +254,10 @@ async def run_morning_scan(
         if equity_removed > 0:
             detail += f" ({equity_removed} non-equity filtered)"
         if no_data:
-            detail += f" ({len(no_data)} passed with no data: {', '.join(no_data[:5])})"
+            action = "passed" if allow_missing_market_cap else "dropped"
+            detail += f" ({len(no_data)} no data: {action})"
+        if dropped_below:
+            detail += f" ({len(dropped_below)} below threshold)"
         result.pipeline_stages.append(
             PipelineStage("Market Cap", before_equity, len(screened_symbols), detail=detail, duration_ms=cap_dur * 1000)
         )
@@ -252,8 +266,11 @@ async def run_morning_scan(
             before=before_equity,
             after=len(screened_symbols),
             equity_removed=equity_removed,
-            no_data=no_data,
+            no_data_count=len(no_data),
+            no_data_action="pass" if allow_missing_market_cap else "drop",
+            dropped_below_cap=len(dropped_below),
             min_market_cap=min_market_cap,
+            allow_missing=allow_missing_market_cap,
             duration_ms=round(cap_dur * 1000, 2),
         )
 
@@ -316,25 +333,35 @@ async def run_morning_scan(
             scanner_errors.add(1, {"stage": "conviction_engine", "error_type": "exception"})
             logger.warning("morning_scan_conviction_failed", duration_ms=round(conv_dur * 1000, 2), exc_info=True)
 
-    # ── 3b. Filter by institutional ownership ─────────────────────────
-    if min_institutional_pct > 0 and len(screened_symbols) <= 100:
+    # ── 3b. Filter by institutional ownership (always-on, batched) ───
+    if min_institutional_pct > 0:
         t0 = time.perf_counter()
         before_inst = len(screened_symbols)
         try:
-            screened_symbols, inst_map = await filter_by_institutional_ownership(
-                screened_symbols, min_pct=min_institutional_pct
+            screened_symbols, inst_map, inst_stats = await filter_by_institutional_ownership_batched(
+                screened_symbols,
+                min_pct=min_institutional_pct,
+                batch_size=institutional_batch_size,
+                max_retries=institutional_max_retries,
             )
             result.institutional_ownership = inst_map
             if inst_map and ticker_meta_store and ticker_meta_store.exists:
                 ticker_meta_store.update_institutional_pcts(inst_map)
             inst_dur = time.perf_counter() - t0
             _record_stage("institutional_ownership", inst_dur)
+
+            stats_detail = (
+                f"Min {min_institutional_pct*100:.0f}% inst. ownership | "
+                f"batches={inst_stats.batches_run}, "
+                f"failed={inst_stats.batches_failed}, "
+                f"no_data={inst_stats.tickers_no_data}"
+            )
             result.pipeline_stages.append(
                 PipelineStage(
                     "Institutional Ownership",
                     before_inst,
                     len(screened_symbols),
-                    detail=f"Min {min_institutional_pct*100:.0f}% inst. ownership",
+                    detail=stats_detail,
                     duration_ms=inst_dur * 1000,
                 )
             )
@@ -343,6 +370,7 @@ async def run_morning_scan(
                 passed=len(screened_symbols),
                 ownership_data=len(inst_map),
                 persisted=len(inst_map) if inst_map else 0,
+                stats=inst_stats.to_dict(),
                 duration_ms=round(inst_dur * 1000, 2),
             )
         except Exception:
@@ -371,8 +399,9 @@ async def run_morning_scan(
     # ── 5. Scan for CSP candidates ────────────────────────────────────
     t0 = time.perf_counter()
     csp_diagnostics: dict[str, int] = {}
+    csp_pool: list[ScoredCandidate] = []
     try:
-        csp_candidates, csp_diagnostics = await strategy_engine.scan_csp_candidates(
+        csp_pool, csp_diagnostics = await strategy_engine.scan_csp_candidates(
             broker=broker,
             watchlist=screened_symbols,
             available_cash=effective_buying_power,
@@ -386,8 +415,9 @@ async def run_morning_scan(
             pullback_strike_offset_pct=pullback_strike_offset_pct,
             pullback_strike_ceiling_pct=pullback_strike_ceiling_pct,
             earliest_expiration_only=earliest_expiration_only,
+            pre_allocator_pool_size=pre_allocator_pool_size,
         )
-        result.csp_candidates = csp_candidates
+        result.csp_candidates = csp_pool[:top_n]
     except Exception as exc:
         result.errors.append(f"CSP scan failed: {exc}")
         scanner_errors.add(1, {"stage": "csp_scan", "error_type": type(exc).__name__})
@@ -395,6 +425,9 @@ async def run_morning_scan(
     csp_dur = time.perf_counter() - t0
     _record_stage("csp_scan", csp_dur)
 
+    pool_detail = ""
+    if pre_allocator_pool_size > 0 and len(csp_pool) > len(result.csp_candidates):
+        pool_detail = f" | pool={len(csp_pool)}, display={len(result.csp_candidates)}"
     diag_parts = [f"{k}: {v}" for k, v in csp_diagnostics.items() if v > 0]
     result.pipeline_stages.append(
         PipelineStage(
@@ -404,6 +437,7 @@ async def run_morning_scan(
             detail=(
                 f"{len(result.csp_candidates)} candidates from "
                 f"{csp_diagnostics.get('symbols_with_candidates', 0)} tickers"
+                + pool_detail
                 + (f" | drops: {', '.join(diag_parts)}" if diag_parts else "")
             ),
             duration_ms=csp_dur * 1000,
@@ -427,7 +461,8 @@ async def run_morning_scan(
     _record_stage("cc_scan", cc_dur)
 
     # ── 6b. Portfolio allocator (MILP optimizer) ──────────────────────
-    if portfolio_allocator and (result.csp_candidates or result.cc_candidates):
+    allocator_csp_input = csp_pool if csp_pool else result.csp_candidates
+    if portfolio_allocator and (allocator_csp_input or result.cc_candidates):
         t0 = time.perf_counter()
         try:
             held_shares: dict[str, int] = {}
@@ -441,7 +476,7 @@ async def run_morning_scan(
             }
 
             result.allocation = portfolio_allocator.optimize(
-                csp_candidates=result.csp_candidates,
+                csp_candidates=allocator_csp_input,
                 cc_candidates=result.cc_candidates,
                 available_capital=effective_buying_power,
                 conviction_signals=conviction_data_for_alloc,

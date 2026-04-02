@@ -6,11 +6,12 @@
 
 ## Overview
 
-Tyche uses a Parquet-first local data layer for all historical market data. Three stores serve different purposes:
+Tyche uses a Parquet-first local data layer for all historical market data. Four stores serve different purposes:
 
 - **OHLCVStore** — Per-ticker daily OHLCV bars for all US equities (used by conviction engine and backtest)
 - **IntradayStore** — Per-ticker 5-minute intraday bars (used by intraday timing backtest)
 - **TickerMetaStore** — Per-ticker metadata: market cap, exchange, type (used for universe filtering)
+- **OptionsChainStore** — Per-ticker options chain snapshots from Tradier (used for backtest validation with real premiums)
 
 All are populated from Polygon.io during bootstrap and updated incrementally.
 
@@ -198,17 +199,103 @@ The OHLCV refresh is scheduled automatically via APScheduler:
 |---|---|---|
 | 4:02 PM | `ohlcv_refresh` | Calls `bootstrap_ohlcv(include_today=True)` after market close |
 | 4:05 PM | `exit_monitor` | Also calls `bootstrap_ohlcv(include_today=True)` as safety net before checking positions |
+| 4:10 PM | `options_snapshot` | Captures live options chains from Tradier for large-cap tickers |
 
-This ensures the exit monitor always operates on fresh data.
+This ensures the exit monitor always operates on fresh data and options chains are captured while Tradier still serves closing data.
 
 ### Historical Data Scripts
 
 | Script | Purpose |
 |---|---|
 | `scripts/ingest_data.py` | Primary OHLCV + meta bootstrap from Polygon |
+| `scripts/ingest_options.py` | Options chain snapshots from Tradier (daily or backfill) |
 | `scripts/ingest_infiniti.py` | Ingest historical OHLCV from local infiniti Parquet store |
 | `scripts/bridge_ohlcv_gap.py` | Fill gaps between infiniti data and Polygon data |
 | `scripts/backtest_pullbacks.py` | Scan history for pullback events, compute per-ticker bounce profiles |
+
+## OptionsChainStore
+
+**Directory:** `data/options_chains/{TICKER}.parquet`
+
+**Sources:**
+- `backend/src/tyche/market_data/data_store.py` (store)
+- `backend/src/tyche/workflow/options_snapshot.py` (ingestion workflow)
+- `backend/scripts/ingest_options.py` (CLI)
+
+Stores daily snapshots of live options chain data from Tradier. Each ticker has its own Parquet file containing all snapshot dates. Designed to accumulate data over time for backtest validation using real market premiums.
+
+### Schema (per-ticker file)
+
+| Column | Type | Description |
+|---|---|---|
+| snapshot_date | date32 | Date the chain was captured |
+| expiration | date32 | Contract expiration date |
+| strike | float64 | Strike price |
+| option_type | string | `put` or `call` |
+| bid | float64 | Best bid price |
+| ask | float64 | Best ask price |
+| mid | float64 | Midpoint of bid/ask |
+| last | float64 | Last traded price |
+| volume | int64 | Daily contract volume |
+| open_interest | int64 | Open interest |
+| implied_volatility | float64 | Implied volatility |
+| delta | float64 | Delta Greek |
+| gamma | float64 | Gamma Greek |
+| theta | float64 | Theta Greek |
+| vega | float64 | Vega Greek |
+| rho | float64 | Rho Greek |
+| underlying_price | float64 | Underlying stock price at snapshot time |
+
+### Deduplication
+
+Rows are deduplicated on `(snapshot_date, expiration, strike, option_type)` within each ticker's file. Re-running ingestion for the same date safely overwrites stale data.
+
+### Key Operations
+
+- `write_chains(ticker, contracts, snapshot_date)` — Write contracts for one ticker on one date
+- `read_ticker(ticker, snapshot_date?)` — Read a ticker's chains, optionally for a specific date
+- `get_nearest_snapshot_date(ticker, target_date, max_gap_days)` — Find nearest available snapshot
+- `get_put_premium(ticker, snapshot_date, strike, dte, strike_tolerance_pct)` — Look up actual put premium for backtest
+- `list_tickers()` — All tickers with stored chain data
+- `list_snapshot_dates(ticker?)` — All snapshot dates across all or one ticker
+- `get_stats()` — Summary: ticker count, snapshot date count, total rows
+
+### Ingestion
+
+Options chains are ingested from Tradier using the shared `run_options_snapshot()` workflow:
+
+```bash
+# Snapshot today's chains for all large-cap tickers in the OHLCV store
+python scripts/ingest_options.py --from-ohlcv --min-market-cap 5e9
+
+# Snapshot specific tickers
+python scripts/ingest_options.py --tickers AAPL,MSFT,NVDA
+
+# Dry run (estimate API calls without fetching)
+python scripts/ingest_options.py --from-ohlcv --dry-run
+
+# Show current store status
+python scripts/ingest_options.py --status
+```
+
+### Scheduled Snapshot
+
+| Time (ET) | Job | Behavior |
+|---|---|---|
+| 4:10 PM | `options_snapshot` | Captures put chains for all tickers in OHLCVStore with market cap ≥ $5B. Runs Mon-Fri after OHLCV refresh and exit monitor. |
+
+Controlled by `TYCHE_OPTIONS_SNAPSHOT_ENABLED` (default `true`). The snapshot uses a token-bucket rate limiter capped at `options_snapshot_rpm` (default 120, Tradier hard limit).
+
+### Integration with Backtests
+
+The `MarketPremiumModel` in `backend/src/tyche/backtest/premium.py` uses `OptionsChainStore` to look up real put premiums for a given ticker, date, strike, and DTE. When no matching chain data is found (e.g., historical dates before snapshots began), it falls back to a configurable simulation model (default: `iv_proxy`).
+
+```bash
+# Run CSP backtest with real market premiums where available
+python scripts/backtest_pullback_csp.py --premium-source market
+```
+
+The model reports hit/miss stats at the end, showing what fraction of trades used real data.
 
 ## Data Directory
 
@@ -224,5 +311,9 @@ backend/data/
 │   ├── AAPL.parquet         # ~100-500KB per ticker (90 days of 5-min bars)
 │   ├── MSFT.parquet
 │   └── ... (~881 eligible tickers)
+├── options_chains/          # Per-ticker options chain snapshots
+│   ├── AAPL.parquet         # ~50-200KB per ticker (grows with daily snapshots)
+│   ├── MSFT.parquet
+│   └── ... (~1,100 large-cap tickers)
 └── ticker_meta.parquet      # ~1MB (single file, ticker reference metadata)
 ```

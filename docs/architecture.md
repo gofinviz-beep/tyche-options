@@ -13,7 +13,7 @@ Tyche Options is a laptop-based options trading copilot that combines determinis
 | API | FastAPI, Pydantic, uvicorn |
 | Broker (real-time) | Tradier API — quotes, options chains, account ops, order execution |
 | Market data (historical) | Polygon.io — grouped daily OHLCV bars, ticker reference metadata |
-| Data stores | Apache Parquet via PyArrow (OHLCVStore, TickerMetaStore, ConvictionSignalStore) |
+| Data stores | Apache Parquet via PyArrow (OHLCVStore, TickerMetaStore, OptionsChainStore, ConvictionSignalStore) |
 | Conviction engine | pandas, numpy — 8/21 EMA trend classification (three-layer: features, CSP policy, compat wrapper) |
 | Portfolio optimization | scipy.optimize.milp (HiGHS MILP solver) |
 | LLM analysis | Google Gemini (gemini-3-flash-preview / gemini-3.1-pro-preview) via google-genai |
@@ -62,6 +62,7 @@ backend/
 │   ├── backtest_ema.py          # Backtest: uptrend CSP sim + capital-aware portfolio sim
 │   ├── backtest_pullback_csp.py # Backtest: pullback CSP sim (strike offsets × DTE × market cap)
 │   ├── backfill_market_caps.py  # Backfill market cap data from Polygon detail API
+│   ├── ingest_options.py        # Options chain snapshot CLI (Tradier → per-ticker Parquet)
 │   └── live_scan.py             # Standalone live scanner (CLI, uses Tradier + conviction)
 ├── src/tyche/
 │   ├── app.py                   # FastAPI application factory + lifespan
@@ -102,8 +103,13 @@ backend/
 │   │   ├── engine.py            # ConvictionEngine — backward-compat wrapper (delegates to above)
 │   │   └── alerts.py            # PullbackAlert detection from conviction signals
 │   │
+│   ├── backtest/
+│   │   ├── premium.py           # Pluggable premium models (fixed_pct, iv_proxy, market)
+│   │   ├── execution.py         # Execution friction models (optimistic, base, conservative)
+│   │   └── walk_forward.py      # Rolling walk-forward backtest harness
+│   │
 │   ├── market_data/
-│   │   ├── data_store.py        # OHLCVStore + TickerMetaStore + ConvictionSignalStore (Parquet) + bootstrap_ohlcv()
+│   │   ├── data_store.py        # OHLCVStore + TickerMetaStore + OptionsChainStore + ConvictionSignalStore (Parquet) + bootstrap_ohlcv()
 │   │   ├── earnings.py          # EarningsCalendarClient (Alpha Vantage)
 │   │   ├── institutional.py     # Institutional ownership filter
 │   │   ├── polygon.py           # PolygonClient — grouped daily, ticker reference, market caps
@@ -146,6 +152,7 @@ backend/
 │       ├── expiry_tracker.py    # CSP expiry tracking for fallback alerts
 │       ├── intent_builder.py    # Order intent generation from recommendations
 │       ├── morning_scan.py      # Full morning scan pipeline orchestration
+│       ├── options_snapshot.py  # Shared options chain ingestion workflow (CLI + scheduled job)
 │       ├── order_monitor.py     # Open order tracking
 │       ├── scheduler.py         # APScheduler-based workflow scheduling
 │       ├── stock_recommender.py # Stock buy recommendations from pullback alerts
@@ -155,6 +162,7 @@ backend/
 ├── data/                        # Raw market data (Parquet files, gitignored)
 │   ├── ohlcv_daily/             # Per-ticker daily OHLCV bars
 │   ├── intraday_5min/           # Per-ticker 5-minute intraday bars
+│   ├── options_chains/          # Per-ticker options chain snapshots (daily from Tradier)
 │   └── ticker_meta.parquet      # Ticker reference metadata
 ├── db/                          # SQLite databases (gitignored)
 │   ├── tyche.db                 # Default — order_intents table

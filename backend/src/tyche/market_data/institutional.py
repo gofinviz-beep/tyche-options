@@ -129,3 +129,117 @@ async def filter_by_institutional_ownership(
         failed_tickers=failed,
     )
     return passed, ownership_map
+
+
+@dataclass
+class InstitutionalFilterStats:
+    """Telemetry for batched institutional filtering."""
+
+    total_tickers: int = 0
+    batches_run: int = 0
+    batches_failed: int = 0
+    tickers_passed: int = 0
+    tickers_dropped: int = 0
+    tickers_no_data: int = 0
+    retries: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "total_tickers": self.total_tickers,
+            "batches_run": self.batches_run,
+            "batches_failed": self.batches_failed,
+            "tickers_passed": self.tickers_passed,
+            "tickers_dropped": self.tickers_dropped,
+            "tickers_no_data": self.tickers_no_data,
+            "retries": self.retries,
+        }
+
+
+async def filter_by_institutional_ownership_batched(
+    tickers: list[str],
+    min_pct: float = 0.40,
+    batch_size: int = 20,
+    max_retries: int = 2,
+    backoff_base: float = 1.0,
+) -> tuple[list[str], dict[str, float], InstitutionalFilterStats]:
+    """Filter tickers by institutional ownership with async batching.
+
+    Unlike the unbatched version, this processes tickers in bounded
+    batches with retry+backoff on failures.  Large watchlists run
+    without timeout explosion.
+
+    Args:
+        tickers: Ticker symbols to check.
+        min_pct: Minimum institutional ownership (0.0–1.0).
+        batch_size: How many tickers to fetch per batch.
+        max_retries: Retries per batch on failure.
+        backoff_base: Base delay (seconds) between retries (exponential).
+
+    Returns:
+        (passed_tickers, ownership_map, stats).
+    """
+    import asyncio
+
+    stats = InstitutionalFilterStats(total_tickers=len(tickers))
+    passed: list[str] = []
+    ownership_map: dict[str, float] = {}
+
+    batches = [
+        tickers[i : i + batch_size]
+        for i in range(0, len(tickers), batch_size)
+    ]
+
+    for batch in batches:
+        stats.batches_run += 1
+        batch_results: dict[str, float | None] = {}
+        attempt = 0
+        success = False
+
+        while attempt <= max_retries:
+            try:
+                remaining = [t for t in batch if t not in batch_results]
+                for ticker in remaining:
+                    pct = await get_institutional_ownership(ticker)
+                    batch_results[ticker] = pct
+                success = True
+                break
+            except Exception:
+                attempt += 1
+                if attempt <= max_retries:
+                    stats.retries += 1
+                    delay = backoff_base * (2 ** (attempt - 1))
+                    logger.warning(
+                        "institutional_batch_retry",
+                        batch_size=len(batch),
+                        attempt=attempt,
+                        delay=delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    stats.batches_failed += 1
+                    logger.warning(
+                        "institutional_batch_exhausted",
+                        batch_tickers=[t for t in batch if t not in batch_results],
+                        attempts=attempt,
+                    )
+
+        for ticker in batch:
+            pct = batch_results.get(ticker)
+            if pct is not None:
+                ownership_map[ticker] = pct
+                if pct >= min_pct:
+                    passed.append(ticker)
+                    stats.tickers_passed += 1
+                else:
+                    stats.tickers_dropped += 1
+            else:
+                passed.append(ticker)
+                stats.tickers_no_data += 1
+
+    logger.info(
+        "institutional_batched_filter_complete",
+        stats=stats.to_dict(),
+        min_pct=min_pct,
+        batch_size=batch_size,
+    )
+    return passed, ownership_map, stats

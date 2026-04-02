@@ -14,6 +14,7 @@ from tyche.broker.base import (
     OptionsChain,
     Quote,
 )
+from tyche.strategy.ranking import RankingWeights, rank_candidates
 from tyche.strategy.strategies.base import ScoredCandidate
 from tyche.strategy.strategies.cash_secured_put import CashSecuredPutStrategy
 from tyche.strategy.strategies.covered_call import CoveredCallStrategy
@@ -138,6 +139,9 @@ class StrategyEngine:
         pullback_strike_offset_pct: float = 5.0,
         pullback_strike_ceiling_pct: float = 1.0,
         earliest_expiration_only: bool = True,
+        ranking_mode: str = "legacy",
+        ranking_weights: RankingWeights | None = None,
+        pre_allocator_pool_size: int = 0,
     ) -> tuple[list[ScoredCandidate], dict[str, int]]:
         """Scan the watchlist for CSP opportunities.
 
@@ -380,7 +384,12 @@ class StrategyEngine:
                 all_scored, conviction_signals
             )
 
-        all_scored.sort(key=lambda x: x.score, reverse=True)
+        all_scored = rank_candidates(
+            all_scored,
+            conviction_signals or {},
+            mode=ranking_mode,
+            weights=ranking_weights,
+        )
         logger.info(
             "csp_scan_complete",
             symbols_scanned=len(watchlist),
@@ -391,6 +400,7 @@ class StrategyEngine:
             strike_preference=csp_strike_preference,
             available_cash=available_cash,
             earliest_expiration_only=earliest_expiration_only,
+            ranking_mode=ranking_mode,
             diagnostics=drops,
         )
 
@@ -402,7 +412,9 @@ class StrategyEngine:
             if count > 0 and reason != "symbols_with_candidates":
                 csp_scan_drops.add(count, {"reason": reason})
 
-        return all_scored[:top_n], drops
+        pool_size = max(top_n, pre_allocator_pool_size)
+        drops["pre_allocator_pool_size"] = min(pool_size, len(all_scored))
+        return all_scored[:pool_size], drops
 
     async def scan_cc_candidates(
         self,

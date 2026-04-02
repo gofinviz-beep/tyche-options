@@ -8,12 +8,22 @@ For each trading day in the backtest window:
 5. Measure forward 8-day returns and P&L
 
 Uses the SAME filters as the production scanner:
-- Market cap >= $500M (from Polygon ticker reference)
+- Market cap >= $5B (from Polygon ticker reference)
 - Exchange in NYSE/NASDAQ (from Polygon ticker reference)
 - Min price >= $15
 - Extension <= 3% (built into conviction engine)
+
+CLI flags (all optional — defaults reproduce legacy output):
+  --premium-model   fixed_pct (default) | iv_proxy
+  --execution-model none (default) | optimistic | base | conservative
+  --walk-forward    Enable rolling walk-forward analysis
+  --train-days N    Walk-forward train window (default 126)
+  --test-days N     Walk-forward test window (default 63)
+  --print-assumptions  Print assumptions and exit
 """
 
+import argparse
+import math
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -23,6 +33,15 @@ import pandas as pd
 
 sys.path.insert(0, "src")
 
+from tyche.backtest.assumptions import build_assumptions
+from tyche.backtest.execution import (
+    ExecutionModel,
+    build_sensitivity_table,
+    format_sensitivity_table,
+    get_execution_model,
+)
+from tyche.backtest.premium import PremiumModel, get_premium_model
+from tyche.backtest.walk_forward import WalkForwardRunner, WindowResult
 from tyche.config import TycheSettings
 from tyche.conviction.engine import ConvictionEngine
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
@@ -33,7 +52,6 @@ MIN_PRICE = 15.0
 MIN_MARKET_CAP = 5_000_000_000  # $5B
 MIN_VOLUME = 500_000
 TOP_N_PER_DAY = 10
-PREMIUM_PCT = 0.015  # assume 1.5% premium on notional
 
 VALID_EXCHANGES = {"XNYS", "XNAS", "XNMS", "XASE", "ARCX", "BATS"}
 
@@ -50,6 +68,7 @@ class CSPSimulation:
     ema_21: float
     price_to_8ema_pct: float
     days_above_emas: int
+    premium_pct: float = 0.015
     market_cap: float = 0.0
 
     exit_date: date | None = None
@@ -60,7 +79,30 @@ class CSPSimulation:
     forward_return_pct: float = 0.0
 
 
-def run_backtest():
+def _compute_pnl(
+    sims: list[CSPSimulation],
+    exec_model: ExecutionModel,
+) -> float:
+    """Compute total P&L in percentage terms, applying execution friction."""
+    total = 0.0
+    for s in sims:
+        raw_prem_pct = s.premium_pct * 100
+        adj_prem_pct = exec_model.adjust_premium(raw_prem_pct, contracts=1)
+        if s.stayed_above_strike:
+            total += adj_prem_pct
+        else:
+            loss = ((s.strike - s.min_price_during) / s.strike) * 100
+            total += adj_prem_pct - loss
+    return total
+
+
+def run_backtest(
+    premium_model: PremiumModel,
+    exec_model: ExecutionModel,
+    walk_forward: bool = False,
+    train_days: int = 126,
+    test_days: int = 63,
+) -> None:
     settings = TycheSettings()
     store = OHLCVStore(data_dir=settings.data_dir)
     meta_store = TickerMetaStore(data_dir=settings.data_dir)
@@ -69,7 +111,26 @@ def run_backtest():
         min_days_above_emas=5, max_days_above_emas=10,
     )
 
-    # Load ticker metadata
+    assumptions = build_assumptions(
+        "backtest_ema.py",
+        min_market_cap=MIN_MARKET_CAP,
+        min_price=MIN_PRICE,
+        min_volume=MIN_VOLUME,
+        valid_exchanges=sorted(VALID_EXCHANGES),
+        dte=DTE,
+        otm_pct=OTM_PCT,
+        premium_model=premium_model,
+        execution_model=exec_model,
+        walk_forward_enabled=walk_forward,
+        train_days=train_days if walk_forward else None,
+        test_days=test_days if walk_forward else None,
+        starting_capital=100_000.0,
+        max_positions=8,
+        max_concentration_pct=25.0,
+        top_n_per_day=TOP_N_PER_DAY,
+    )
+    assumptions.print_summary()
+
     if not meta_store.exists:
         print("ERROR: ticker_meta.parquet not found. Run bootstrap first.")
         return
@@ -77,7 +138,6 @@ def run_backtest():
     all_exchanges = meta_store.get_exchanges()
     print(f"Ticker metadata: {len(all_market_caps)} tickers with market cap")
 
-    # Pre-filter: tickers with valid exchange AND market cap >= $500M
     qualified_tickers = set()
     for ticker, cap in all_market_caps.items():
         exchange = all_exchanges.get(ticker, "")
@@ -85,7 +145,6 @@ def run_backtest():
             qualified_tickers.add(ticker)
     print(f"Tickers passing market cap + exchange filter: {len(qualified_tickers)}")
 
-    # Load OHLCV data
     all_ohlcv_tickers = set(store.get_all_tickers())
     target_tickers = qualified_tickers & all_ohlcv_tickers
     ticker_data = store.read_tickers(list(target_tickers))
@@ -101,7 +160,8 @@ def run_backtest():
     print(f"\nBacktest: {backtest_dates[0]} to {backtest_dates[-1]}")
     print(f"Trading days: {len(backtest_dates)}")
     print(f"DTE: {DTE} days | OTM: {OTM_PCT*100:.0f}%")
-    print(f"Filters: mkt_cap >= ${MIN_MARKET_CAP/1e6:.0f}M, price >= ${MIN_PRICE}, "
+    print(f"Premium model: {premium_model.name} | Execution: {exec_model.mode}")
+    print(f"Filters: mkt_cap >= ${MIN_MARKET_CAP/1e9:.0f}B, price >= ${MIN_PRICE}, "
           f"extension <= 3%, valid exchange")
     print(f"Top {TOP_N_PER_DAY} picks per day")
     print("=" * 80)
@@ -114,13 +174,42 @@ def run_backtest():
     print(f"Tickers with OHLCV + metadata: {len(ticker_frames)}")
     print()
 
+    if walk_forward:
+        _run_walk_forward(
+            backtest_dates, ticker_frames, all_market_caps, engine,
+            premium_model, exec_model, warmup, train_days, test_days,
+        )
+    else:
+        simulations = _scan_dates(
+            backtest_dates, ticker_frames, all_market_caps, engine,
+            premium_model, warmup,
+        )
+        _print_results(simulations, all_market_caps, exec_model)
+        run_capital_simulation(simulations, backtest_dates, exec_model, premium_model)
+
+    # Execution sensitivity table
+    if exec_model.mode != "none":
+        print("\n--- Execution Model Sensitivity ---")
+        table = build_sensitivity_table(sample_premium=150.0)
+        print(format_sensitivity_table(table))
+
+
+def _scan_dates(
+    dates: list[date],
+    ticker_frames: dict[str, pd.DataFrame],
+    all_market_caps: dict[str, float],
+    engine: ConvictionEngine,
+    premium_model: PremiumModel,
+    warmup: int,
+) -> list[CSPSimulation]:
+    """Run the core scan loop over a date range and return simulations."""
     simulations: list[CSPSimulation] = []
 
-    for day_idx, scan_date in enumerate(backtest_dates):
-        if day_idx + DTE >= len(backtest_dates):
+    for day_idx, scan_date in enumerate(dates):
+        if day_idx + DTE >= len(dates):
             break
 
-        exit_date = backtest_dates[day_idx + DTE]
+        exit_date = dates[day_idx + DTE]
         picks_today: list[CSPSimulation] = []
 
         for ticker, full_df in ticker_frames.items():
@@ -148,6 +237,13 @@ def run_backtest():
             entry_price = signal.last_close
             strike = round(entry_price * (1 - OTM_PCT), 2)
 
+            prem_pct = premium_model.premium_pct(
+                strike=strike,
+                underlying_price=entry_price,
+                dte=DTE,
+                ohlcv=df_up_to,
+            )
+
             forward = full_df[
                 (full_df["date"] > scan_date) & (full_df["date"] <= exit_date)
             ]
@@ -169,6 +265,7 @@ def run_backtest():
                 ema_21=signal.ema_21,
                 price_to_8ema_pct=signal.price_to_8ema_pct,
                 days_above_emas=signal.days_above_both_emas,
+                premium_pct=prem_pct,
                 market_cap=all_market_caps.get(ticker, 0),
                 exit_date=exit_date,
                 exit_price=exit_price,
@@ -179,7 +276,6 @@ def run_backtest():
             )
             picks_today.append(sim)
 
-        # Sort: high conviction first, then lower extension (closer to EMA = better)
         conviction_order = {"high": 0, "medium": 1}
         picks_today.sort(
             key=lambda s: (
@@ -192,10 +288,88 @@ def run_backtest():
 
         if (day_idx + 1) % 10 == 0:
             print(
-                f"  Day {day_idx + 1}/{len(backtest_dates)}: "
+                f"  Day {day_idx + 1}/{len(dates)}: "
                 f"eligible={len(picks_today)}, picked={len(top_picks)}"
             )
 
+    return simulations
+
+
+def _run_walk_forward(
+    backtest_dates: list[date],
+    ticker_frames: dict[str, pd.DataFrame],
+    all_market_caps: dict[str, float],
+    engine: ConvictionEngine,
+    premium_model: PremiumModel,
+    exec_model: ExecutionModel,
+    warmup: int,
+    train_days: int,
+    test_days: int,
+) -> None:
+    """Execute walk-forward analysis over the backtest period."""
+
+    def run_window(
+        train_dates: list[date],
+        test_dates: list[date],
+        **ctx: object,
+    ) -> WindowResult:
+        sims = _scan_dates(
+            test_dates, ticker_frames, all_market_caps, engine,
+            premium_model, warmup,
+        )
+        total = len(sims)
+        wins = sum(1 for s in sims if s.stayed_above_strike)
+        pnl = _compute_pnl(sims, exec_model)
+        avg_pnl = pnl / total if total else 0.0
+        worst_dd = min((s.max_drawdown_pct for s in sims), default=0.0)
+
+        daily_returns: list[float] = []
+        if sims:
+            by_date: dict[date, list[CSPSimulation]] = {}
+            for s in sims:
+                by_date.setdefault(s.entry_date, []).append(s)
+            for dt in sorted(by_date):
+                day_pnl = _compute_pnl(by_date[dt], exec_model)
+                daily_returns.append(day_pnl)
+
+        if len(daily_returns) >= 2:
+            avg_r = sum(daily_returns) / len(daily_returns)
+            std_r = (sum((r - avg_r) ** 2 for r in daily_returns) / len(daily_returns)) ** 0.5
+            sharpe = (avg_r / std_r * math.sqrt(252)) if std_r > 0 else 0.0
+        else:
+            sharpe = 0.0
+
+        return WindowResult(
+            window_id=0,
+            train_start=train_dates[0],
+            train_end=train_dates[-1],
+            test_start=test_dates[0],
+            test_end=test_dates[-1],
+            total_trades=total,
+            wins=wins,
+            win_rate=(wins / total * 100) if total else 0.0,
+            avg_pnl_pct=avg_pnl,
+            cumulative_pnl_pct=pnl,
+            max_drawdown_pct=worst_dd,
+            sharpe=sharpe,
+        )
+
+    runner = WalkForwardRunner(train_days=train_days, test_days=test_days)
+    try:
+        summary = runner.run(backtest_dates, run_fn=run_window)
+    except ValueError as e:
+        print(f"\nWalk-forward failed: {e}")
+        return
+
+    summary.print_report()
+
+
+def _print_results(
+    simulations: list[CSPSimulation],
+    all_market_caps: dict[str, float],
+    exec_model: ExecutionModel,
+) -> None:
+    """Print the full results report."""
     print()
     print("=" * 80)
     print("BACKTEST RESULTS — Production Filters + 3% Extension Cap")
@@ -213,14 +387,7 @@ def run_backtest():
     avg_drawdown = sum(s.max_drawdown_pct for s in simulations) / total
     worst_drawdown = min(s.max_drawdown_pct for s in simulations)
 
-    # CSP P&L simulation
-    total_pnl_pct = 0.0
-    for s in simulations:
-        if s.stayed_above_strike:
-            total_pnl_pct += PREMIUM_PCT * 100
-        else:
-            loss = ((s.strike - s.min_price_during) / s.strike) * 100
-            total_pnl_pct += PREMIUM_PCT * 100 - loss
+    total_pnl_pct = _compute_pnl(simulations, exec_model)
     avg_trade_pnl = total_pnl_pct / total
 
     unique_symbols = set(s.symbol for s in simulations)
@@ -231,7 +398,7 @@ def run_backtest():
     print(f"Average 8-day forward return: {avg_return:+.2f}%")
     print(f"Average max drawdown during DTE: {avg_drawdown:+.2f}%")
     print(f"Worst single drawdown: {worst_drawdown:+.2f}%")
-    print(f"\n--- Simulated CSP P&L (1.5% premium assumption) ---")
+    print(f"\n--- Simulated CSP P&L ---")
     print(f"Average trade P&L: {avg_trade_pnl:+.2f}% of notional")
     print(f"Cumulative P&L over {total} trades: {total_pnl_pct:+.1f}%")
 
@@ -245,13 +412,7 @@ def run_backtest():
         ar = sum(s.forward_return_pct for s in sims) / n
         ad = sum(s.max_drawdown_pct for s in sims) / n
         wd = min(s.max_drawdown_pct for s in sims)
-        pnl = 0.0
-        for s in sims:
-            if s.stayed_above_strike:
-                pnl += PREMIUM_PCT * 100
-            else:
-                loss = ((s.strike - s.min_price_during) / s.strike) * 100
-                pnl += PREMIUM_PCT * 100 - loss
+        pnl = _compute_pnl(sims, exec_model)
         avg_pnl = pnl / n
         print(
             f"  {label:30s}: {n:4d} trades | win={wr:5.1f}% | "
@@ -259,43 +420,35 @@ def run_backtest():
             f"worst_dd={wd:+7.2f}% | avg_pnl={avg_pnl:+5.2f}%"
         )
 
-    # By conviction level
     print(f"\n--- By Conviction Level ---")
     stats([s for s in simulations if s.conviction == "high"], "HIGH conviction")
     stats([s for s in simulations if s.conviction == "medium"], "MEDIUM conviction")
 
-    # By trend state
     print(f"\n--- By Trend State ---")
     for ts in ["strong_uptrend", "uptrend", "pullback_to_8ema", "pullback_to_21ema"]:
         stats([s for s in simulations if s.trend_state == ts], ts.upper())
 
-    # By extension bracket
     print(f"\n--- By Extension (price vs 8-EMA) ---")
     for lo, hi, label in [(0, 1, "<1%"), (1, 2, "1-2%"), (2, 3, "2-3%")]:
         stats([s for s in simulations if lo <= abs(s.price_to_8ema_pct) < hi], label)
 
-    # By days above both EMAs
     print(f"\n--- By Days Above Both EMAs ---")
     for lo, hi, label in [(0, 5, "0-4 days"), (5, 10, "5-9 days"), (10, 20, "10-19 days"), (20, 999, "20+ days")]:
         stats([s for s in simulations if lo <= s.days_above_emas < hi], label)
 
-    # By market cap bracket
     print(f"\n--- By Market Cap ---")
     for lo, hi, label in [
-        (500e6, 2e9, "$500M-2B"),
-        (2e9, 10e9, "$2B-10B"),
+        (5e9, 10e9, "$5B-10B"),
         (10e9, 50e9, "$10B-50B"),
         (50e9, 200e9, "$50B-200B"),
         (200e9, 1e15, "$200B+"),
     ]:
         stats([s for s in simulations if lo <= s.market_cap < hi], label)
 
-    # By entry price
     print(f"\n--- By Entry Price ---")
     for lo, hi, label in [(15, 30, "$15-30"), (30, 60, "$30-60"), (60, 100, "$60-100"), (100, 200, "$100-200"), (200, 99999, "$200+")]:
         stats([s for s in simulations if lo <= s.entry_price < hi], label)
 
-    # By day of week
     print(f"\n--- By Entry Day of Week ---")
     day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
     for dow in range(5):
@@ -304,7 +457,6 @@ def run_backtest():
             day_names[dow],
         )
 
-    # 10 worst trades
     print(f"\n--- 10 Worst Trades ---")
     worst = sorted(simulations, key=lambda s: s.max_drawdown_pct)[:10]
     for s in worst:
@@ -316,7 +468,6 @@ def run_backtest():
             f"ext={s.price_to_8ema_pct:.1f}% cap=${cap_b:.1f}B"
         )
 
-    # 10 best trades
     print(f"\n--- 10 Best Trades ---")
     best = sorted(simulations, key=lambda s: s.forward_return_pct, reverse=True)[:10]
     for s in best:
@@ -327,7 +478,6 @@ def run_backtest():
             f"| {s.conviction} {s.trend_state} | ext={s.price_to_8ema_pct:.1f}% cap=${cap_b:.1f}B"
         )
 
-    # Top 20 most frequently picked symbols
     print(f"\n--- Top 20 Most Frequently Picked Symbols ---")
     freq: dict[str, int] = defaultdict(int)
     sym_wins: dict[str, int] = defaultdict(int)
@@ -344,7 +494,6 @@ def run_backtest():
         cap_b = all_market_caps.get(sym, 0) / 1e9
         print(f"  {sym:6s}: {count:3d} picks | win={wr:5.1f}% | avg_ret={avg_r:+.2f}% | cap=${cap_b:.1f}B")
 
-    # Recent day picks
     print(f"\n--- Last 3 Complete Scan Days ---")
     all_scan_dates = sorted(set(s.entry_date for s in simulations))
     for sd in all_scan_dates[-3:]:
@@ -362,22 +511,17 @@ def run_backtest():
                 f"| {s.conviction} ext={s.price_to_8ema_pct:.1f}% cap=${cap_b:.1f}B"
             )
 
-    # Capital-aware portfolio simulation
-    run_capital_simulation(simulations, backtest_dates)
-
 
 def run_capital_simulation(
     simulations: list[CSPSimulation],
     backtest_dates: list[date],
+    exec_model: ExecutionModel,
+    premium_model: PremiumModel,
     starting_capital: float = 100_000.0,
     max_positions: int = 8,
     max_concentration_pct: float = 25.0,
 ) -> None:
-    """Run a capital-aware portfolio simulation using the MILP allocator.
-
-    Tracks a real capital pool across overlapping 8-day CSP positions,
-    compounds returns, and reports equity curve + risk metrics.
-    """
+    """Run a capital-aware portfolio simulation using the MILP allocator."""
     from tyche.strategy.allocator import PortfolioAllocator
     from tyche.strategy.strategies.base import ScoredCandidate
 
@@ -420,7 +564,6 @@ def run_capital_simulation(
     prev_equity = starting_capital
 
     for scan_date in backtest_dates:
-        # Close expired positions
         newly_closed: list[OpenPosition] = []
         still_open: list[OpenPosition] = []
         for pos in open_positions:
@@ -446,7 +589,6 @@ def run_capital_simulation(
         locked_collateral = sum(p.collateral for p in open_positions)
         available = capital - locked_collateral
 
-        # Build ScoredCandidate objects from today's simulations for the allocator
         today_sims = sims_by_date.get(scan_date, [])
         candidates: list[ScoredCandidate] = []
         sim_map: dict[str, CSPSimulation] = {}
@@ -460,8 +602,9 @@ def run_capital_simulation(
             if collateral_per > available:
                 continue
 
-            premium_per = sim.strike * PREMIUM_PCT * 100
-            ann_return = (PREMIUM_PCT / 1.0) * (365 / DTE) * 100
+            premium_per_raw = sim.strike * sim.premium_pct * 100
+            premium_per = exec_model.adjust_premium(premium_per_raw, contracts=1)
+            ann_return = (sim.premium_pct / 1.0) * (365 / DTE) * 100
             oi_approx = 500
 
             key = f"{sim.symbol}_{scan_date}"
@@ -474,9 +617,9 @@ def run_capital_simulation(
                 strike=sim.strike,
                 expiration=sim.exit_date or scan_date,
                 dte=DTE,
-                bid=sim.strike * PREMIUM_PCT,
-                ask=sim.strike * PREMIUM_PCT * 1.1,
-                mid=sim.strike * PREMIUM_PCT * 1.05,
+                bid=sim.strike * sim.premium_pct,
+                ask=sim.strike * sim.premium_pct * 1.1,
+                mid=sim.strike * sim.premium_pct * 1.05,
                 volume=100,
                 open_interest=oi_approx,
                 implied_volatility=0.3,
@@ -506,10 +649,10 @@ def run_capital_simulation(
                     sim = sim_map.get(trade.option_symbol)
                     if not sim:
                         continue
-                    premium = trade.contracts * trade.premium_per_contract
+                    raw_prem = trade.contracts * sim.strike * sim.premium_pct * 100
+                    premium = exec_model.adjust_premium(raw_prem, contracts=trade.contracts)
                     collateral = trade.contracts * trade.strike * 100
                     capital -= collateral
-                    capital -= 0  # premium is received, added at exit
 
                     open_positions.append(OpenPosition(
                         symbol=sim.symbol,
@@ -540,7 +683,6 @@ def run_capital_simulation(
         util = (locked / total_equity * 100) if total_equity > 0 else 0
         utilization_samples.append(util)
 
-    # Close any remaining positions at end
     for pos in open_positions:
         if pos.sim.stayed_above_strike:
             capital += pos.collateral + pos.premium
@@ -556,7 +698,6 @@ def run_capital_simulation(
     final_equity = capital
     total_return = (final_equity - starting_capital) / starting_capital * 100
 
-    import math
     if daily_returns:
         avg_daily = sum(daily_returns) / len(daily_returns)
         std_daily = (sum((r - avg_daily) ** 2 for r in daily_returns) / len(daily_returns)) ** 0.5
@@ -582,7 +723,6 @@ def run_capital_simulation(
     print(f"Avg capital util:     {avg_util:>11.1f}%")
     print(f"Trading days:         {trading_days:>11}")
 
-    # Equity curve milestones
     if equity_curve:
         print(f"\n--- Equity Curve (monthly checkpoints) ---")
         prev_month = None
@@ -597,5 +737,73 @@ def run_capital_simulation(
         print(f"  {last_dt.isoformat()}: ${last_eq:>12,.2f}  ({ret:+.2f}%)  [final]")
 
 
+# ── CLI ──────────────────────────────────────────────────────────────────
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Backtest the 8/21 EMA conviction strategy"
+    )
+    parser.add_argument(
+        "--premium-model", default="fixed_pct",
+        choices=["fixed_pct", "iv_proxy"],
+        help="Premium estimation model (default: fixed_pct)",
+    )
+    parser.add_argument(
+        "--execution-model", default="none",
+        choices=["none", "optimistic", "base", "conservative"],
+        help="Execution friction model (default: none = legacy behavior)",
+    )
+    parser.add_argument(
+        "--walk-forward", action="store_true",
+        help="Enable rolling walk-forward analysis",
+    )
+    parser.add_argument(
+        "--train-days", type=int, default=126,
+        help="Walk-forward train window in trading days (default: 126 ≈ 6 months)",
+    )
+    parser.add_argument(
+        "--test-days", type=int, default=63,
+        help="Walk-forward test window in trading days (default: 63 ≈ 3 months)",
+    )
+    parser.add_argument(
+        "--print-assumptions", action="store_true",
+        help="Print assumptions block and exit without running backtest",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    run_backtest()
+    args = _parse_args()
+
+    pm = get_premium_model(args.premium_model)
+    em = get_execution_model(args.execution_model)
+
+    if args.print_assumptions:
+        assumptions = build_assumptions(
+            "backtest_ema.py",
+            min_market_cap=MIN_MARKET_CAP,
+            min_price=MIN_PRICE,
+            min_volume=MIN_VOLUME,
+            valid_exchanges=sorted(VALID_EXCHANGES),
+            dte=DTE,
+            otm_pct=OTM_PCT,
+            premium_model=pm,
+            execution_model=em,
+            walk_forward_enabled=args.walk_forward,
+            train_days=args.train_days if args.walk_forward else None,
+            test_days=args.test_days if args.walk_forward else None,
+            starting_capital=100_000.0,
+            max_positions=8,
+            max_concentration_pct=25.0,
+            top_n_per_day=TOP_N_PER_DAY,
+        )
+        assumptions.print_summary()
+        sys.exit(0)
+
+    run_backtest(
+        premium_model=pm,
+        exec_model=em,
+        walk_forward=args.walk_forward,
+        train_days=args.train_days,
+        test_days=args.test_days,
+    )

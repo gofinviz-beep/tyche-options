@@ -31,7 +31,8 @@ class TycheSettings(BaseSettings):
     # --- Market Data (Polygon.io / Massive.com) ---
     polygon_api_key: str = ""
     polygon_base_url: str = "https://api.polygon.io"
-    polygon_rate_limit_rpm: int = 100  # Paid plans allow much higher RPM
+    polygon_rate_limit_rpm: int = 500
+    polygon_market_cap_concurrency: int = 20
 
     # Alpha Vantage free API key (optional — "demo" key works with rate limits)
     alpha_vantage_key: str = "demo"
@@ -49,9 +50,14 @@ class TycheSettings(BaseSettings):
     min_avg_volume: int = 500_000
     min_stock_price: float = 15.0
 
+    # --- Market Cap Policy ---
+    allow_missing_market_cap: bool = True  # False = strict mode, drops tickers without cap data
+
     # --- Institutional Ownership ---
     min_institutional_pct: float = 0.40  # 40% minimum institutional ownership
     min_institutional_pct_stock_buy: float = 0.50  # 50% for stock buy recommendations
+    institutional_batch_size: int = 20  # tickers per batch for async fetching
+    institutional_max_retries: int = 2  # retries per batch on failure
 
     # --- Conviction Engine ---
     ema_fast_period: int = 8
@@ -98,6 +104,26 @@ class TycheSettings(BaseSettings):
     llm_concurrency: int = 5  # Max parallel LLM calls
     csp_strike_preference: str = "near_21ema"  # "near_21ema", "otm_target", or "legacy"
 
+    # --- Candidate Ranking ---
+    ranking_mode: str = "legacy"  # "legacy" or "composite"
+    ranking_weight_conviction: float = 1.0
+    ranking_weight_ema_proximity: float = 1.0
+    ranking_weight_trend_persistence: float = 0.8
+    ranking_weight_liquidity: float = 0.6
+
+    # --- Regime Scaling ---
+    regime_scaling_enabled: bool = False
+    regime_vol_normal_threshold: float = 0.20
+    regime_vol_high_threshold: float = 0.30
+
+    # --- Overlap Policy ---
+    overlap_policy_enabled: bool = False
+    overlap_net_exposure_cap_pct: float = 25.0
+    overlap_small_add_max_pct: float = 15.0
+
+    # --- Pre-Allocator Pool ---
+    pre_allocator_pool_size: int = 0  # 0 = disabled (uses top_n); >0 = feed allocator this many
+
     # --- Scan Persistence ---
     scan_retention_count: int = 5
 
@@ -112,6 +138,16 @@ class TycheSettings(BaseSettings):
     order_monitor_interval_min: int = 15
     midday_review_time: str = "12:30"
     eod_journal_time: str = "15:50"
+
+    # --- Options Chain Snapshots ---
+    options_snapshot_enabled: bool = True
+    options_snapshot_time: str = "16:10"  # after OHLCV refresh (16:02) and exit monitor (16:05)
+    options_snapshot_max_expirations: int = 2
+    options_snapshot_min_dte: int = 1
+    options_snapshot_max_dte: int = 45
+    options_snapshot_concurrency: int = 10
+    options_snapshot_rpm: int = 120  # Tradier hard limit
+    options_snapshot_min_market_cap: float = 5e9  # $5B
 
     # --- Watchlist ---
     watchlist_symbols: list[str] = Field(default_factory=list)

@@ -135,8 +135,19 @@ async def _fetch_range(
     return {"dates_fetched": dates_fetched, "bars_stored": total_bars}
 
 
-async def _fetch_meta(polygon: PolygonClient, meta: TickerMetaStore) -> int:
-    """Refresh ticker reference metadata (market cap, exchange, type)."""
+async def _fetch_meta(
+    polygon: PolygonClient,
+    meta: TickerMetaStore,
+    backfill_caps: bool = True,
+    cap_concurrency: int = 20,
+    cap_rpm: int = 500,
+) -> int:
+    """Refresh ticker reference metadata (market cap, exchange, type).
+
+    When backfill_caps is True, also fetches market caps from the per-ticker
+    detail endpoint for any tickers that ended up with market_cap == 0
+    (the list endpoint omits this field).
+    """
     click.echo("Fetching ticker metadata...")
     try:
         ticker_infos = await polygon.get_tickers(
@@ -145,6 +156,18 @@ async def _fetch_meta(polygon: PolygonClient, meta: TickerMetaStore) -> int:
         if ticker_infos:
             count = meta.write_meta(ticker_infos)
             click.echo(f"  Stored metadata for {count:,} tickers")
+
+            if backfill_caps and meta.exists:
+                from tyche.market_data.data_store import _backfill_market_caps
+
+                click.echo("Backfilling market caps from detail endpoint...")
+                updated = await _backfill_market_caps(
+                    polygon, meta,
+                    concurrency=cap_concurrency,
+                    rate_limit_rpm=cap_rpm,
+                )
+                click.echo(f"  Market caps updated for {updated:,} tickers")
+
             return count
     except Exception as exc:
         click.echo(f"  Warning: metadata fetch failed — {exc}", err=True)
@@ -352,6 +375,7 @@ async def _run(
     intraday_tickers: str | None = None,
     no_conviction: bool = False,
     institutional: bool = False,
+    skip_market_cap_backfill: bool = False,
 ) -> None:
     settings = TycheSettings()
     store = OHLCVStore(data_dir=settings.data_dir)
@@ -382,9 +406,18 @@ async def _run(
         rate_limit_rpm=settings.polygon_rate_limit_rpm,
     )
 
+    backfill_caps = not skip_market_cap_backfill
+    cap_concurrency = settings.polygon_market_cap_concurrency
+    cap_rpm = settings.polygon_rate_limit_rpm
+
     if days is not None:
         click.echo(f"Full bootstrap: {days} calendar days back")
-        result = await bootstrap_ohlcv(polygon, store, days=days, meta_store=meta_store)
+        result = await bootstrap_ohlcv(
+            polygon, store, days=days, meta_store=meta_store,
+            backfill_market_caps=backfill_caps,
+            market_cap_concurrency=cap_concurrency,
+            market_cap_rpm=cap_rpm,
+        )
         click.echo(f"\nDone: {result['dates_fetched']} days, {result['bars_stored']:,} bars, "
                     f"{result['tickers_found']:,} tickers, {result['tickers_meta']:,} metadata")
     else:
@@ -403,13 +436,23 @@ async def _run(
             click.echo(f"Already up to date (latest: {from_date - timedelta(days=1)}, "
                         f"last trading day: {to_date})")
             if meta:
-                await _fetch_meta(polygon, meta_store)
+                await _fetch_meta(
+                    polygon, meta_store,
+                    backfill_caps=backfill_caps,
+                    cap_concurrency=cap_concurrency,
+                    cap_rpm=cap_rpm,
+                )
         else:
             result = await _fetch_range(polygon, store, from_date, to_date)
             click.echo(f"\nDone: {result['dates_fetched']} days, {result['bars_stored']:,} bars added")
 
             if meta:
-                await _fetch_meta(polygon, meta_store)
+                await _fetch_meta(
+                    polygon, meta_store,
+                    backfill_caps=backfill_caps,
+                    cap_concurrency=cap_concurrency,
+                    cap_rpm=cap_rpm,
+                )
 
     if intraday:
         explicit = (
@@ -521,6 +564,8 @@ async def _run_conviction_batch(
               help="Skip conviction batch after OHLCV ingest.")
 @click.option("--institutional", is_flag=True, default=False,
               help="Backfill institutional ownership (yfinance) for all CS tickers in meta store.")
+@click.option("--skip-market-cap-backfill", is_flag=True, default=False,
+              help="Skip automatic market-cap backfill from per-ticker detail endpoint.")
 def main(
     from_date: click.DateTime | None,
     to_date: click.DateTime | None,
@@ -531,11 +576,15 @@ def main(
     intraday_tickers: str | None,
     no_conviction: bool,
     institutional: bool,
+    skip_market_cap_backfill: bool,
 ) -> None:
     """Ingest OHLCV daily bars, intraday bars, and ticker metadata from Polygon.io."""
     fd = from_date.date() if from_date else None
     td = to_date.date() if to_date else None
-    asyncio.run(_run(fd, td, days, meta, status, intraday, intraday_tickers, no_conviction, institutional))
+    asyncio.run(_run(
+        fd, td, days, meta, status, intraday, intraday_tickers,
+        no_conviction, institutional, skip_market_cap_backfill,
+    ))
 
 
 if __name__ == "__main__":
