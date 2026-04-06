@@ -11,7 +11,7 @@ alwaysApply: false
 ## Full Filter Pipeline (order matters)
 
 ```
-Market cap >= $5B (TickerMetaStore, tickers with no data pass through)
+Market cap >= $4B (TickerMetaStore, tickers with no data pass through)
     → Valid exchange (NYSE/NASDAQ)
     → Price >= $15
     → Volume >= 500K avg daily

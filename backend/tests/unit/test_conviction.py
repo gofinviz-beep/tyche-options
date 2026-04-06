@@ -186,6 +186,76 @@ class TestConvictionEngine:
         signal = engine.analyze("ST", _make_ohlcv(_uptrend(80, gain=0.8)))
         assert signal.days_above_both_emas > 0
 
+    def test_ema_50_computed(self, engine):
+        signal = engine.analyze("E50", _make_ohlcv(_uptrend(80, gain=1.0)))
+        assert signal.ema_50 > 0
+        assert isinstance(signal.ema_50_slope, float)
+
+    def test_ema_50_slope_rising_in_uptrend(self, engine):
+        signal = engine.analyze("E50U", _make_ohlcv(_uptrend(80, gain=1.0)))
+        assert signal.ema_50_slope > 0
+
+    def test_ema_50_slope_falling_in_downtrend(self, engine):
+        signal = engine.analyze("E50D", _make_ohlcv(_downtrend(80)))
+        assert signal.ema_50_slope < 0
+
+    def test_rsi_14_computed(self, engine):
+        signal = engine.analyze("RSI", _make_ohlcv(_uptrend(80, gain=1.0)))
+        assert 0 < signal.rsi_14 <= 100
+
+    def test_rsi_14_high_in_uptrend(self, engine):
+        signal = engine.analyze("RSIU", _make_ohlcv(_uptrend(80, gain=1.0)))
+        assert signal.rsi_14 > 50
+
+    def test_rsi_14_low_in_downtrend(self, engine):
+        signal = engine.analyze("RSID", _make_ohlcv(_downtrend(80)))
+        assert signal.rsi_14 < 50
+
+    def test_new_fields_in_to_dict(self, engine):
+        signal = engine.analyze("TD", _make_ohlcv(_uptrend(80)))
+        d = signal.to_dict()
+        assert "ema_50" in d
+        assert "ema_50_slope" in d
+        assert "rsi_14" in d
+
+    def test_new_fields_in_feature_signal_to_dict(self):
+        fe = ConvictionFeatureEngine(ema_fast=8, ema_slow=21)
+        feature = fe.analyze("FD", _make_ohlcv(_uptrend(80)))
+        d = feature.to_dict()
+        assert "ema_50" in d
+        assert "ema_50_slope" in d
+        assert "rsi_14" in d
+
+    def test_insufficient_data_has_zero_new_fields(self, engine):
+        signal = engine.analyze("SHORT", _make_ohlcv([100.0] * 10))
+        assert signal.ema_50 == 0.0
+        assert signal.ema_50_slope == 0.0
+        assert signal.rsi_14 == 0.0
+
+
+class TestComputeRsi:
+    """Tests for the compute_rsi helper function."""
+
+    def test_pure_gain(self):
+        from tyche.conviction.features import compute_rsi
+        close = pd.Series([float(i) for i in range(1, 30)])
+        assert compute_rsi(close, 14) > 90
+
+    def test_pure_loss(self):
+        from tyche.conviction.features import compute_rsi
+        close = pd.Series([float(30 - i) for i in range(30)])
+        assert compute_rsi(close, 14) < 10
+
+    def test_flat(self):
+        from tyche.conviction.features import compute_rsi
+        close = pd.Series([50.0] * 30)
+        assert compute_rsi(close, 14) == 100.0  # no loss → RSI = 100
+
+    def test_insufficient_data_returns_50(self):
+        from tyche.conviction.features import compute_rsi
+        close = pd.Series([100.0, 101.0])
+        assert compute_rsi(close, 14) == 50.0
+
 
 class TestComputePriorStreak:
     """Tests for _compute_prior_streak static method."""

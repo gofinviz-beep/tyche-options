@@ -9,11 +9,14 @@ The conviction system uses a three-layer architecture to separate data-derived f
 ```
 conviction/
 ├── features.py    — ConvictionFeatureEngine + FeatureSignal + TrendState + GateResult
-│                    Pure EMA/trend computation. Own cache + Parquet disk store.
+│                    Pure EMA/trend computation (8/21/50 EMA + RSI).
+│                    Own cache + Parquet disk store.
 │                    Shared by both options and stocks pipelines.
 ├── csp_policy.py  — CSPEligibilityPolicy
 │                    Stateless CSP gate evaluation on FeatureSignal objects.
 │                    No cache. Only used by options pipeline.
+├── alerts.py      — PullbackAlert detection from ConvictionSignal objects.
+│                    Drives stock buy recommendations and email notifications.
 └── engine.py      — ConvictionEngine + ConvictionSignal (backward-compat wrapper)
                      Delegates to FeatureEngine + CSPPolicy. Re-exports TrendState,
                      GateResult, compute_ema, compute_slope for import compat.
@@ -28,7 +31,16 @@ conviction/
 
 ## Purpose
 
-The conviction engine is the primary stock screening gate. It computes 8-day and 21-day Exponential Moving Averages on daily closes, classifies the trend state, and determines whether a stock is eligible for selling Cash-Secured Puts via one of two paths: the **uptrend path** (stock above both EMAs) or the **pullback path** (stock pulling back to EMA support in a confirmed uptrend). The pullback path was validated through backtesting — 76.8% win rate across 35,324 trades on $5B+ market cap stocks with 5-day DTE and strikes 5% below the support EMA.
+The conviction engine is the primary stock screening gate. It computes 8-day, 21-day, and 50-day Exponential Moving Averages plus RSI(14) on daily closes, classifies the trend state, and determines whether a stock is eligible for selling Cash-Secured Puts via one of two paths: the **uptrend path** (stock above both EMAs) or the **pullback path** (stock pulling back to EMA support in a confirmed uptrend). The pullback path was validated through backtesting — 76.8% win rate across 35,324 trades on $4B+ market cap stocks with 5-day DTE and strikes 5% below the support EMA.
+
+### Supplementary Indicators (Informational, Not Gates)
+
+In addition to the core 8/21 EMA logic, `FeatureSignal` includes:
+
+- **`ema_50` / `ema_50_slope`:** 50-day EMA value and 3-point regression slope. A rising 50-EMA confirms the structural trend is intact. A pullback to 8/21 EMA while the 50-EMA is falling may indicate the larger trend is reversing.
+- **`rsi_14`:** 14-period RSI (Wilder smoothing). RSI 40–60 during a pullback = healthy pullback with structural strength. RSI < 30 = oversold/broken momentum. RSI > 70 = overbought.
+
+These are **not** CSP eligibility gates — they are exposed as filterable columns in the UI conviction tables (inline DataTable column filters). The user applies them as discretionary filters when screening candidates.
 
 ## Trend State Classification
 
@@ -170,7 +182,7 @@ Before the conviction engine runs, stocks are filtered by:
 
 | Filter | Threshold | Source |
 |---|---|---|
-| Market cap | >= $5 Billion | TickerMetaStore (Polygon) |
+| Market cap | >= $4 Billion | TickerMetaStore (Polygon) |
 | Exchange | NYSE, NASDAQ (XNYS, XNAS, XNMS, XASE, ARCX, BATS) | TickerMetaStore |
 | Price | >= $15 | OHLCVStore (latest close) |
 | Average volume | >= 500,000 shares/day | OHLCVStore (20-day avg) |
@@ -233,7 +245,7 @@ If you change any conviction threshold:
 Feature signals are optionally persisted to `data/conviction_signals.parquet` via the `ConvictionSignalStore`:
 
 - **Format:** Parquet (consistent with OHLCVStore, TickerMetaStore)
-- **Contents:** Data-derived fields only (EMAs, slopes, volumes, streaks) — no CSP gates or conviction levels
+- **Contents:** Data-derived fields only (8/21/50 EMAs, slopes, RSI, volumes, streaks) — no CSP gates or conviction levels
 - **Eviction:** Auto-invalidated when OHLCV date changes. Explicit `clear()` on data refresh.
 - **Warm-on-restart:** `ConvictionFeatureEngine.analyze_batch()` loads from disk if in-memory cache is empty
 - **Config-safe:** CSP gates are recomputed from stored features using current settings, so config changes take effect without cache flush

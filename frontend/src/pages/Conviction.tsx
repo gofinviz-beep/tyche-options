@@ -61,6 +61,18 @@ const signalColumns: DataTableColumn<ConvictionSignal>[] = [
         variant={TREND_VARIANT[r.trend_state] ?? "neutral"}
       />
     ),
+    filter: {
+      type: "select",
+      placeholder: "All",
+      options: [
+        { value: "strong_uptrend", label: "Strong Uptrend" },
+        { value: "uptrend", label: "Uptrend" },
+        { value: "pullback_to_8ema", label: "Pullback 8-EMA" },
+        { value: "pullback_to_21ema", label: "Pullback 21-EMA" },
+        { value: "consolidation", label: "Consolidation" },
+        { value: "downtrend", label: "Downtrend" },
+      ],
+    },
   },
   {
     key: "conviction_level",
@@ -79,6 +91,16 @@ const signalColumns: DataTableColumn<ConvictionSignal>[] = [
           {r.conviction_level}
         </span>
       );
+    },
+    filter: {
+      type: "select",
+      placeholder: "All",
+      options: [
+        { value: "3", label: "High" },
+        { value: "2", label: "Medium" },
+        { value: "1", label: "Low" },
+        { value: "0", label: "None" },
+      ],
     },
   },
   {
@@ -105,6 +127,17 @@ const signalColumns: DataTableColumn<ConvictionSignal>[] = [
         {formatMarketCap(r.market_cap)}
       </span>
     ),
+    filter: {
+      type: "min",
+      placeholder: "All",
+      options: [
+        { value: "4e9", label: "$4B" },
+        { value: "10e9", label: "$10B" },
+        { value: "50e9", label: "$50B" },
+        { value: "100e9", label: "$100B" },
+        { value: "200e9", label: "$200B" },
+      ],
+    },
   },
   {
     key: "institutional_pct",
@@ -117,6 +150,17 @@ const signalColumns: DataTableColumn<ConvictionSignal>[] = [
       const pct = r.institutional_pct * 100;
       const color = pct >= 60 ? "text-emerald-600" : pct >= 40 ? "text-amber-600" : "text-red-500";
       return <span className={`font-mono text-xs ${color}`}>{pct.toFixed(0)}%</span>;
+    },
+    filter: {
+      type: "min",
+      placeholder: "All",
+      options: [
+        { value: "0.4", label: "40%" },
+        { value: "0.5", label: "50%" },
+        { value: "0.6", label: "60%" },
+        { value: "0.7", label: "70%" },
+        { value: "0.8", label: "80%" },
+      ],
     },
   },
   {
@@ -134,6 +178,56 @@ const signalColumns: DataTableColumn<ConvictionSignal>[] = [
       ) : (
         <span className="text-gray-300">—</span>
       ),
+  },
+  {
+    key: "rsi_14",
+    header: "RSI",
+    accessor: (r) => r.rsi_14,
+    sortable: true,
+    align: "right",
+    render: (r) => {
+      if (r.last_close <= 0) return <span className="text-gray-300">—</span>;
+      const color = r.rsi_14 < 30 ? "text-red-600" : r.rsi_14 < 40 ? "text-amber-600" : r.rsi_14 > 70 ? "text-purple-600" : "text-gray-700";
+      return <span className={`font-mono text-xs ${color}`}>{r.rsi_14.toFixed(0)}</span>;
+    },
+    filter: {
+      type: "range",
+      minOptions: [
+        { value: "30", label: "30" },
+        { value: "40", label: "40" },
+        { value: "50", label: "50" },
+      ],
+      maxOptions: [
+        { value: "40", label: "40" },
+        { value: "50", label: "50" },
+        { value: "60", label: "60" },
+        { value: "70", label: "70" },
+      ],
+    },
+  },
+  {
+    key: "ema_50_slope",
+    header: "50-EMA",
+    accessor: (r) => r.ema_50_slope,
+    sortable: true,
+    align: "right",
+    render: (r) => {
+      if (r.last_close <= 0) return <span className="text-gray-300">—</span>;
+      const rising = r.ema_50_slope > 0;
+      return (
+        <span className={`font-mono text-xs ${rising ? "text-emerald-600" : "text-red-500"}`}>
+          {rising ? "▲" : "▼"} {Math.abs(r.ema_50_slope).toFixed(2)}
+        </span>
+      );
+    },
+    filter: {
+      type: "boolean",
+      placeholder: "All",
+      options: [
+        { value: "true", label: "Rising ▲" },
+        { value: "false", label: "Falling ▼" },
+      ],
+    },
   },
   {
     key: "days_above_both_emas",
@@ -196,16 +290,18 @@ export function Conviction() {
     manualScan.mutate(symbols || undefined);
   };
 
-  const pullbackEligible = scanData?.signals.filter(
+  const allSignals = scanData?.signals ?? [];
+
+  const pullbackEligible = allSignals.filter(
     (s) => s.csp_eligible && s.trend_state.startsWith("pullback"),
-  ) ?? [];
-  const uptrendEligible = scanData?.signals.filter(
+  );
+  const uptrendEligible = allSignals.filter(
     (s) => s.csp_eligible && !s.trend_state.startsWith("pullback"),
-  ) ?? [];
-  const pullbackNotEligible = scanData?.signals.filter(
+  );
+  const pullbackNotEligible = allSignals.filter(
     (s) => !s.csp_eligible && s.trend_state.startsWith("pullback"),
-  ) ?? [];
-  const eligible = scanData?.signals.filter((s) => s.csp_eligible) ?? [];
+  );
+  const eligible = allSignals.filter((s) => s.csp_eligible);
 
   const storeReady = !!status?.exists;
 
@@ -529,6 +625,9 @@ function SignalDetail({ signal: s }: { signal: ConvictionSignal }) {
             ) : (
               <MetricRow label="Days Above" value={`${s.days_above_both_emas}d`} />
             )}
+            <MetricRow label="EMA 50" value={`$${s.ema_50.toFixed(2)}`} />
+            <MetricRow label="50-EMA Slope" value={`${s.ema_50_slope > 0 ? "▲" : "▼"} ${Math.abs(s.ema_50_slope).toFixed(4)}`} />
+            <MetricRow label="RSI (14)" value={s.rsi_14.toFixed(1)} />
             <MetricRow label="Mkt Cap" value={formatMarketCap(s.market_cap)} />
             <MetricRow label="Inst. Own" value={formatInstPct(s.institutional_pct)} />
             <MetricRow label="Volume" value={s.latest_volume.toLocaleString()} />

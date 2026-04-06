@@ -378,6 +378,14 @@ const pullbackColumns: DataTableColumn<PullbackAlert>[] = [
         variant={r.alert_type === "pullback_21ema" ? "danger" : "info"}
       />
     ),
+    filter: {
+      type: "select",
+      placeholder: "All",
+      options: [
+        { value: "pullback_21ema", label: "21-EMA" },
+        { value: "pullback_8ema", label: "8-EMA" },
+      ],
+    },
   },
   {
     key: "conviction_level",
@@ -390,6 +398,15 @@ const pullbackColumns: DataTableColumn<PullbackAlert>[] = [
         variant={CONVICTION_VARIANT[r.conviction_level] ?? "neutral"}
       />
     ),
+    filter: {
+      type: "select",
+      placeholder: "All",
+      options: [
+        { value: "3", label: "High" },
+        { value: "2", label: "Medium" },
+        { value: "1", label: "Low" },
+      ],
+    },
   },
   {
     key: "last_close",
@@ -412,6 +429,16 @@ const pullbackColumns: DataTableColumn<PullbackAlert>[] = [
         {r.market_cap ? formatMarketCap(r.market_cap) : "—"}
       </span>
     ),
+    filter: {
+      type: "min",
+      placeholder: "All",
+      options: [
+        { value: "4e9", label: "$4B" },
+        { value: "10e9", label: "$10B" },
+        { value: "50e9", label: "$50B" },
+        { value: "200e9", label: "$200B" },
+      ],
+    },
   },
   {
     key: "institutional_pct",
@@ -426,6 +453,17 @@ const pullbackColumns: DataTableColumn<PullbackAlert>[] = [
           : "—"}
       </span>
     ),
+    filter: {
+      type: "min",
+      placeholder: "All",
+      options: [
+        { value: "0.4", label: "40%" },
+        { value: "0.5", label: "50%" },
+        { value: "0.6", label: "60%" },
+        { value: "0.7", label: "70%" },
+        { value: "0.8", label: "80%" },
+      ],
+    },
   },
   {
     key: "exchange",
@@ -437,8 +475,56 @@ const pullbackColumns: DataTableColumn<PullbackAlert>[] = [
     ),
   },
   {
+    key: "rsi_14",
+    header: "RSI",
+    accessor: (r) => r.rsi_14,
+    sortable: true,
+    align: "right",
+    render: (r) => {
+      const color = r.rsi_14 < 30 ? "text-red-600" : r.rsi_14 < 40 ? "text-amber-600" : r.rsi_14 > 70 ? "text-purple-600" : "text-gray-700";
+      return <span className={`font-mono text-xs ${color}`}>{r.rsi_14.toFixed(0)}</span>;
+    },
+    filter: {
+      type: "range",
+      minOptions: [
+        { value: "30", label: "30" },
+        { value: "40", label: "40" },
+        { value: "50", label: "50" },
+      ],
+      maxOptions: [
+        { value: "40", label: "40" },
+        { value: "50", label: "50" },
+        { value: "60", label: "60" },
+        { value: "70", label: "70" },
+      ],
+    },
+  },
+  {
+    key: "ema_50_slope",
+    header: "50-EMA",
+    accessor: (r) => r.ema_50_slope,
+    sortable: true,
+    align: "right",
+    render: (r) => {
+      const rising = r.ema_50_slope > 0;
+      return (
+        <span className={`font-mono text-xs ${rising ? "text-emerald-600" : "text-red-500"}`}>
+          {rising ? "▲" : "▼"} {Math.abs(r.ema_50_slope).toFixed(2)}
+        </span>
+      );
+    },
+    filter: {
+      type: "boolean",
+      placeholder: "All",
+      options: [
+        { value: "true", label: "Rising ▲" },
+        { value: "false", label: "Falling ▼" },
+      ],
+    },
+  },
+  {
     key: "ema_values",
-    header: "8-EMA / 21-EMA",
+    header: "8 / 21 EMA",
     accessor: (r) => r.ema_8,
     render: (r) => (
       <span className="text-xs text-gray-600">
@@ -458,6 +544,14 @@ const pullbackColumns: DataTableColumn<PullbackAlert>[] = [
         {r.volume_declining ? "Yes" : "No"}
       </span>
     ),
+    filter: {
+      type: "boolean",
+      placeholder: "All",
+      options: [
+        { value: "true", label: "Yes" },
+        { value: "false", label: "No" },
+      ],
+    },
   },
   {
     key: "days_above_both_emas",

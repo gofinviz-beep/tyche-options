@@ -57,6 +57,9 @@ async def upsert_snapshots(
             "prior_streak": sig.prior_streak,
             "avg_volume_20d": sig.avg_volume_20d,
             "latest_volume": sig.latest_volume,
+            "ema_50": sig.ema_50,
+            "ema_50_slope": sig.ema_50_slope,
+            "rsi_14": sig.rsi_14,
             "computed_at": now,
         })
 
@@ -64,7 +67,8 @@ async def upsert_snapshots(
         "trend_state", "conviction_level", "raw_conviction", "csp_eligible", "last_close",
         "ema_8", "ema_21", "ema_8_slope", "ema_21_slope",
         "price_to_8ema_pct", "price_to_21ema_pct", "volume_declining",
-        "days_above_both_emas", "prior_streak", "avg_volume_20d", "latest_volume", "computed_at",
+        "days_above_both_emas", "prior_streak", "avg_volume_20d", "latest_volume",
+        "ema_50", "ema_50_slope", "rsi_14", "computed_at",
     }
 
     batch_size = 500

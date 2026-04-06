@@ -28,7 +28,7 @@ from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.strategy.allocator import PortfolioAllocator
 from tyche.strategy.strategies.base import ScoredCandidate
 
-MIN_MARKET_CAP = 5_000_000_000  # $5B
+MIN_MARKET_CAP = 4_000_000_000  # $4B
 MIN_PRICE = 15.0
 AVAILABLE_CAPITAL = 100_000.0
 DTE_MIN = 3
@@ -140,13 +140,14 @@ async def main() -> None:
 
     eligible.sort(key=lambda s: s.price_to_8ema_pct)
 
-    print(f"\n{'Symbol':<8} {'Price':>8} {'8-EMA':>8} {'21-EMA':>8} {'Ext%':>6} {'Days':>5} {'MktCap':>10}")
-    print("-" * 65)
+    print(f"\n{'Symbol':<8} {'Price':>8} {'8-EMA':>8} {'21-EMA':>8} {'Ext%':>6} {'Days':>5} {'RSI':>4} {'50EMA':>6} {'MktCap':>10}")
+    print("-" * 80)
     for s in eligible:
         cap = all_caps.get(s.ticker, 0)
+        ema50_dir = "▲" if s.ema_50_slope > 0 else "▼"
         print(
             f"{s.ticker:<8} ${s.last_close:>7.2f} ${s.ema_8:>7.2f} ${s.ema_21:>7.2f} "
-            f"{s.price_to_8ema_pct:>+5.1f}% {s.days_above_both_emas:>5} ${cap/1e9:>8.1f}B"
+            f"{s.price_to_8ema_pct:>+5.1f}% {s.days_above_both_emas:>5} {s.rsi_14:>4.0f} {ema50_dir:>6} ${cap/1e9:>8.1f}B"
         )
 
     tradier = TradierClient(

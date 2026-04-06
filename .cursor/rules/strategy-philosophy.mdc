@@ -27,7 +27,7 @@ Based on the 8/21 EMA pullback model. Strong stocks in confirmed uptrends pull b
 
 ## Why Pullback CSPs Work
 
-Backtest results on $5B+ market cap stocks (2024-2026 data):
+Backtest results on $4B+ market cap stocks (2024-2026 data):
 - **5% below EMA, 5-day DTE: 76.8% win rate** across 35,324 trades
 - At-the-money pullback CSPs (0% offset) have very high assignment rates — avoid
 - 8-EMA pullbacks outperform 21-EMA pullbacks for CSPs

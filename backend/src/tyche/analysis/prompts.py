@@ -57,6 +57,8 @@ For each candidate, evaluate:
    - Is it pulling back to an EMA? Pullback to 21 EMA with declining volume = high conviction.
    - If below both EMAs, the trend is broken — strongly discourage CSPs.
    - Consider EMA slopes: both sloping up = healthy trend.
+   - 50-EMA slope rising = structural uptrend intact (strongest filter).
+   - RSI(14) in 30-50 range during a pullback = oversold-in-uptrend, textbook bounce setup.
 3. EARNINGS TIMING: Is earnings within the DTE window? What's the risk?
 4. PREMIUM QUALITY: Is the premium worth the collateral tied up?
 5. ANNUALIZED RETURN: What's the return on collateral annualized?

@@ -251,6 +251,9 @@ async def _migrate_conviction_columns() -> None:
         ("conviction_snapshots", "raw_conviction", "VARCHAR(10) DEFAULT 'none'"),
         ("conviction_transitions", "raw_conviction", "VARCHAR(10) DEFAULT 'none'"),
         ("conviction_snapshots", "prior_streak", "INTEGER DEFAULT 0"),
+        ("conviction_snapshots", "ema_50", "REAL DEFAULT 0.0"),
+        ("conviction_snapshots", "ema_50_slope", "REAL DEFAULT 0.0"),
+        ("conviction_snapshots", "rsi_14", "REAL DEFAULT 0.0"),
     ]
 
     async with engine.begin() as conn:

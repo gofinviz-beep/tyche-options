@@ -48,6 +48,9 @@ class PullbackAlert:
     ema_21: float
     ema_8_slope: float
     ema_21_slope: float
+    ema_50: float
+    ema_50_slope: float
+    rsi_14: float
     volume_declining: bool
     institutional_pct: float | None
     institutional_label: str
@@ -68,6 +71,9 @@ class PullbackAlert:
             "ema_21": round(self.ema_21, 4),
             "ema_8_slope": round(self.ema_8_slope, 6),
             "ema_21_slope": round(self.ema_21_slope, 6),
+            "ema_50": round(self.ema_50, 4),
+            "ema_50_slope": round(self.ema_50_slope, 6),
+            "rsi_14": round(self.rsi_14, 2),
             "volume_declining": self.volume_declining,
             "institutional_pct": round(self.institutional_pct, 4) if self.institutional_pct is not None else None,
             "institutional_label": self.institutional_label,
@@ -184,6 +190,9 @@ def detect_pullback_alerts(
             ema_21=sig.ema_21,
             ema_8_slope=sig.ema_8_slope,
             ema_21_slope=sig.ema_21_slope,
+            ema_50=sig.ema_50,
+            ema_50_slope=sig.ema_50_slope,
+            rsi_14=sig.rsi_14,
             volume_declining=sig.volume_declining_on_pullback,
             institutional_pct=inst_pct,
             institutional_label=_institutional_label(inst_pct),

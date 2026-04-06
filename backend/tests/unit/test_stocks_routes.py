@@ -499,6 +499,8 @@ class TestRecommendationsEndpointUnit:
             days_above_emas=7,
             ema_8_slope=0.4,
             ema_21_slope=0.3,
+            ema_50_slope=0.2,
+            rsi_14=45.0,
             related_csp_strike=None,
             has_active_csp=False,
             recommendation="Buy AAPL",

@@ -47,6 +47,10 @@ class ConvictionSnapshot(Base):
     avg_volume_20d: Mapped[int] = mapped_column(Integer, default=0)
     latest_volume: Mapped[int] = mapped_column(Integer, default=0)
 
+    ema_50: Mapped[float] = mapped_column(Float, default=0.0)
+    ema_50_slope: Mapped[float] = mapped_column(Float, default=0.0)
+    rsi_14: Mapped[float] = mapped_column(Float, default=0.0)
+
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     def to_dict(self) -> dict:
@@ -69,6 +73,9 @@ class ConvictionSnapshot(Base):
             "prior_streak": self.prior_streak,
             "avg_volume_20d": self.avg_volume_20d,
             "latest_volume": self.latest_volume,
+            "ema_50": round(self.ema_50 or 0.0, 4),
+            "ema_50_slope": round(self.ema_50_slope or 0.0, 6),
+            "rsi_14": round(self.rsi_14 or 0.0, 2),
             "computed_at": self.computed_at.isoformat() if self.computed_at else None,
         }
 

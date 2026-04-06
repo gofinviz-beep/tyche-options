@@ -135,7 +135,7 @@ class TycheSettings(BaseModel):
     db_dir: str = "db"
 
     # --- Universe Filtering ---
-    min_market_cap_millions: float = 5000.0
+    min_market_cap_millions: float = 4000.0
     min_avg_volume: int = 500_000
     min_stock_price: float = 15.0
 
@@ -236,7 +236,7 @@ class TycheSettings(BaseModel):
     options_snapshot_max_dte: int = 45
     options_snapshot_concurrency: int = 10
     options_snapshot_rpm: int = 120
-    options_snapshot_min_market_cap: float = 5e9
+    options_snapshot_min_market_cap: float = 4e9
 
     # --- Watchlist ---
     watchlist_symbols: list[str] = Field(default_factory=list)

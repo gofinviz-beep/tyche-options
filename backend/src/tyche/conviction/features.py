@@ -86,6 +86,10 @@ class FeatureSignal:
     prior_streak: int = 0
     as_of_date: date | None = None
 
+    ema_50: float = 0.0
+    ema_50_slope: float = 0.0
+    rsi_14: float = 0.0
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "ticker": self.ticker,
@@ -104,12 +108,29 @@ class FeatureSignal:
             "days_above_both_emas": self.days_above_both_emas,
             "prior_streak": self.prior_streak,
             "as_of_date": self.as_of_date.isoformat() if self.as_of_date else None,
+            "ema_50": round(self.ema_50, 4),
+            "ema_50_slope": round(self.ema_50_slope, 6),
+            "rsi_14": round(self.rsi_14, 2),
         }
 
 
 def compute_ema(series: pd.Series, period: int) -> pd.Series:
     """Compute EMA using Wilder-style smoothing (adjust=False)."""
     return series.ewm(span=period, adjust=False).mean()
+
+
+def compute_rsi(close: pd.Series, period: int = 14) -> float:
+    """Compute RSI using Wilder smoothing (ewm with alpha=1/period)."""
+    if len(close) < period + 1:
+        return 50.0
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
+    last_loss = float(loss.iloc[-1])
+    if last_loss == 0:
+        return 100.0
+    rs = float(gain.iloc[-1]) / last_loss
+    return 100.0 - (100.0 / (1.0 + rs))
 
 
 def compute_slope(series: pd.Series, periods: int = 3) -> float:
@@ -204,14 +225,19 @@ class ConvictionFeatureEngine:
 
         ema_8 = compute_ema(close, self._fast)
         ema_21 = compute_ema(close, self._slow)
+        ema_50 = compute_ema(close, 50)
 
         last_close = float(close.iloc[-1])
         last_ema_8 = float(ema_8.iloc[-1])
         last_ema_21 = float(ema_21.iloc[-1])
+        last_ema_50 = float(ema_50.iloc[-1])
         last_volume = int(volume.iloc[-1])
 
         ema_8_slope = compute_slope(ema_8)
         ema_21_slope = compute_slope(ema_21)
+        ema_50_slope = compute_slope(ema_50)
+
+        rsi_14 = compute_rsi(close, 14)
 
         price_to_8 = ((last_close - last_ema_8) / last_ema_8 * 100) if last_ema_8 else 0
         price_to_21 = ((last_close - last_ema_21) / last_ema_21 * 100) if last_ema_21 else 0
@@ -265,6 +291,9 @@ class ConvictionFeatureEngine:
             days_above_both_emas=streak,
             prior_streak=prior_streak_val,
             as_of_date=as_of,
+            ema_50=last_ema_50,
+            ema_50_slope=ema_50_slope,
+            rsi_14=rsi_14,
         )
         self._cache[cache_key] = signal
         return signal
@@ -371,6 +400,9 @@ class ConvictionFeatureEngine:
                 days_above_both_emas=streak,
                 prior_streak=prior_streak_val,
                 as_of_date=as_of,
+                ema_50=float(row.get("ema_50", 0.0)),
+                ema_50_slope=float(row.get("ema_50_slope", 0.0)),
+                rsi_14=float(row.get("rsi_14", 0.0)),
             )
             self._cache[signal.ticker.upper()] = signal
             warmed += 1

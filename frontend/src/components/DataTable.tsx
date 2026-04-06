@@ -1,5 +1,18 @@
 import { useState, useMemo, type ReactNode } from "react";
-import { ChevronUp, ChevronDown, Search, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronUp, ChevronDown, Search, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, ListFilter, X } from "lucide-react";
+
+export interface ColumnFilterOption {
+  value: string;
+  label: string;
+}
+
+export interface ColumnFilterConfig {
+  type: "select" | "min" | "max" | "range" | "boolean";
+  options?: ColumnFilterOption[];
+  minOptions?: ColumnFilterOption[];
+  maxOptions?: ColumnFilterOption[];
+  placeholder?: string;
+}
 
 export interface DataTableColumn<T> {
   key: string;
@@ -9,6 +22,7 @@ export interface DataTableColumn<T> {
   align?: "left" | "right" | "center";
   render?: (row: T) => ReactNode;
   width?: string;
+  filter?: ColumnFilterConfig;
 }
 
 interface DataTableProps<T> {
@@ -56,15 +70,70 @@ export function DataTable<T>({
   const [sortKey, setSortKey] = useState<string | null>(defaultSortKey ?? null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">(defaultSortDir);
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
+  const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
+
+  const hasAnyFilter = columns.some((c) => c.filter);
+  const activeFilterCount = Object.values(columnFilters).filter((v) => v && v !== ":").length;
+
+  const setColumnFilter = (key: string, value: string) => {
+    setColumnFilters((prev) => {
+      const next = { ...prev };
+      if (value) next[key] = value;
+      else delete next[key];
+      return next;
+    });
+    setCurrentPage(1);
+  };
+
+  const clearAllFilters = () => {
+    setColumnFilters({});
+    setCurrentPage(1);
+  };
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return data;
-    const q = search.trim().toLowerCase();
-    return data.filter((row) => {
-      const field = searchField ? searchField(row) : "";
-      return field.toLowerCase().includes(q);
+    let rows = data;
+
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      rows = rows.filter((row) => {
+        const field = searchField ? searchField(row) : "";
+        return field.toLowerCase().includes(q);
+      });
+    }
+
+    const filterEntries = Object.entries(columnFilters).filter(([, v]) => v);
+    if (filterEntries.length === 0) return rows;
+
+    return rows.filter((row) => {
+      for (const [key, filterValue] of filterEntries) {
+        const col = columns.find((c) => c.key === key);
+        if (!col?.filter) continue;
+        const cellValue = col.accessor(row);
+        const cfg = col.filter;
+
+        if (cfg.type === "select") {
+          if (String(cellValue ?? "") !== filterValue) return false;
+        } else if (cfg.type === "min") {
+          const threshold = Number(filterValue);
+          if (cellValue == null || Number(cellValue) < threshold) return false;
+        } else if (cfg.type === "max") {
+          const threshold = Number(filterValue);
+          if (cellValue == null || Number(cellValue) > threshold) return false;
+        } else if (cfg.type === "range") {
+          const [minStr, maxStr] = filterValue.split(":");
+          const num = Number(cellValue ?? NaN);
+          if (isNaN(num)) return false;
+          if (minStr && num < Number(minStr)) return false;
+          if (maxStr && num > Number(maxStr)) return false;
+        } else if (cfg.type === "boolean") {
+          const want = filterValue === "true";
+          const actual = cellValue === true || cellValue === 1 || Number(cellValue) > 0;
+          if (actual !== want) return false;
+        }
+      }
+      return true;
     });
-  }, [data, search, searchField]);
+  }, [data, search, searchField, columnFilters, columns]);
 
   const sorted = useMemo(() => {
     if (!sortKey) return filtered;
@@ -126,6 +195,19 @@ export function DataTable<T>({
         </div>
         <div className="flex items-center gap-2 text-xs text-gray-500">
           <span>{sorted.length} result{sorted.length !== 1 ? "s" : ""}</span>
+          {hasAnyFilter && activeFilterCount > 0 && (
+            <>
+              <span className="text-gray-300">|</span>
+              <button
+                onClick={clearAllFilters}
+                className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 hover:bg-blue-100"
+              >
+                <ListFilter className="h-3 w-3" />
+                {activeFilterCount} filter{activeFilterCount > 1 ? "s" : ""}
+                <X className="h-3 w-3" />
+              </button>
+            </>
+          )}
           <span className="text-gray-300">|</span>
           <select
             value={pageSize}
@@ -170,6 +252,21 @@ export function DataTable<T>({
                   </th>
                 ))}
               </tr>
+              {hasAnyFilter && (
+                <tr className="border-b border-gray-200 bg-gray-50/70">
+                  {columns.map((col) => (
+                    <th key={`filter-${col.key}`} className={`px-2 py-1.5 ${alignClass(col.align)}`}>
+                      {col.filter ? (
+                        <ColumnFilterCell
+                          config={col.filter}
+                          value={columnFilters[col.key] ?? ""}
+                          onChange={(v) => setColumnFilter(col.key, v)}
+                        />
+                      ) : null}
+                    </th>
+                  ))}
+                </tr>
+              )}
             </thead>
             <tbody>
               {pageData.map((row) => {
@@ -314,6 +411,122 @@ function PaginationBtn({
       {label}
     </button>
   );
+}
+
+function ColumnFilterCell({
+  config,
+  value,
+  onChange,
+}: {
+  config: ColumnFilterConfig;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const placeholder = config.placeholder ?? "All";
+  const options = config.options ?? [];
+
+  if (config.type === "select") {
+    return (
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`w-full max-w-[110px] rounded border border-gray-200 bg-white px-1.5 py-1 text-[11px] focus:border-blue-400 focus:outline-none ${value ? "text-blue-700 font-medium border-blue-300 bg-blue-50" : "text-gray-400"}`}
+      >
+        <option value="">{placeholder}</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  if (config.type === "min") {
+    return (
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`w-full max-w-[110px] rounded border border-gray-200 bg-white px-1.5 py-1 text-[11px] focus:border-blue-400 focus:outline-none ${value ? "text-blue-700 font-medium border-blue-300 bg-blue-50" : "text-gray-400"}`}
+      >
+        <option value="">{placeholder}</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            ≥ {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  if (config.type === "max") {
+    return (
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`w-full max-w-[110px] rounded border border-gray-200 bg-white px-1.5 py-1 text-[11px] focus:border-blue-400 focus:outline-none ${value ? "text-blue-700 font-medium border-blue-300 bg-blue-50" : "text-gray-400"}`}
+      >
+        <option value="">{placeholder}</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            ≤ {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  if (config.type === "range") {
+    const [curMin, curMax] = (value || ":").split(":");
+    const minOpts = config.minOptions ?? config.options ?? [];
+    const maxOpts = config.maxOptions ?? config.options ?? [];
+    const activeStyle = "text-blue-700 font-medium border-blue-300 bg-blue-50";
+    const inactiveStyle = "text-gray-400";
+    const updateRange = (newMin: string, newMax: string) => {
+      if (!newMin && !newMax) onChange("");
+      else onChange(`${newMin}:${newMax}`);
+    };
+    return (
+      <div className="flex gap-0.5">
+        <select
+          value={curMin}
+          onChange={(e) => updateRange(e.target.value, curMax)}
+          className={`w-full max-w-[64px] rounded-l border border-gray-200 bg-white px-1 py-1 text-[11px] focus:border-blue-400 focus:outline-none ${curMin ? activeStyle : inactiveStyle}`}
+        >
+          <option value="">Min</option>
+          {minOpts.map((o) => (
+            <option key={o.value} value={o.value}>≥{o.label}</option>
+          ))}
+        </select>
+        <select
+          value={curMax}
+          onChange={(e) => updateRange(curMin, e.target.value)}
+          className={`w-full max-w-[64px] rounded-r border border-l-0 border-gray-200 bg-white px-1 py-1 text-[11px] focus:border-blue-400 focus:outline-none ${curMax ? activeStyle : inactiveStyle}`}
+        >
+          <option value="">Max</option>
+          {maxOpts.map((o) => (
+            <option key={o.value} value={o.value}>≤{o.label}</option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+
+  if (config.type === "boolean") {
+    return (
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`w-full max-w-[80px] rounded border border-gray-200 bg-white px-1.5 py-1 text-[11px] focus:border-blue-400 focus:outline-none ${value ? "text-blue-700 font-medium border-blue-300 bg-blue-50" : "text-gray-400"}`}
+      >
+        <option value="">{placeholder}</option>
+        <option value="true">{options[0]?.label ?? "Yes"}</option>
+        <option value="false">{options[1]?.label ?? "No"}</option>
+      </select>
+    );
+  }
+
+  return null;
 }
 
 function pageNumbers(

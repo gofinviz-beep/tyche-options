@@ -39,6 +39,8 @@ class StockBuyRecommendation:
     days_above_emas: int
     ema_8_slope: float
     ema_21_slope: float
+    ema_50_slope: float
+    rsi_14: float
     related_csp_strike: float | None
     has_active_csp: bool
     recommendation: str
@@ -66,6 +68,8 @@ class StockBuyRecommendation:
             "days_above_emas": self.days_above_emas,
             "ema_8_slope": round(self.ema_8_slope, 6),
             "ema_21_slope": round(self.ema_21_slope, 6),
+            "ema_50_slope": round(self.ema_50_slope, 6),
+            "rsi_14": round(self.rsi_14, 2),
             "related_csp_strike": (
                 round(self.related_csp_strike, 2)
                 if self.related_csp_strike is not None
@@ -217,6 +221,8 @@ def generate_stock_recommendations(
             days_above_emas=sig.days_above_both_emas if sig else 0,
             ema_8_slope=alert.ema_8_slope,
             ema_21_slope=alert.ema_21_slope,
+            ema_50_slope=alert.ema_50_slope,
+            rsi_14=alert.rsi_14,
             related_csp_strike=csp_strike,
             has_active_csp=has_csp,
             recommendation=_build_recommendation_text(alert, has_csp, csp_strike),
@@ -293,6 +299,8 @@ def generate_recommendations_from_snapshots(
             days_above_emas=snap.days_above_both_emas or 0,
             ema_8_slope=snap.ema_8_slope,
             ema_21_slope=snap.ema_21_slope,
+            ema_50_slope=getattr(snap, "ema_50_slope", 0.0) or 0.0,
+            rsi_14=getattr(snap, "rsi_14", 0.0) or 0.0,
             related_csp_strike=csp_strike,
             has_active_csp=has_csp,
             recommendation=rec_text,

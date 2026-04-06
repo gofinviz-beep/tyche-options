@@ -49,7 +49,7 @@ from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 DTE = 8
 OTM_PCT = 0.05
 MIN_PRICE = 15.0
-MIN_MARKET_CAP = 5_000_000_000  # $5B
+MIN_MARKET_CAP = 4_000_000_000  # $4B
 MIN_VOLUME = 500_000
 TOP_N_PER_DAY = 10
 

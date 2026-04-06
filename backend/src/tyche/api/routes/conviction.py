@@ -319,6 +319,9 @@ def _signal_to_response(
         days_above_both_emas=s.days_above_both_emas,
         prior_streak=s.prior_streak,
         as_of_date=s.as_of_date.isoformat() if s.as_of_date else None,
+        ema_50=round(s.ema_50, 4),
+        ema_50_slope=round(s.ema_50_slope, 6),
+        rsi_14=round(s.rsi_14, 2),
         market_cap=market_cap if market_cap and market_cap > 0 else None,
         institutional_pct=round(institutional_pct, 4) if institutional_pct is not None else None,
         gate_results=[

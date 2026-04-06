@@ -42,6 +42,9 @@ class ConvictionSignalResponse(BaseModel):
     days_above_both_emas: int
     prior_streak: int = 0
     as_of_date: str | None = None
+    ema_50: float = 0.0
+    ema_50_slope: float = 0.0
+    rsi_14: float = 0.0
     market_cap: float | None = None
     institutional_pct: float | None = None
     gate_results: list[GateResultResponse] = []

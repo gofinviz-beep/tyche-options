@@ -52,7 +52,7 @@ A stock must pass ALL three:
 
 ## Pre-Conviction Filters
 
-- Market cap >= $5B (from TickerMetaStore; **tickers with no market cap data pass through** — only tickers with valid data below threshold are excluded)
+- Market cap >= $4B (from TickerMetaStore; **tickers with no market cap data pass through** — only tickers with valid data below threshold are excluded)
 - Exchange in {XNYS, XNAS, XNMS, XASE, ARCX, BATS}
 - Price >= $15
 - Average volume >= 500K shares/day

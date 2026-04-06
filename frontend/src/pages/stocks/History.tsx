@@ -208,6 +208,8 @@ export function ConvictionHistory() {
                       <th className="pb-2 pr-3">21-EMA</th>
                       <th className="pb-2 pr-3">% to 8</th>
                       <th className="pb-2 pr-3">% to 21</th>
+                      <th className="pb-2 pr-3">RSI</th>
+                      <th className="pb-2 pr-3">50-EMA</th>
                       <th className="pb-2 pr-3">Days Above</th>
                       <th className="pb-2">Conviction</th>
                     </tr>
@@ -243,6 +245,16 @@ export function ConvictionHistory() {
                         </td>
                         <td className="py-1.5 pr-3">
                           {s.price_to_21ema_pct.toFixed(2)}%
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          <span className={s.rsi_14 < 30 ? "text-red-600" : s.rsi_14 < 40 ? "text-amber-600" : s.rsi_14 > 70 ? "text-purple-600" : ""}>
+                            {s.rsi_14.toFixed(0)}
+                          </span>
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          <span className={s.ema_50_slope > 0 ? "text-emerald-600" : "text-red-500"}>
+                            {s.ema_50_slope > 0 ? "▲" : "▼"}
+                          </span>
                         </td>
                         <td className="py-1.5 pr-3">
                           {s.days_above_both_emas}

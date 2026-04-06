@@ -39,8 +39,11 @@ alwaysApply: true
 - **`POST /stocks/ohlcv/refresh` returns all zeros when up-to-date.** Early return in `bootstrap_ohlcv` short-circuits before counting tickers. Not an error — means no new data to fetch.
 - **Options chain snapshots are persisted daily.** `OptionsChainStore` saves live Tradier chains to `data/options_chains/{TICKER}.parquet` with `snapshot_date` column. Scheduled at 4:10 PM ET via `schedule_options_snapshot`. Deduped on `(snapshot_date, expiration, strike, option_type)`. Re-running `ingest_options.py` for the same day is safe. Tradier hard-limits at 120 RPM — full ingestion of ~1,100 tickers takes ~30 minutes.
 - **`MarketPremiumModel` is hybrid.** When `--premium-source market` is used in `backtest_pullback_csp.py`, real chain data is used where available (nearest snapshot within 7 days) and simulation (`iv_proxy`) fills the gaps. Hit rate is reported at backtest end. With only a few snapshot dates, most trades use fallback — this improves as snapshots accumulate daily.
-- **Options snapshot config is env-driven.** `TYCHE_OPTIONS_SNAPSHOT_ENABLED`, `TYCHE_OPTIONS_SNAPSHOT_TIME`, `TYCHE_OPTIONS_SNAPSHOT_RPM`, `TYCHE_OPTIONS_SNAPSHOT_MIN_MARKET_CAP`, etc. Default: enabled, 4:10 PM ET, 120 RPM, $5B min cap.
+- **Options snapshot config is env-driven.** `TYCHE_OPTIONS_SNAPSHOT_ENABLED`, `TYCHE_OPTIONS_SNAPSHOT_TIME`, `TYCHE_OPTIONS_SNAPSHOT_RPM`, `TYCHE_OPTIONS_SNAPSHOT_MIN_MARKET_CAP`, etc. Default: enabled, 4:10 PM ET, 120 RPM, $4B min cap.
 - **Tradier rate limit is 120 RPM (hard).** Cannot be increased. The `options_snapshot_concurrency` (default 10) pipelines requests within this budget but does not exceed it.
+- **50-EMA and RSI(14) are computed in `ConvictionFeatureEngine`.** `ema_50`, `ema_50_slope`, and `rsi_14` fields exist on `FeatureSignal`, `ConvictionSignal`, `ConvictionSnapshot`, `PullbackAlert`, and `StockBuyRecommendation`. Persisted to `conviction.db` and `conviction_signals.parquet`. Exposed as filterable columns (inline `range`/`boolean` filters in DataTable headers) on Stocks Conviction, Options Conviction, and Stocks Dashboard pages. These are informational features for human filtering — they are NOT hardcoded CSP eligibility gates.
+- **Market cap baseline is $4B** (changed from $5B). Default `min_market_cap_millions = 4000` in `config.py`. Backtest scripts use matching `MIN_MARKET_CAP = 4e9`.
+- **DataTable supports inline column filters.** Column definitions can include a `filter` config (`select`, `min`, `max`, `range`, `boolean`). Filter row renders below headers. All filters AND together. Active filter count + clear button in toolbar. Used on conviction and pullback tables.
 
 ## Frontend
 
@@ -69,7 +72,7 @@ alwaysApply: true
 
 ## Testing
 
-- **796 unit tests, 72% overall coverage.** Run with `cd backend && pytest tests/unit/`.
+- **824 unit tests, 72% overall coverage.** Run with `cd backend && pytest tests/unit/`.
 - **`morning_scan.py` and `analysis/client.py` are at 100% coverage.** Every error branch, timing path, retry/fallback, and LLM integration path is tested.
 - **MockBroker provides deterministic test data.** Uses PL and AAPL positions with realistic prices. Located in `broker/mock.py`.
 - **Tests never hit real APIs.** External calls (Tradier, Gemini, yfinance) are mocked via `unittest.mock.AsyncMock` / `MagicMock`.

@@ -135,12 +135,17 @@ class EmailNotifier:
         for p in ema_21_pullbacks + ema_8_pullbacks:
             ema_type = "21-EMA" if p.trend_state == "pullback_to_21ema" else "8-EMA"
             severity_color = "#dc2626" if p.trend_state == "pullback_to_21ema" else "#6b7280"
+            rsi_val = getattr(p, "rsi_14", 0)
+            ema50_slope = getattr(p, "ema_50_slope", 0)
+            ema50_arrow = "▲" if ema50_slope > 0 else "▼"
             pullback_rows += f"""
             <tr style="border-bottom:1px solid #e5e7eb;">
                 <td style="padding:8px;font-weight:600;">{p.ticker}</td>
                 <td style="padding:8px;"><span style="color:{severity_color}">{ema_type}</span></td>
                 <td style="padding:8px;">${p.last_close:.2f}</td>
                 <td style="padding:8px;">${p.ema_8:.2f} / ${p.ema_21:.2f}</td>
+                <td style="padding:8px;">{rsi_val:.0f}</td>
+                <td style="padding:8px;">{ema50_arrow}</td>
                 <td style="padding:8px;">{p.conviction_level}</td>
                 <td style="padding:8px;">{'Yes' if p.volume_declining else 'No'}</td>
             </tr>"""
@@ -172,6 +177,8 @@ class EmailNotifier:
                         <th style="padding:8px;">Type</th>
                         <th style="padding:8px;">Price</th>
                         <th style="padding:8px;">8/21 EMA</th>
+                        <th style="padding:8px;">RSI</th>
+                        <th style="padding:8px;">50-EMA</th>
                         <th style="padding:8px;">Conviction</th>
                         <th style="padding:8px;">Vol Declining</th>
                     </tr>
@@ -227,6 +234,10 @@ class EmailNotifier:
 
             inst_display = f"{a.institutional_pct * 100:.1f}%" if a.institutional_pct else "N/A"
 
+            rsi_val = getattr(a, "rsi_14", 0)
+            ema50_slope = getattr(a, "ema_50_slope", 0)
+            ema50_arrow = "▲" if ema50_slope > 0 else "▼"
+
             rows += f"""
             <tr style="border-bottom:1px solid #e5e7eb;">
                 <td style="padding:12px 8px;font-weight:600;">{a.ticker}</td>
@@ -234,13 +245,15 @@ class EmailNotifier:
                 <td style="padding:12px 8px;">{a.alert_type.replace('_', ' ').title()}</td>
                 <td style="padding:12px 8px;">${a.last_close:.2f}</td>
                 <td style="padding:12px 8px;">${a.ema_8:.2f} / ${a.ema_21:.2f}</td>
+                <td style="padding:12px 8px;">{rsi_val:.0f}</td>
+                <td style="padding:12px 8px;">{ema50_arrow}</td>
                 <td style="padding:12px 8px;">${a.stop_loss_level:.2f}</td>
                 <td style="padding:12px 8px;">{'✓' if a.volume_declining else '✗'}</td>
                 <td style="padding:12px 8px;">{inst_display}</td>
                 <td style="padding:12px 8px;">{a.position_size_hint}</td>
             </tr>
             <tr style="border-bottom:2px solid #e5e7eb;">
-                <td colspan="9" style="padding:4px 8px 12px;color:#6b7280;font-size:13px;">
+                <td colspan="11" style="padding:4px 8px 12px;color:#6b7280;font-size:13px;">
                     {a.suggested_action}
                 </td>
             </tr>"""
@@ -267,6 +280,8 @@ class EmailNotifier:
                             <th style="padding:8px;">Type</th>
                             <th style="padding:8px;">Price</th>
                             <th style="padding:8px;">8/21 EMA</th>
+                            <th style="padding:8px;">RSI</th>
+                            <th style="padding:8px;">50-EMA</th>
                             <th style="padding:8px;">Stop</th>
                             <th style="padding:8px;">Vol↓</th>
                             <th style="padding:8px;">Inst%</th>

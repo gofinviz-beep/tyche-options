@@ -77,6 +77,9 @@ CONVICTION_SIGNAL_SCHEMA = pa.schema(
         ("latest_volume", pa.int64()),
         ("days_above_both_emas", pa.int64()),
         ("prior_streak", pa.int64()),
+        ("ema_50", pa.float64()),
+        ("ema_50_slope", pa.float64()),
+        ("rsi_14", pa.float64()),
     ]
 )
 
@@ -760,6 +763,9 @@ class ConvictionSignalStore:
                 "latest_volume": sig.latest_volume,
                 "days_above_both_emas": sig.days_above_both_emas,
                 "prior_streak": sig.prior_streak,
+                "ema_50": getattr(sig, "ema_50", 0.0),
+                "ema_50_slope": getattr(sig, "ema_50_slope", 0.0),
+                "rsi_14": getattr(sig, "rsi_14", 0.0),
             })
 
         if not rows:

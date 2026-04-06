@@ -85,6 +85,9 @@ export interface ConvictionSignal {
   days_above_both_emas: number;
   prior_streak: number;
   as_of_date?: string;
+  ema_50: number;
+  ema_50_slope: number;
+  rsi_14: number;
   market_cap: number | null;
   institutional_pct: number | null;
   gate_results: GateResult[];
@@ -499,6 +502,9 @@ export interface PullbackAlert {
   ema_21: number;
   ema_8_slope: number;
   ema_21_slope: number;
+  ema_50: number;
+  ema_50_slope: number;
+  rsi_14: number;
   volume_declining: boolean;
   institutional_pct: number | null;
   institutional_label: string;
@@ -531,6 +537,8 @@ export interface StockBuyRecommendation {
   days_above_emas: number;
   ema_8_slope: number;
   ema_21_slope: number;
+  ema_50_slope: number;
+  rsi_14: number;
   related_csp_strike: number | null;
   has_active_csp: boolean;
   recommendation: string;
@@ -584,6 +592,9 @@ export interface ConvictionSnapshot {
   days_above_both_emas: number;
   avg_volume_20d: number;
   latest_volume: number;
+  ema_50: number;
+  ema_50_slope: number;
+  rsi_14: number;
   computed_at: string | null;
   market_cap: number | null;
   institutional_pct: number | null;

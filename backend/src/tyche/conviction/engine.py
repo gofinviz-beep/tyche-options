@@ -27,6 +27,7 @@ from tyche.conviction.features import (  # noqa: F401
     GateResult,
     FeatureSignal,
     compute_ema,
+    compute_rsi,
     compute_slope,
     ConvictionFeatureEngine,
 )
@@ -62,6 +63,10 @@ class ConvictionSignal:
     prior_streak: int = 0
     as_of_date: date | None = None
 
+    ema_50: float = 0.0
+    ema_50_slope: float = 0.0
+    rsi_14: float = 0.0
+
     gate_results: list[GateResult] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -84,6 +89,9 @@ class ConvictionSignal:
             "days_above_both_emas": self.days_above_both_emas,
             "prior_streak": self.prior_streak,
             "as_of_date": self.as_of_date.isoformat() if self.as_of_date else None,
+            "ema_50": round(self.ema_50, 4),
+            "ema_50_slope": round(self.ema_50_slope, 6),
+            "rsi_14": round(self.rsi_14, 2),
             "gate_results": [g.to_dict() for g in self.gate_results] if self.gate_results else [],
         }
 
@@ -109,6 +117,9 @@ def _feature_to_signal(feature: FeatureSignal, policy_result: dict) -> Convictio
         days_above_both_emas=feature.days_above_both_emas,
         prior_streak=feature.prior_streak,
         as_of_date=feature.as_of_date,
+        ema_50=feature.ema_50,
+        ema_50_slope=feature.ema_50_slope,
+        rsi_14=feature.rsi_14,
         gate_results=policy_result["gate_results"],
     )
 
