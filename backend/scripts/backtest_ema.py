@@ -42,7 +42,7 @@ from tyche.backtest.execution import (
 )
 from tyche.backtest.premium import PremiumModel, get_premium_model
 from tyche.backtest.walk_forward import WalkForwardRunner, WindowResult
-from tyche.config import TycheSettings
+from tyche.config import get_settings
 from tyche.conviction.engine import ConvictionEngine
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 
@@ -103,7 +103,7 @@ def run_backtest(
     train_days: int = 126,
     test_days: int = 63,
 ) -> None:
-    settings = TycheSettings()
+    settings = get_settings()
     store = OHLCVStore(data_dir=settings.data_dir)
     meta_store = TickerMetaStore(data_dir=settings.data_dir)
     engine = ConvictionEngine(

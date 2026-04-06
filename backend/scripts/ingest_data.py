@@ -24,7 +24,7 @@ import structlog
 
 sys.path.insert(0, "src")
 
-from tyche.config import TycheSettings
+from tyche.config import TycheSettings, get_settings
 from tyche.conviction.engine import ConvictionEngine
 from tyche.market_data.data_store import IntradayStore, OHLCVStore, TickerMetaStore, bootstrap_ohlcv
 from tyche.market_data.polygon import PolygonClient
@@ -377,7 +377,7 @@ async def _run(
     institutional: bool = False,
     skip_market_cap_backfill: bool = False,
 ) -> None:
-    settings = TycheSettings()
+    settings = get_settings()
     store = OHLCVStore(data_dir=settings.data_dir)
     meta_store = TickerMetaStore(data_dir=settings.data_dir)
     intraday_store = IntradayStore(data_dir=settings.data_dir)

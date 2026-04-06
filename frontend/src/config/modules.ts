@@ -42,7 +42,6 @@ export const modules: AppModule[] = [
       { path: "/intents", label: "Intents", icon: FileCheck },
       { path: "/orders", label: "Orders", icon: ShoppingCart },
       { path: "/monitor", label: "Monitor", icon: Activity },
-      { path: "/settings", label: "Settings", icon: Settings },
     ],
   },
   {
@@ -64,3 +63,7 @@ export const modules: AppModule[] = [
     pages: [{ path: "", label: "Companies", icon: BookOpen }],
   },
 ];
+
+export const globalPages = [
+  { path: "/settings", label: "Settings", icon: Settings },
+] as const;

@@ -35,7 +35,7 @@ from datetime import datetime
 
 sys.path.insert(0, "src")
 
-from tyche.config import TycheSettings
+from tyche.config import TycheSettings, get_settings
 from tyche.market_data.data_store import OHLCVStore, OptionsChainStore, TickerMetaStore
 from tyche.workflow.options_snapshot import run_options_snapshot
 
@@ -191,5 +191,5 @@ Examples:
 
 if __name__ == "__main__":
     args = _parse_args()
-    settings = TycheSettings()
+    settings = get_settings()
     asyncio.run(_run(args, settings))

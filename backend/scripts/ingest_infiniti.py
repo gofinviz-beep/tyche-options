@@ -20,7 +20,7 @@ import pyarrow.parquet as pq
 
 sys.path.insert(0, "src")
 
-from tyche.config import TycheSettings
+from tyche.config import get_settings
 from tyche.market_data.data_store import OHLCV_SCHEMA, OHLCVStore, TickerMetaStore
 
 INFINITI_BASE = Path("/Users/m0m0zk1/Development/python/infiniti/data_extract/ohlcv")
@@ -68,7 +68,7 @@ def run_ingest(
     min_price: float,
     dry_run: bool = False,
 ):
-    settings = TycheSettings()
+    settings = get_settings()
     store = OHLCVStore(data_dir=settings.data_dir)
     meta_store = TickerMetaStore(data_dir=settings.data_dir)
 

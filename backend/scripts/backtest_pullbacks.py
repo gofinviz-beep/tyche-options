@@ -23,7 +23,7 @@ import pandas as pd
 
 sys.path.insert(0, "src")
 
-from tyche.config import TycheSettings
+from tyche.config import get_settings
 from tyche.market_data.data_store import OHLCVStore
 
 EMA_FAST = 8
@@ -304,7 +304,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
 
 
 def run_backtest(workers: int, force: bool):
-    settings = TycheSettings()
+    settings = get_settings()
     store = OHLCVStore(data_dir=settings.data_dir)
 
     if not store.exists:

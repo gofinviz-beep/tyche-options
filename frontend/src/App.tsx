@@ -37,7 +37,6 @@ export default function App() {
             <Route path="/options/intents" element={<Intents />} />
             <Route path="/options/orders" element={<Orders />} />
             <Route path="/options/monitor" element={<Monitor />} />
-            <Route path="/options/settings" element={<Settings />} />
 
             {/* Stocks module */}
             <Route path="/stocks" element={<StocksDashboard />} />
@@ -48,6 +47,9 @@ export default function App() {
             {/* Research module */}
             <Route path="/research" element={<ResearchHome />} />
 
+            {/* Global pages */}
+            <Route path="/settings" element={<Settings />} />
+
             {/* Root redirect */}
             <Route path="/" element={<Navigate to="/options" replace />} />
 
@@ -57,7 +59,7 @@ export default function App() {
             <Route path="/intents" element={<Navigate to="/options/intents" replace />} />
             <Route path="/orders" element={<Navigate to="/options/orders" replace />} />
             <Route path="/monitor" element={<Navigate to="/options/monitor" replace />} />
-            <Route path="/settings" element={<Navigate to="/options/settings" replace />} />
+            <Route path="/options/settings" element={<Navigate to="/settings" replace />} />
             <Route path="/options/alerts" element={<Navigate to="/stocks" replace />} />
           </Route>
         </Routes>

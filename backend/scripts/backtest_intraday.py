@@ -32,7 +32,7 @@ import pandas as pd
 
 sys.path.insert(0, "src")
 
-from tyche.config import TycheSettings
+from tyche.config import TycheSettings, get_settings
 from tyche.conviction.engine import ConvictionEngine
 from tyche.market_data.data_store import IntradayStore, OHLCVStore, TickerMetaStore
 from tyche.market_data.polygon import PolygonClient
@@ -531,7 +531,7 @@ def main(
     status: bool,
 ) -> None:
     """Run intraday time-of-day backtest for CSP entry timing."""
-    settings = TycheSettings()
+    settings = get_settings()
     ohlcv_store = OHLCVStore(data_dir=settings.data_dir)
     meta_store = TickerMetaStore(data_dir=settings.data_dir)
     intraday_store = IntradayStore(data_dir=settings.data_dir)

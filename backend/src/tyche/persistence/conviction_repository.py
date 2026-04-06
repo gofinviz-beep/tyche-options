@@ -238,6 +238,22 @@ async def get_snapshots_for_date(
     return list(rows)
 
 
+async def get_latest_snapshot_date() -> date | None:
+    """Return the most recent as_of_date in conviction_snapshots, or None if empty."""
+    async with get_session(DB_NAME) as session:
+        from sqlalchemy import func
+
+        stmt = select(func.max(ConvictionSnapshot.as_of_date))
+        result = await session.execute(stmt)
+        row = result.scalar_one_or_none()
+
+    if row is None:
+        return None
+    if isinstance(row, str):
+        return date.fromisoformat(row)
+    return row
+
+
 async def cleanup_old_snapshots(retention_days: int = 90) -> int:
     """Delete snapshots and transitions older than the retention period."""
     cutoff = date.today() - timedelta(days=retention_days)

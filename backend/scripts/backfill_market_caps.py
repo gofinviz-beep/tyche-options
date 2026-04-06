@@ -20,7 +20,7 @@ import time
 
 sys.path.insert(0, "src")
 
-from tyche.config import TycheSettings
+from tyche.config import get_settings
 from tyche.market_data.data_store import TickerMetaStore
 from tyche.market_data.polygon import PolygonClient
 
@@ -31,7 +31,7 @@ async def run(
     concurrency: int | None = None,
     rpm: int | None = None,
 ) -> None:
-    settings = TycheSettings()
+    settings = get_settings()
     meta_store = TickerMetaStore(data_dir=settings.data_dir)
 
     if not meta_store.exists:

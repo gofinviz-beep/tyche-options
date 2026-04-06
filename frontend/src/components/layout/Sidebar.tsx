@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { PanelLeftClose, PanelLeft, ChevronDown, ChevronRight } from "lucide-react";
-import { modules } from "@/config/modules";
+import { modules, globalPages } from "@/config/modules";
 import type { AppModule } from "@/config/modules";
 
 export function Sidebar() {
@@ -95,8 +95,26 @@ export function Sidebar() {
         ))}
       </nav>
 
-      {/* Bottom: collapse toggle only */}
-      <div className="border-t border-gray-200 px-2 py-3">
+      {/* Global pages + collapse toggle */}
+      <div className="border-t border-gray-200 px-2 py-3 space-y-0.5">
+        {globalPages.map((page) => {
+          const active = location.pathname.startsWith(page.path);
+          return (
+            <Link
+              key={page.path}
+              to={page.path}
+              className={`flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors ${
+                active
+                  ? "bg-blue-50 text-blue-700"
+                  : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+              }`}
+              title={collapsed ? page.label : undefined}
+            >
+              <page.icon className="h-4 w-4 shrink-0" />
+              {!collapsed && <span>{page.label}</span>}
+            </Link>
+          );
+        })}
         <button
           onClick={() => setCollapsed((c) => !c)}
           className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-sm text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"

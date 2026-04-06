@@ -61,7 +61,7 @@ from tyche.backtest.premium import (
     get_premium_model,
 )
 from tyche.backtest.walk_forward import WalkForwardRunner, WindowResult
-from tyche.config import TycheSettings
+from tyche.config import get_settings
 from tyche.market_data.data_store import OHLCVStore, OptionsChainStore, TickerMetaStore
 
 # ── Constants ────────────────────────────────────────────────────────────
@@ -206,7 +206,7 @@ def run_backtest(
     train_days: int = 126,
     test_days: int = 63,
 ) -> None:
-    settings = TycheSettings()
+    settings = get_settings()
     store = OHLCVStore(data_dir=settings.data_dir)
     meta_store = TickerMetaStore(data_dir=settings.data_dir)
 
@@ -778,7 +778,7 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
 
-    settings = TycheSettings()
+    settings = get_settings()
 
     if args.premium_source == "market":
         options_store = OptionsChainStore(data_dir=settings.data_dir)

@@ -317,33 +317,19 @@ export interface SystemConfig {
   risk_limits: Record<string, number>;
   wheel_params: Record<string, number>;
   universe_filters: Record<string, number>;
-  options_scan: Record<string, number>;
+  options_scan: Record<string, number | string>;
+  conviction_engine: Record<string, number>;
+  pullback_csp: Record<string, number | boolean>;
   workflow_schedule: Record<string, string | number>;
+  options_snapshot: Record<string, number | boolean | string>;
+  notifications: Record<string, boolean | string>;
+  llm: Record<string, string>;
+  scan_persistence: Record<string, number>;
   watchlist: string[];
 }
 
 export interface ConfigUpdateRequest {
-  watchlist?: string[];
-  available_capital?: number;
-  max_risk_per_trade_pct?: number;
-  max_account_exposure_pct?: number;
-  max_concentration_per_ticker_pct?: number;
-  max_open_positions?: number;
-  max_new_trades_per_day?: number;
-  max_contracts_per_position?: number;
-  csp_target_dte_min?: number;
-  csp_target_dte_max?: number;
-  cc_target_dte_min?: number;
-  cc_target_dte_max?: number;
-  min_annualized_return_pct?: number;
-  min_market_cap_millions?: number;
-  min_institutional_pct?: number;
-  min_avg_volume?: number;
-  min_stock_price?: number;
-  max_expiration_dates?: number;
-  expiration_mode?: string;
-  strike_range_pct?: number;
-  llm_concurrency?: number;
+  [key: string]: string | number | boolean | string[] | undefined;
 }
 
 export interface OrderPreviewRequest {

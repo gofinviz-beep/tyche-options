@@ -371,9 +371,11 @@ class TestConvictionSnapshotsEndpoint:
         assert resp[1].ticker == "NVDA"
 
     @pytest.mark.asyncio
+    @patch("tyche.api.routes.stocks.get_latest_snapshot_date", new_callable=AsyncMock)
     @patch("tyche.api.routes.stocks.get_snapshots_for_date", new_callable=AsyncMock)
-    async def test_returns_empty(self, mock_snaps):
+    async def test_returns_empty(self, mock_snaps, mock_latest):
         mock_snaps.return_value = []
+        mock_latest.return_value = None
 
         from tyche.api.routes.stocks import get_conviction_snapshots_endpoint
 
@@ -381,8 +383,10 @@ class TestConvictionSnapshotsEndpoint:
         assert len(resp) == 0
 
     @pytest.mark.asyncio
+    @patch("tyche.api.routes.stocks.get_latest_snapshot_date", new_callable=AsyncMock)
     @patch("tyche.api.routes.stocks.get_snapshots_for_date", new_callable=AsyncMock)
-    async def test_falls_back_to_previous_day(self, mock_snaps):
+    async def test_falls_back_to_latest_snapshot_date(self, mock_snaps, mock_latest):
+        mock_latest.return_value = date(2026, 4, 2)
         mock_snaps.side_effect = [[], [_make_snapshot_model()]]
 
         from tyche.api.routes.stocks import get_conviction_snapshots_endpoint
@@ -390,6 +394,21 @@ class TestConvictionSnapshotsEndpoint:
         resp = await get_conviction_snapshots_endpoint(as_of_date=None, meta_store=self._mock_meta_store())
         assert len(resp) == 1
         assert mock_snaps.call_count == 2
+        mock_snaps.assert_called_with(date(2026, 4, 2))
+
+    @pytest.mark.asyncio
+    @patch("tyche.api.routes.stocks.get_latest_snapshot_date", new_callable=AsyncMock)
+    @patch("tyche.api.routes.stocks.get_snapshots_for_date", new_callable=AsyncMock)
+    async def test_no_fallback_when_latest_is_future(self, mock_snaps, mock_latest):
+        """If latest snapshot date >= target, don't retry (avoids infinite loop)."""
+        mock_latest.return_value = date(2026, 4, 5)
+        mock_snaps.return_value = []
+
+        from tyche.api.routes.stocks import get_conviction_snapshots_endpoint
+
+        resp = await get_conviction_snapshots_endpoint(as_of_date=None, meta_store=self._mock_meta_store())
+        assert len(resp) == 0
+        assert mock_snaps.call_count == 1
 
 
 class TestTickerGatesEndpoint:

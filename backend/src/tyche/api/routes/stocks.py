@@ -22,6 +22,7 @@ from tyche.market_data.institutional import (
 )
 from tyche.persistence.conviction_repository import (
     get_active_pullbacks,
+    get_latest_snapshot_date,
     get_snapshots_for_date,
     get_ticker_history,
     get_transitions,
@@ -366,10 +367,9 @@ async def get_conviction_snapshots_endpoint(
 
     snaps = await get_snapshots_for_date(target)
     if not snaps:
-        yesterday = target - timedelta(days=1)
-        while yesterday.weekday() >= 5:
-            yesterday -= timedelta(days=1)
-        snaps = await get_snapshots_for_date(yesterday)
+        latest = await get_latest_snapshot_date()
+        if latest and latest < target:
+            snaps = await get_snapshots_for_date(latest)
 
     tickers = [s.ticker for s in snaps]
     market_caps = meta_store.get_market_caps(tickers) if meta_store.exists else {}

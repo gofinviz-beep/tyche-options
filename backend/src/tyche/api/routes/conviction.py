@@ -152,6 +152,8 @@ async def scan_conviction(
             min_avg_volume=settings.min_avg_volume,
             min_price=settings.min_stock_price,
         )
+        if meta_store.exists:
+            tickers = meta_store.filter_equity_only(tickers)
         logger.info("conviction_dynamic_discovery", candidates=len(tickers))
 
     if not tickers:
@@ -219,7 +221,9 @@ async def scan_conviction(
 
     display_tickers = [s.ticker for s in display_signals]
     market_caps = meta_store.get_market_caps(display_tickers) if meta_store.exists else {}
-    inst_ownership = get_cached_ownership_batch(display_tickers)
+    inst_persisted = meta_store.get_institutional_pcts(display_tickers) if meta_store.exists else {}
+    inst_cached = get_cached_ownership_batch(display_tickers)
+    inst_ownership = {**inst_persisted, **inst_cached}
 
     response = ConvictionScanResponse(
         scan_id=str(uuid.uuid4()),
@@ -263,6 +267,7 @@ async def get_ticker_conviction(
     ticker: str,
     engine: ConvictionEngine = Depends(get_conviction_engine),
     store: OHLCVStore = Depends(get_data_store),
+    meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
 ) -> ConvictionSignalResponse:
     """Get the conviction signal for a single ticker."""
     if not store.exists:
@@ -271,15 +276,21 @@ async def get_ticker_conviction(
             detail="No OHLCV data. Run POST /conviction/bootstrap first.",
         )
 
-    df = store.read_ticker(ticker.upper())
+    t = ticker.upper()
+    df = store.read_ticker(t)
     if df.empty:
         raise HTTPException(
             status_code=404,
-            detail=f"No data found for {ticker.upper()}",
+            detail=f"No data found for {t}",
         )
 
-    signal = engine.analyze(ticker.upper(), df)
-    return _signal_to_response(signal)
+    signal = engine.analyze(t, df)
+    cap = meta_store.get_market_caps([t]).get(t) if meta_store.exists else None
+    inst_pct = (meta_store.get_institutional_pcts([t]) if meta_store.exists else {})
+    inst_cached = get_cached_ownership_batch([t])
+    inst = {**inst_pct, **inst_cached}.get(t)
+
+    return _signal_to_response(signal, market_cap=cap, institutional_pct=inst)
 
 
 def _signal_to_response(

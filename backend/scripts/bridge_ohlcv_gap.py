@@ -18,7 +18,7 @@ from datetime import date, timedelta
 
 sys.path.insert(0, "src")
 
-from tyche.config import TycheSettings
+from tyche.config import get_settings
 from tyche.market_data.data_store import OHLCVStore
 from tyche.market_data.polygon import DailyBar, PolygonClient
 
@@ -35,7 +35,7 @@ def get_trading_days(start: date, end: date) -> list[date]:
 
 
 async def run_bridge(max_days: int, dry_run: bool = False):
-    settings = TycheSettings()
+    settings = get_settings()
     store = OHLCVStore(data_dir=settings.data_dir)
 
     if not store.exists:

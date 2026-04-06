@@ -12,7 +12,7 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 
 ## Module Map
 
-- `config.py` — All settings via `TYCHE_*` env vars (pydantic-settings). Reads `.env` directly — do NOT `source .env` in shell scripts. Includes observability settings: `log_level`, `gcp_project_id`, `otel_service_name`, `otel_enabled`.
+- `config.py` — Split config architecture: `_EnvSettings(BaseSettings)` reads secrets + infrastructure from `.env`; `TycheSettings(BaseModel)` is the full settings model built by `get_settings()` which merges env + `config.db` + defaults. `ConfigStore` (in `persistence/config_store.py`) is the SQLite key-value store for user-editable operational config. `invalidate_settings()` clears the cache after config changes. Do NOT `source .env` in shell scripts.
 - `api/deps.py` — Dependency injection: singleton providers for all services. Includes `get_feature_engine()`, `get_csp_policy()`, and `get_conviction_engine()` (the backward-compat wrapper). Always use `Depends()` in routes.
 - `conviction/features.py` — `ConvictionFeatureEngine` + `FeatureSignal` + `TrendState` + `GateResult`. Pure EMA/trend computation from OHLCV data with its own in-memory cache and optional Parquet disk store. No CSP policy, no gate evaluation. Both options and stocks pipelines consume this.
 - `conviction/csp_policy.py` — `CSPEligibilityPolicy`. Stateless CSP eligibility gate evaluation on `FeatureSignal` objects. No cache, no disk I/O — microseconds per ticker. Only the options pipeline uses this.
@@ -39,7 +39,7 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 - `persistence/scan_repository.py` — Save/load/cleanup scan results across `scans.db`, `candidates.db`, `analyses.db`.
 - `persistence/position_repository.py` — CRUD for `StockPosition` and `ExitSignal`. Auto-looks up backtest profile on position creation to set p75 exit target.
 - `persistence/backtest_repository.py` — Read queries for `PullbackEvent` and `TickerPullbackProfile`.
-- `persistence/conviction_repository.py` — CRUD for conviction snapshots and transitions.
+- `persistence/conviction_repository.py` — CRUD for conviction snapshots and transitions. Includes `get_latest_snapshot_date()` for DB-driven date fallback (handles market holidays).
 - `telemetry.py` — OpenTelemetry configuration (traces + metrics). Pre-creates histograms and counters. GCP exporters when `gcp_project_id` is set, console exporters otherwise.
 - `logging.py` — Structured logging (structlog + JSON). Injects OTel `trace_id`/`span_id` into every log event for Cloud Trace correlation.
 - `api/middleware.py` — `RequestTimingMiddleware` (request duration, `X-Request-Id`, structlog context) and `global_exception_handler` (catches unhandled 500s).
