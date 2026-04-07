@@ -12,6 +12,7 @@
 - **Routes** (`api/routes/`) call services via `Depends()` from `api/deps.py` — never instantiate services directly
 - **Workflows** (`workflow/`) orchestrate multi-step pipelines — they call engines, brokers, and agents
 - **Engines** (`conviction/`, `strategy/`, `risk/`) are testable in isolation. Conviction uses a three-layer architecture: `features.py` (EMA computation + cache), `csp_policy.py` (stateless CSP gates), `engine.py` (backward-compat wrapper). All existing imports from `tyche.conviction.engine` continue to work.
+- **Strategy** (`strategy/`) — `engine.py` parallelizes per-ticker scans via `asyncio.gather` + semaphore(10). `cash_secured_put.py` scores with 6 factors: `annualized_return × liquidity × dte × vrp × iv_rank × trend_confirm`. `allocator.py` adds mega-cap bonus to MILP risk weights.
 - **Clients** (`broker/tradier/`, `analysis/client.py`, `market_data/polygon.py`) wrap external APIs with retry/error handling
 - **Persistence** (`persistence/`) uses distributed SQLite with named engines — `register_engine("scans", url)` → `get_session("scans")`. Includes `position_repository.py` (stock positions), `backtest_repository.py` (pullback profiles), `conviction_repository.py` (snapshots/transitions + `get_latest_snapshot_date()` for holiday-safe date fallback).
 - **Models** (`models/`) — `backtest.py` has both backtest data (`PullbackEvent`, `TickerPullbackProfile`) and position tracking (`StockPosition`, `ExitSignal`)
@@ -25,7 +26,7 @@
 ## Key Conventions
 
 - All API routes are mounted under `/api/v1`; health endpoints at root (`/health`, `/health/ready`)
-- LLM analysis is per-ticker parallel with semaphore control (`llm_concurrency` setting)
+- LLM analysis is optional (off by default, toggle in Scanner UI), per-ticker parallel with semaphore control (`llm_concurrency` setting)
 - Scanner pipeline has 10 timed stages — each records OTel histogram metrics
 - `PipelineStage.duration_ms` and `MorningScanResult.total_duration_ms` track performance
 - Error branches in workflows are swallowed with logging + OTel counter — pipeline continues
@@ -33,7 +34,7 @@
 
 ## Testing
 
-- 556 unit tests in `tests/unit/`, run with `pytest`
+- 952 unit tests in `tests/unit/`, run with `pytest`
 - External APIs are always mocked — no network calls in tests
 - Use `AsyncMock` for async broker/LLM calls, `MagicMock` for data stores
 - `morning_scan.py`, `analysis/client.py` have 100% coverage; `exit_monitor.py` at 95%

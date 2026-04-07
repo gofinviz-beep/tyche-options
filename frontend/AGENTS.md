@@ -22,7 +22,7 @@ Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, 
 
 | Page | Key Hooks |
 |---|---|
-| Scanner (Options) | `useTriggerScan`, `useLatestScan`, `useScanHistory`, `useScanById` |
+| Scanner (Options) | `useTriggerScan` (accepts `enableLlm`), `useLatestScan`, `useScanHistory`, `useScanById` |
 | Conviction (Options) | `useConvictionScan`, `useTriggerConvictionScan` |
 | Intents | `useOrderIntents`, `useApproveIntent`, `useRejectIntent` |
 | Orders | `useOpenOrders`, `useOrderIntents("executed")` |
@@ -45,6 +45,7 @@ Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, 
 - `PipelineFunnel` — filter stage visualization with counts
 - `AllocationSummaryCard` + `AllocationPlayground` — optimizer results + interactive customization
 - `LlmAnalysesCard` — sorted by assignment comfort desc, then confidence desc
+- LLM toggle switch (brain icon) next to "Run Scan" button — off by default to save time/cost
 
 ## Error Handling
 

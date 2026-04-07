@@ -371,7 +371,7 @@ class TestInstitutionalFailure:
     @pytest.mark.asyncio
     async def test_institutional_exception_is_swallowed(self, broker):
         with patch(
-            "tyche.workflow.morning_scan.filter_by_institutional_ownership",
+            "tyche.workflow.morning_scan.filter_by_institutional_ownership_batched",
             new_callable=AsyncMock,
             side_effect=RuntimeError("SEC API down"),
         ):
@@ -722,6 +722,10 @@ class TestFullPipeline:
             watchlist=["PL", "AAPL"],
             portfolio_allocator=PortfolioAllocator(),
             top_n=5,
+            csp_min_bid=0.0,
+            csp_min_premium_pct=0.0,
+            csp_min_oi=0,
+            csp_min_volume=0,
         )
 
         assert result.symbols_scanned == 2

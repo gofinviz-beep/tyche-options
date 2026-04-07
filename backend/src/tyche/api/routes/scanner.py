@@ -133,7 +133,10 @@ async def explore_options(
             if not raw:
                 continue
 
-            filtered = csp.apply_filters(raw, min_oi=1, min_volume=0, max_spread_pct=50.0)
+            filtered = csp.apply_filters(
+                raw, min_oi=1, min_volume=0, max_spread_pct=50.0,
+                min_bid=0.0, min_premium_pct=0.0,
+            )
             scored = csp.score(filtered, capital)
 
             if scored:
@@ -198,6 +201,7 @@ async def trigger_scan(
     top_n: int = Query(default=10, ge=1, le=200),
     symbols: str | None = Query(default=None, description="Comma-separated symbols override"),
     force_refresh: bool = Query(default=False, description="Clear broker cache before scanning"),
+    enable_llm: bool | None = Query(default=None, description="Override LLM analysis (null = use config)"),
     broker: BrokerClient = Depends(get_broker),
     strategy: StrategyEngine = Depends(get_strategy_engine),
     analysis: AnalysisAgent | None = Depends(get_analysis_agent),
@@ -229,6 +233,9 @@ async def trigger_scan(
     else:
         watchlist = settings.watchlist_symbols
 
+    llm_active = enable_llm if enable_llm is not None else settings.scanner_llm_enabled
+    effective_analysis = analysis if llm_active else None
+
     notification_dispatcher = None
     if settings.notification_pullback_alert_enabled:
         from tyche.notification.dispatcher import NotificationDispatcher
@@ -237,7 +244,7 @@ async def trigger_scan(
     result = await run_morning_scan(
         broker=broker,
         strategy_engine=strategy,
-        analysis_agent=analysis,
+        analysis_agent=effective_analysis,
         earnings_client=earnings,
         universe_builder=universe,
         watchlist=watchlist,
@@ -257,6 +264,12 @@ async def trigger_scan(
         pullback_strike_offset_pct=settings.pullback_strike_offset_pct,
         pullback_strike_ceiling_pct=settings.pullback_strike_ceiling_pct,
         earliest_expiration_only=settings.earliest_expiration_only,
+        min_scan_dte=settings.min_scan_dte,
+        target_dte_sweet_spot=settings.target_dte_sweet_spot,
+        csp_min_bid=settings.csp_min_bid,
+        csp_min_premium_pct=settings.csp_min_premium_pct,
+        csp_min_volume=settings.csp_min_volume,
+        csp_min_oi=settings.csp_min_oi,
         min_institutional_pct_stock_buy=settings.min_institutional_pct_stock_buy,
         notification_dispatcher=notification_dispatcher,
     )
@@ -285,6 +298,14 @@ async def trigger_scan(
         "llm_concurrency": settings.llm_concurrency,
         "min_market_cap_millions": settings.min_market_cap_millions,
         "min_institutional_pct": settings.min_institutional_pct,
+        "earliest_expiration_only": settings.earliest_expiration_only,
+        "min_scan_dte": settings.min_scan_dte,
+        "target_dte_sweet_spot": settings.target_dte_sweet_spot,
+        "csp_min_bid": settings.csp_min_bid,
+        "csp_min_premium_pct": settings.csp_min_premium_pct,
+        "csp_min_volume": settings.csp_min_volume,
+        "csp_min_oi": settings.csp_min_oi,
+        "llm_enabled": llm_active,
     }
 
     try:
@@ -358,6 +379,8 @@ def _serialize_scan_result(result: MorningScanResult) -> dict[str, Any]:
                 "dte": c.dte,
                 "bid": c.bid,
                 "ask": c.ask,
+                "mid": c.mid,
+                "bid_ask_spread_pct": c.bid_ask_spread_pct,
                 "premium_per_contract": c.premium_per_contract,
                 "collateral_required": c.collateral_required,
                 "annualized_return_pct": c.annualized_return_pct,

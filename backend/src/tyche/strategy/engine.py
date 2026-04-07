@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -34,49 +35,41 @@ def _next_friday(from_date: date) -> date:
 def target_expiration_dates(
     available_expirations: list[str],
     today: date | None = None,
-    max_expirations: int = 1,
+    max_expirations: int = 2,
+    min_dte: int = 5,
+    target_dte: int = 14,
 ) -> list[str]:
-    """Pick the nearest useful expiration date(s) from Tradier's list.
+    """Pick the most useful expiration date(s) from Tradier's list.
 
-    Rules:
-      - **Sat → Wed**: pick the nearest expiration >= 1 day out.
-        This selects the coming Friday, or the holiday-adjusted
-        Thursday (e.g. Good Friday week where expiration moves to
-        Thursday and Wednesday→Thursday is only 1 DTE).
-      - **Thu or Fri**: skip this week (0-1 DTE is useless), pick the
-        nearest expiration >= 5 days out (next week's cycle).
-      - **Monthly-only tickers** have no weekly expirations, so the
-        nearest monthly is selected regardless of DTE distance.
+    Enforces a minimum DTE floor (default 5 — never target < 5 DTE)
+    and prefers expirations closest to ``target_dte`` (default 14).
+    When ``max_expirations > 1``, returns the N expirations sorted by
+    proximity to the sweet spot rather than purely nearest-first.
 
-    Tradier's expiration list already adjusts for holidays (e.g. returns
-    April 2 instead of April 3 when Good Friday closes markets).
-
-    Returns at most ``max_expirations`` dates, sorted nearest-first.
+    Returns at most ``max_expirations`` dates.
     """
     today = today or date.today()
-    dow = today.weekday()  # Mon=0 … Sun=6
 
-    min_dte = 5 if dow in (3, 4) else 1
-
-    valid = []
+    valid: list[tuple[str, int]] = []
     for exp_str in available_expirations:
         try:
             exp_date = date.fromisoformat(exp_str)
             dte = (exp_date - today).days
             if dte >= min_dte:
-                valid.append(exp_str)
+                valid.append((exp_str, dte))
         except ValueError:
             continue
 
-    valid.sort(key=lambda s: date.fromisoformat(s))
+    valid.sort(key=lambda t: abs(t[1] - target_dte))
 
-    result = valid[:max_expirations]
+    result = [exp_str for exp_str, _ in valid[:max_expirations]]
 
     logger.info(
         "expiration_targeting",
         today=today.isoformat(),
         day=today.strftime("%A"),
         min_dte=min_dte,
+        target_dte=target_dte,
         selected=result,
         available_in_range=len(valid),
     )
@@ -128,9 +121,11 @@ class StrategyEngine:
         available_cash: float,
         earnings_dates: dict[str, date | None] | None = None,
         conviction_signals: dict[str, Any] | None = None,
-        min_oi: int = 10,
-        min_volume: int = 0,
+        min_oi: int = 50,
+        min_volume: int = 10,
         max_spread_pct: float = 15.0,
+        min_bid: float = 0.50,
+        min_premium_pct: float = 0.5,
         top_n: int = 10,
         max_expirations: int = 2,
         strike_range_pct: float = 15.0,
@@ -138,7 +133,9 @@ class StrategyEngine:
         csp_strike_preference: str = "legacy",
         pullback_strike_offset_pct: float = 5.0,
         pullback_strike_ceiling_pct: float = 1.0,
-        earliest_expiration_only: bool = True,
+        earliest_expiration_only: bool = False,
+        min_scan_dte: int = 5,
+        target_dte_sweet_spot: int = 14,
         ranking_mode: str = "legacy",
         ranking_weights: RankingWeights | None = None,
         pre_allocator_pool_size: int = 0,
@@ -167,7 +164,7 @@ class StrategyEngine:
         conviction_signals = conviction_signals or {}
         all_scored: list[ScoredCandidate] = []
 
-        drops = {
+        drops: dict[str, int] = {
             "api_error": 0,
             "no_expirations": 0,
             "no_target_exps": 0,
@@ -184,8 +181,32 @@ class StrategyEngine:
             "symbols_with_candidates": 0,
         }
 
-        for symbol in watchlist:
-            try:
+        vrp_map: dict[str, float] = {}
+        iv_rank_map: dict[str, float] = {}
+        trend_confirm_map: dict[str, bool] = {}
+        if conviction_signals:
+            for sym, sig in conviction_signals.items():
+                v = getattr(sig, "vrp", None)
+                if v is not None:
+                    vrp_map[sym] = v
+                ir = getattr(sig, "iv_rank", None)
+                if ir is not None:
+                    iv_rank_map[sym] = ir
+                ema50 = getattr(sig, "ema_50", 0.0)
+                lc = getattr(sig, "last_close", 0.0)
+                if ema50 > 0 and lc > 0:
+                    trend_confirm_map[sym] = lc >= ema50
+
+        semaphore = asyncio.Semaphore(10)
+
+        async def _scan_symbol(
+            symbol: str,
+        ) -> tuple[list[ScoredCandidate], dict[str, int]]:
+            """Scan a single symbol — runs under semaphore for parallelism."""
+            local_drops: dict[str, int] = {}
+            scored_out: list[ScoredCandidate] = []
+
+            async with semaphore:
                 quote = await broker.get_quote(symbol)
 
                 if quote.last <= 0:
@@ -212,19 +233,22 @@ class StrategyEngine:
 
                 expirations = await broker.get_options_expirations(symbol)
                 if not expirations:
-                    drops["no_expirations"] += 1
-                    continue
+                    local_drops["no_expirations"] = 1
+                    return scored_out, local_drops
 
                 if expiration_mode == "friday_target":
                     target_exps = target_expiration_dates(
-                        expirations, max_expirations=max_expirations,
+                        expirations,
+                        max_expirations=max_expirations,
+                        min_dte=min_scan_dte,
+                        target_dte=target_dte_sweet_spot,
                     )
                 else:
                     target_exps = expirations[:max_expirations]
 
                 if not target_exps:
-                    drops["no_target_exps"] += 1
-                    continue
+                    local_drops["no_target_exps"] = 1
+                    return scored_out, local_drops
 
                 sig = conviction_signals.get(symbol)
                 is_pullback = sig and hasattr(sig, "trend_state") and sig.trend_state in (
@@ -271,7 +295,7 @@ class StrategyEngine:
                     try:
                         chain = await broker.get_options_chain(symbol, exp_str)
                     except Exception:
-                        drops["chain_fetch_failed"] += 1
+                        local_drops["chain_fetch_failed"] = local_drops.get("chain_fetch_failed", 0) + 1
                         logger.warning("chain_fetch_failed", symbol=symbol, expiration=exp_str)
                         continue
 
@@ -279,7 +303,7 @@ class StrategyEngine:
                         chain.underlying_price = quote.last
 
                     if not chain.puts:
-                        drops["empty_chain"] += 1
+                        local_drops["empty_chain"] = local_drops.get("empty_chain", 0) + 1
                         continue
 
                     raw = self.csp.identify_candidates(
@@ -287,7 +311,7 @@ class StrategyEngine:
                     )
 
                     if not raw:
-                        drops["no_puts_in_range"] += 1
+                        local_drops["no_puts_in_range"] = local_drops.get("no_puts_in_range", 0) + 1
                         _dte_min = self.csp._dte_min
                         _dte_max = self.csp._dte_max
                         today = date.today()
@@ -302,10 +326,10 @@ class StrategyEngine:
                                 floor_fail += 1
                             elif c.bid <= 0:
                                 bid_fail += 1
-                        drops["reject_dte"] += dte_fail
-                        drops["reject_itm"] += itm_fail
-                        drops["reject_strike_floor"] += floor_fail
-                        drops["reject_bid_zero"] += bid_fail
+                        local_drops["reject_dte"] = local_drops.get("reject_dte", 0) + dte_fail
+                        local_drops["reject_itm"] = local_drops.get("reject_itm", 0) + itm_fail
+                        local_drops["reject_strike_floor"] = local_drops.get("reject_strike_floor", 0) + floor_fail
+                        local_drops["reject_bid_zero"] = local_drops.get("reject_bid_zero", 0) + bid_fail
                         logger.info(
                             "csp_no_puts_in_range",
                             symbol=symbol,
@@ -322,15 +346,17 @@ class StrategyEngine:
                         continue
 
                     if strike_ceiling is not None:
-                        before_ceiling = len(raw)
                         raw = [c for c in raw if c.strike <= strike_ceiling]
                         if not raw:
-                            drops["ceiling_filtered_all"] += 1
+                            local_drops["ceiling_filtered_all"] = local_drops.get("ceiling_filtered_all", 0) + 1
                             continue
 
-                    filtered = self.csp.apply_filters(raw, min_oi, min_volume, max_spread_pct)
+                    filtered = self.csp.apply_filters(
+                        raw, min_oi, min_volume, max_spread_pct,
+                        min_bid=min_bid, min_premium_pct=min_premium_pct,
+                    )
                     if not filtered:
-                        drops["quality_filtered_all"] += 1
+                        local_drops["quality_filtered_all"] = local_drops.get("quality_filtered_all", 0) + 1
                         logger.debug(
                             "csp_quality_filter_killed_all",
                             symbol=symbol,
@@ -339,12 +365,19 @@ class StrategyEngine:
                             min_oi=min_oi,
                             min_volume=min_volume,
                             max_spread_pct=max_spread_pct,
+                            min_bid=min_bid,
+                            min_premium_pct=min_premium_pct,
                         )
                         continue
 
-                    scored = self.csp.score(filtered, available_cash)
+                    scored = self.csp.score(
+                        filtered, available_cash,
+                        vrp_map=vrp_map,
+                        iv_rank_map=iv_rank_map,
+                        trend_confirm_map=trend_confirm_map,
+                    )
                     if not scored:
-                        drops["insufficient_capital"] += 1
+                        local_drops["insufficient_capital"] = local_drops.get("insufficient_capital", 0) + 1
                         continue
 
                     earnings_date = earnings_dates.get(symbol)
@@ -355,16 +388,26 @@ class StrategyEngine:
                                 earnings_date <= sc.expiration
                             )
 
-                    all_scored.extend(scored)
+                    scored_out.extend(scored)
                     symbol_found_any = True
 
                 if symbol_found_any:
-                    drops["symbols_with_candidates"] += 1
+                    local_drops["symbols_with_candidates"] = 1
 
-            except Exception:
+            return scored_out, local_drops
+
+        tasks = [_scan_symbol(s) for s in watchlist]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for r in results:
+            if isinstance(r, Exception):
                 drops["api_error"] += 1
-                logger.warning("symbol_scan_failed", symbol=symbol, exc_info=True)
+                logger.warning("symbol_scan_failed", exc_info=r)
                 continue
+            scored_list, local_drops = r
+            all_scored.extend(scored_list)
+            for key, val in local_drops.items():
+                drops[key] = drops.get(key, 0) + val
 
         if earliest_expiration_only and all_scored:
             earliest = min(sc.expiration for sc in all_scored)

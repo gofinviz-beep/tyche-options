@@ -88,14 +88,20 @@ class CashSecuredPutStrategy:
     def apply_filters(
         self,
         candidates: list[RawCandidate],
-        min_oi: int = 10,
-        min_volume: int = 0,
+        min_oi: int = 50,
+        min_volume: int = 10,
         max_spread_pct: float = 15.0,
+        min_bid: float = 0.50,
+        min_premium_pct: float = 0.5,
     ) -> list[FilteredCandidate]:
         """Apply deterministic quality filters.
 
-        Open interest is the primary liquidity signal (survives across sessions).
-        Volume is optional — defaults to 0 so early-morning scans are not penalized.
+        Args:
+            min_oi: Minimum open interest (liquidity signal across sessions).
+            min_volume: Minimum daily volume. 0 disables the check.
+            max_spread_pct: Maximum bid-ask spread as pct of midpoint.
+            min_bid: Minimum bid price per share (e.g. 0.50 = $50/contract).
+            min_premium_pct: Minimum bid/strike as pct (premium-to-collateral floor).
         """
         filtered: list[FilteredCandidate] = []
 
@@ -109,7 +115,13 @@ class CashSecuredPutStrategy:
             spread_pct = ((c.ask - c.bid) / c.mid * 100) if c.mid > 0 else 100.0
             filters["max_bid_ask_spread"] = spread_pct <= max_spread_pct
 
-            filters["positive_bid"] = c.bid > 0
+            filters["min_bid"] = c.bid >= min_bid
+
+            if c.strike > 0:
+                premium_pct = (c.bid / c.strike) * 100
+            else:
+                premium_pct = 0.0
+            filters["min_premium_pct"] = premium_pct >= min_premium_pct
 
             if all(filters.values()):
                 fc = FilteredCandidate(
@@ -121,10 +133,26 @@ class CashSecuredPutStrategy:
         return filtered
 
     def score(
-        self, candidates: list[FilteredCandidate], available_cash: float
+        self,
+        candidates: list[FilteredCandidate],
+        available_cash: float,
+        vrp_map: dict[str, float] | None = None,
+        iv_rank_map: dict[str, float] | None = None,
+        trend_confirm_map: dict[str, bool] | None = None,
     ) -> list[ScoredCandidate]:
-        """Score and rank CSP candidates by annualized return on collateral."""
+        """Score and rank CSP candidates by risk-adjusted premium quality.
+
+        Factors beyond annualized return:
+        - **liquidity_factor**: scales to 1.0 at OI >= 1000
+        - **dte_factor**: penalizes < 7 DTE (3 DTE -> 0.43x, 7+ -> 1.0x)
+        - **vrp_factor**: up to 30% bonus for positive VRP tickers
+        - **iv_rank_factor**: 0.7 at rank 0, scales to 1.0 at rank 60+
+        - **trend_confirm_factor**: 0.85 penalty when price < 50-EMA
+        """
         scored: list[ScoredCandidate] = []
+        vrp_map = vrp_map or {}
+        iv_rank_map = iv_rank_map or {}
+        trend_confirm_map = trend_confirm_map or {}
 
         for c in candidates:
             collateral_per_contract = c.strike * 100
@@ -143,9 +171,18 @@ class CashSecuredPutStrategy:
                 return_pct = 0.0
                 annualized = 0.0
 
-            # Composite score: annualized return weighted by liquidity
             liquidity_factor = min(1.0, c.open_interest / 1000)
-            score = annualized * liquidity_factor
+            dte_factor = min(1.0, c.dte / 7)
+            vrp = vrp_map.get(c.symbol, 0.0)
+            vrp_factor = 1.0 + min(0.3, max(0.0, vrp) * 1.0)
+
+            iv_rank = iv_rank_map.get(c.symbol)
+            iv_rank_factor = (0.7 + 0.3 * min(1.0, iv_rank / 60)) if iv_rank is not None else 1.0
+
+            above_50ema = trend_confirm_map.get(c.symbol)
+            trend_confirm_factor = 1.0 if above_50ema is None else (1.0 if above_50ema else 0.85)
+
+            score = annualized * liquidity_factor * dte_factor * vrp_factor * iv_rank_factor * trend_confirm_factor
 
             sc = ScoredCandidate(
                 **{k: getattr(c, k) for k in FilteredCandidate.__dataclass_fields__},

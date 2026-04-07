@@ -78,6 +78,7 @@ def _compute_risk_weight(
     candidate: ScoredCandidate,
     conviction_signals: dict[str, ConvictionSignal] | None = None,
     max_extension_pct: float = 3.0,
+    market_caps: dict[str, float] | None = None,
 ) -> float:
     """Compute a composite risk weight for a candidate.
 
@@ -86,7 +87,8 @@ def _compute_risk_weight(
     - Extension proximity (closer to 8-EMA = safer)
     - Liquidity factor (open interest)
     - Assignment safety (lower |delta| = less likely to be assigned)
-    - Pullback path bonus (1.25x for Path B — 76.8% backtest win rate)
+    - Pullback path bonus (1.25x for Path B -- 76.8% backtest win rate)
+    - Market cap bonus (up to 10% for mega-caps >= $100B)
 
     Lower delta (more OTM) is preferred because the Wheel Strategy's
     primary engine is repeated premium collection with fast capital
@@ -118,7 +120,11 @@ def _compute_risk_weight(
 
     path_w = PULLBACK_PATH_BONUS if is_pullback else 1.0
 
-    return conv_w * ext_w * liq_w * delta_w * path_w
+    market_caps = market_caps or {}
+    mcap = market_caps.get(candidate.symbol, 0.0)
+    cap_w = 1.0 + 0.1 * min(1.0, mcap / 100e9) if mcap > 0 else 1.0
+
+    return conv_w * ext_w * liq_w * delta_w * path_w * cap_w
 
 
 class PortfolioAllocator:
@@ -159,6 +165,7 @@ class PortfolioAllocator:
         available_capital: float = 100_000.0,
         conviction_signals: dict[str, ConvictionSignal] | None = None,
         held_shares: dict[str, int] | None = None,
+        market_caps: dict[str, float] | None = None,
     ) -> AllocationResult:
         """Find the optimal allocation across all candidates.
 
@@ -168,6 +175,7 @@ class PortfolioAllocator:
             available_capital: Cash available for CSP collateral.
             conviction_signals: Conviction data for risk weighting.
             held_shares: Symbol -> shares held (for CC contract limits).
+            market_caps: Symbol -> market cap for mega-cap allocator bonus.
 
         Returns:
             AllocationResult with the optimal trade list.
@@ -186,7 +194,7 @@ class PortfolioAllocator:
 
         premiums = np.array([c.premium_per_contract for c in all_candidates])
         risk_weights = np.array([
-            _compute_risk_weight(c, conviction_signals, self._max_ext_pct)
+            _compute_risk_weight(c, conviction_signals, self._max_ext_pct, market_caps)
             for c in all_candidates
         ])
 

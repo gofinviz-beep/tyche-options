@@ -125,7 +125,13 @@ async def run_morning_scan(
     csp_strike_preference: str = "legacy",
     pullback_strike_offset_pct: float = 5.0,
     pullback_strike_ceiling_pct: float = 1.0,
-    earliest_expiration_only: bool = True,
+    earliest_expiration_only: bool = False,
+    min_scan_dte: int = 5,
+    target_dte_sweet_spot: int = 14,
+    csp_min_bid: float = 0.50,
+    csp_min_premium_pct: float = 0.5,
+    csp_min_volume: int = 10,
+    csp_min_oi: int = 50,
     min_institutional_pct_stock_buy: float = 0.50,
     notification_dispatcher: Any | None = None,
     allow_missing_market_cap: bool = True,
@@ -225,6 +231,7 @@ async def run_morning_scan(
         return result
 
     # ── 2b. Filter by market cap (equity only — excludes ETFs) ──────
+    market_caps: dict[str, float] = {}
     if ticker_meta_store and ticker_meta_store.exists and min_market_cap > 0:
         t0 = time.perf_counter()
         before_equity = len(screened_symbols)
@@ -407,6 +414,10 @@ async def run_morning_scan(
             available_cash=effective_buying_power,
             earnings_dates=earnings_dates,
             conviction_signals=result.conviction_signals,
+            min_oi=csp_min_oi,
+            min_volume=csp_min_volume,
+            min_bid=csp_min_bid,
+            min_premium_pct=csp_min_premium_pct,
             top_n=top_n,
             max_expirations=max_expiration_dates,
             strike_range_pct=strike_range_pct,
@@ -415,6 +426,8 @@ async def run_morning_scan(
             pullback_strike_offset_pct=pullback_strike_offset_pct,
             pullback_strike_ceiling_pct=pullback_strike_ceiling_pct,
             earliest_expiration_only=earliest_expiration_only,
+            min_scan_dte=min_scan_dte,
+            target_dte_sweet_spot=target_dte_sweet_spot,
             pre_allocator_pool_size=pre_allocator_pool_size,
         )
         result.csp_candidates = csp_pool[:top_n]
@@ -481,6 +494,7 @@ async def run_morning_scan(
                 available_capital=effective_buying_power,
                 conviction_signals=conviction_data_for_alloc,
                 held_shares=held_shares,
+                market_caps=market_caps,
             )
             alloc_dur = time.perf_counter() - t0
             _record_stage("portfolio_allocation", alloc_dur)

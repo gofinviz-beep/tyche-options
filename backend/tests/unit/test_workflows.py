@@ -28,6 +28,10 @@ class TestMorningScan:
             universe_builder=UniverseBuilder(min_avg_volume=0),
             watchlist=["PL", "AAPL"],
             top_n=5,
+            csp_min_bid=0.0,
+            csp_min_premium_pct=0.0,
+            csp_min_oi=0,
+            csp_min_volume=0,
         )
         assert result.scan_id
         assert result.symbols_scanned == 2

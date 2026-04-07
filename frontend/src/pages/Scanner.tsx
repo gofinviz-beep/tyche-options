@@ -50,6 +50,7 @@ export function Scanner() {
   const { data: convictionData } = useConvictionScan(undefined, true);
   const triggerScan = useTriggerScan();
   const [symbols, setSymbols] = useState("");
+  const [enableLlm, setEnableLlm] = useState(false);
   const [selectedScanId, setSelectedScanId] = useState<string | null>(null);
   const { data: selectedScan } = useScanById(selectedScanId);
 
@@ -58,7 +59,11 @@ export function Scanner() {
 
   const handleScan = () => {
     setSelectedScanId(null);
-    triggerScan.mutate({ symbols: symbols || undefined, topN: TOP_N_LIMIT });
+    triggerScan.mutate({
+      symbols: symbols || undefined,
+      topN: TOP_N_LIMIT,
+      enableLlm: enableLlm || undefined,
+    });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -86,8 +91,11 @@ export function Scanner() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Scanner</h1>
           <p className="mt-1 text-sm text-gray-500">
-            Full pipeline: fundamental screen → conviction filter → options
-            chain scan → LLM analysis
+            Fundamental screen → conviction filter → options chain scan →
+            allocator{" "}
+            <span className="text-gray-400">
+              (+ optional LLM analysis)
+            </span>
           </p>
         </div>
       </div>
@@ -119,6 +127,25 @@ export function Scanner() {
               className="w-full rounded-lg border border-gray-300 bg-white py-2.5 pl-10 pr-4 text-sm text-gray-900 placeholder-gray-400 transition-colors focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
             />
           </div>
+          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 px-3 py-2.5 text-xs text-gray-500 select-none transition-colors hover:border-gray-300">
+            <Brain className="h-3.5 w-3.5 shrink-0" />
+            <span className="whitespace-nowrap">LLM</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={enableLlm}
+              onClick={() => setEnableLlm(!enableLlm)}
+              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                enableLlm ? "bg-blue-600" : "bg-gray-300"
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                  enableLlm ? "translate-x-4" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+          </label>
           <button
             onClick={handleScan}
             disabled={triggerScan.isPending}

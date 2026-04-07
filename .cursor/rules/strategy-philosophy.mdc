@@ -62,6 +62,33 @@ IV Rank and VRP are computed from historical options data and displayed in the c
 
 If assigned on a pullback CSP, the stock was bought at 5% below a rising EMA on a quality large-cap name — exactly where we'd want to own it anyway. Enter the wheel: sell covered calls on the assigned shares.
 
+## CSP Scanner Quality Controls
+
+The scanner enforces minimum quality thresholds to avoid penny-premium noise:
+
+- **`min_scan_dte = 5`** — never target < 5 DTE (too short for meaningful premium)
+- **`target_dte_sweet_spot = 14`** — prefer expirations closest to 14 DTE
+- **`max_expiration_dates = 2`** — consider up to 2 expiration dates per ticker
+- **`earliest_expiration_only = false`** — allow multiple expirations (was true)
+- **`csp_min_bid = 0.50`** — reject bids below $0.50/share ($50/contract)
+- **`csp_min_premium_pct = 0.5`** — premium must be ≥ 0.5% of collateral
+- **`csp_min_volume = 10`** — require at least 10 daily volume
+- **`csp_min_oi = 50`** — require at least 50 open interest
+
+### Scoring Formula
+
+`score = annualized_return × liquidity_factor × dte_factor × vrp_factor × iv_rank_factor × trend_confirm_factor`
+
+- **liquidity_factor**: `min(1.0, OI / 1000)` — scales to 1.0 at OI ≥ 1000
+- **dte_factor**: `min(1.0, DTE / 7)` — penalizes < 7 DTE (3 DTE → 0.43×)
+- **vrp_factor**: `1.0 + min(0.3, max(0, VRP))` — up to 30% bonus for positive VRP
+- **iv_rank_factor**: `0.7 + 0.3 × min(1.0, IV_Rank / 60)` — IV Rank 60+ gets full score; rank 0 gets 30% drag. Missing data = no penalty.
+- **trend_confirm_factor**: `1.0` if price ≥ 50-EMA, `0.85` if price < 50-EMA (15% penalty for selling puts below long-term trend). Missing data = no penalty.
+
+### Allocator Risk Weight (Market Cap Bonus)
+
+The MILP allocator adds a mega-cap preference: `cap_w = 1.0 + 0.1 × min(1.0, market_cap / $100B)` — up to 10% allocator weight bonus for mega-caps ($100B+).
+
 ## Config Knobs
 
 | Setting | Default | Purpose |
@@ -72,3 +99,9 @@ If assigned on a pullback CSP, the stock was bought at 5% below a rising EMA on 
 | `max_extension_pct` | `3.0` | Max % above 8-EMA for uptrend path |
 | `min_days_above_emas` | `5` | Min streak for uptrend path (Gate 3a) |
 | `max_days_above_emas` | `10` | Max streak for uptrend path (Gate 3a) |
+| `min_scan_dte` | `5` | Min DTE for expiration targeting |
+| `target_dte_sweet_spot` | `14` | Preferred DTE for expiration selection |
+| `csp_min_bid` | `0.50` | Min bid per share for CSP candidates |
+| `csp_min_premium_pct` | `0.5` | Min premium as % of collateral |
+| `csp_min_volume` | `10` | Min daily volume for CSP contracts |
+| `csp_min_oi` | `50` | Min open interest for CSP contracts |

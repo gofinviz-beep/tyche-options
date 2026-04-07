@@ -40,10 +40,12 @@ export function useTriggerScan() {
     mutationFn: ({
       symbols,
       topN,
+      enableLlm,
     }: {
       symbols?: string;
       topN?: number;
-    }) => api.scanner.triggerScan(symbols, topN),
+      enableLlm?: boolean;
+    }) => api.scanner.triggerScan(symbols, topN, enableLlm),
     onSuccess: (data) => {
       queryClient.setQueryData(["scanner", "latest"], data);
       queryClient.invalidateQueries({ queryKey: ["scanner"] });

@@ -57,9 +57,10 @@ export const api = {
   },
 
   scanner: {
-    triggerScan: (symbols?: string, topN = 5) => {
+    triggerScan: (symbols?: string, topN = 5, enableLlm?: boolean) => {
       const params = new URLSearchParams({ top_n: String(topN) });
       if (symbols) params.set("symbols", symbols);
+      if (enableLlm !== undefined) params.set("enable_llm", String(enableLlm));
       return request<import("@/types").ScanResult>(`/scanner/scan?${params}`, {
         method: "POST",
       });

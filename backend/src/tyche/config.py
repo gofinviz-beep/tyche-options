@@ -174,7 +174,7 @@ class TycheSettings(BaseModel):
     pullback_strike_ceiling_pct: float = 1.0
 
     # --- Expiration Strategy ---
-    earliest_expiration_only: bool = True
+    earliest_expiration_only: bool = False
 
     # --- Capital ---
     available_capital: float = 100_000.0
@@ -197,11 +197,20 @@ class TycheSettings(BaseModel):
     min_annualized_return_pct: float = 15.0
 
     # --- Options Scan ---
-    max_expiration_dates: int = 1
+    max_expiration_dates: int = 2
     expiration_mode: str = "friday_target"
     strike_range_pct: float = 15.0
     llm_concurrency: int = 5
     csp_strike_preference: str = "near_21ema"
+    scanner_llm_enabled: bool = False
+    min_scan_dte: int = 5
+    target_dte_sweet_spot: int = 14
+
+    # --- CSP Quality Filters ---
+    csp_min_bid: float = 0.50
+    csp_min_premium_pct: float = 0.5
+    csp_min_volume: int = 10
+    csp_min_oi: int = 50
 
     # --- Candidate Ranking ---
     ranking_mode: str = "legacy"
