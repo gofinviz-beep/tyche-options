@@ -109,7 +109,12 @@ backend/
 │   │   └── walk_forward.py      # Rolling walk-forward backtest harness
 │   │
 │   ├── market_data/
-│   │   ├── data_store.py        # OHLCVStore + TickerMetaStore + OptionsChainStore + ConvictionSignalStore (Parquet) + bootstrap_ohlcv()
+│   │   ├── data_store.py        # OHLCVStore + TickerMetaStore + OptionsChainStore + ConvictionSignalStore + bootstrap_ohlcv() (bars only) + refresh_ticker_meta() (infrequent metadata)
+│   │   ├── derived_store.py     # DerivedMetricsStore — IV Rank, VRP, RV per ticker (data/derived/)
+│   │   ├── options_history_store.py  # OptionsHistoryStore — full daily options chain (data/options_history/)
+│   │   ├── historical_iv_store.py    # HistoricalIVStore — ATM put IV per ticker (data/options_iv/)
+│   │   ├── iv_calculator.py     # Black-Scholes inverse solver for IV from option prices
+│   │   ├── occ_parser.py        # OCC options symbol parser
 │   │   ├── earnings.py          # EarningsCalendarClient (Alpha Vantage)
 │   │   ├── institutional.py     # Institutional ownership filter
 │   │   ├── polygon.py           # PolygonClient — grouped daily, ticker reference, market caps

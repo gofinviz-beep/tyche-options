@@ -88,6 +88,10 @@ export interface ConvictionSignal {
   ema_50: number;
   ema_50_slope: number;
   rsi_14: number;
+  iv_rank: number | null;
+  iv_percentile: number | null;
+  atm_iv: number | null;
+  vrp: number | null;
   market_cap: number | null;
   institutional_pct: number | null;
   gate_results: GateResult[];
@@ -505,6 +509,10 @@ export interface PullbackAlert {
   ema_50: number;
   ema_50_slope: number;
   rsi_14: number;
+  iv_rank: number | null;
+  iv_percentile: number | null;
+  atm_iv: number | null;
+  vrp: number | null;
   volume_declining: boolean;
   institutional_pct: number | null;
   institutional_label: string;
@@ -539,6 +547,10 @@ export interface StockBuyRecommendation {
   ema_21_slope: number;
   ema_50_slope: number;
   rsi_14: number;
+  iv_rank: number | null;
+  iv_percentile: number | null;
+  atm_iv: number | null;
+  vrp: number | null;
   related_csp_strike: number | null;
   has_active_csp: boolean;
   recommendation: string;
@@ -595,6 +607,10 @@ export interface ConvictionSnapshot {
   ema_50: number;
   ema_50_slope: number;
   rsi_14: number;
+  iv_rank: number | null;
+  iv_percentile: number | null;
+  atm_iv: number | null;
+  vrp: number | null;
   computed_at: string | null;
   market_cap: number | null;
   institutional_pct: number | null;

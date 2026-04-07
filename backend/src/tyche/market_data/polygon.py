@@ -563,6 +563,153 @@ class PolygonClient:
         )
         return all_contracts
 
+    # ── Options Contracts Reference ─────────────────────────────────────
+
+    async def list_options_contracts(
+        self,
+        underlying_ticker: str,
+        contract_type: str = "put",
+        expired: bool = True,
+        expiration_date_gte: date | None = None,
+        expiration_date_lte: date | None = None,
+        strike_price_gte: float | None = None,
+        strike_price_lte: float | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """List options contracts from the reference endpoint.
+
+        Uses /v3/reference/options/contracts with pagination.
+        Returns raw contract dicts with keys: ticker, underlying_ticker,
+        contract_type, expiration_date, strike_price, exercise_style.
+        """
+        params: dict[str, Any] = {
+            "underlying_ticker": underlying_ticker,
+            "contract_type": contract_type,
+            "expired": str(expired).lower(),
+            "limit": limit,
+        }
+        if expiration_date_gte:
+            params["expiration_date.gte"] = expiration_date_gte.strftime("%Y-%m-%d")
+        if expiration_date_lte:
+            params["expiration_date.lte"] = expiration_date_lte.strftime("%Y-%m-%d")
+        if strike_price_gte is not None:
+            params["strike_price.gte"] = strike_price_gte
+        if strike_price_lte is not None:
+            params["strike_price.lte"] = strike_price_lte
+
+        all_contracts: list[dict] = []
+        next_url: str | None = None
+
+        while True:
+            if next_url:
+                await self._throttle()
+                separator = "&" if "?" in next_url else "?"
+                url_with_key = f"{next_url}{separator}apiKey={self._api_key}"
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.get(url_with_key)
+                    data = resp.json()
+            else:
+                data = await self._request(
+                    "GET",
+                    "/v3/reference/options/contracts",
+                    params=params,
+                )
+
+            for r in data.get("results", []):
+                exp_str = r.get("expiration_date", "")
+                all_contracts.append(
+                    {
+                        "ticker": r.get("ticker", ""),
+                        "underlying_ticker": r.get("underlying_ticker", ""),
+                        "contract_type": r.get("contract_type", ""),
+                        "expiration_date": exp_str,
+                        "strike_price": float(r.get("strike_price", 0)),
+                        "exercise_style": r.get("exercise_style", ""),
+                    }
+                )
+
+            next_url = data.get("next_url")
+            if not next_url:
+                break
+
+        logger.info(
+            "polygon_options_contracts_listed",
+            underlying=underlying_ticker,
+            contract_type=contract_type,
+            contracts=len(all_contracts),
+        )
+        return all_contracts
+
+    async def get_option_aggs(
+        self,
+        option_ticker: str,
+        from_date: date,
+        to_date: date,
+        limit: int = 50000,
+    ) -> list[dict]:
+        """Fetch daily OHLCV bars for a single options contract.
+
+        Uses /v2/aggs/ticker/{optionsTicker}/range/1/day/{from}/{to}.
+
+        Returns:
+            List of bar dicts with keys: date, open, high, low, close,
+            volume, vwap, num_transactions.
+        """
+        from_str = from_date.strftime("%Y-%m-%d")
+        to_str = to_date.strftime("%Y-%m-%d")
+        path = (
+            f"/v2/aggs/ticker/{option_ticker}"
+            f"/range/1/day/{from_str}/{to_str}"
+        )
+
+        all_bars: list[dict] = []
+        next_url: str | None = None
+
+        while True:
+            if next_url:
+                await self._throttle()
+                separator = "&" if "?" in next_url else "?"
+                url_with_key = f"{next_url}{separator}apiKey={self._api_key}"
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.get(url_with_key)
+                    data = resp.json()
+            else:
+                data = await self._request(
+                    "GET",
+                    path,
+                    params={"adjusted": "true", "sort": "asc", "limit": limit},
+                )
+
+            for r in data.get("results", []):
+                try:
+                    ts_ms = int(r.get("t", 0))
+                    bar_date = datetime.fromtimestamp(ts_ms / 1000).date()
+                    all_bars.append(
+                        {
+                            "date": bar_date,
+                            "open": float(r.get("o", 0)),
+                            "high": float(r.get("h", 0)),
+                            "low": float(r.get("l", 0)),
+                            "close": float(r.get("c", 0)),
+                            "volume": int(r.get("v", 0)),
+                            "vwap": float(r.get("vw", 0)),
+                            "num_transactions": int(r.get("n", 0)),
+                        }
+                    )
+                except (KeyError, ValueError, TypeError):
+                    continue
+
+            next_url = data.get("next_url")
+            if not next_url:
+                break
+
+        logger.debug(
+            "polygon_option_aggs",
+            option_ticker=option_ticker,
+            bars=len(all_bars),
+        )
+        return all_bars
+
     # ── Ticker Details (for market cap) ─────────────────────────────────
 
     async def get_ticker_details(self, ticker: str) -> dict[str, Any]:

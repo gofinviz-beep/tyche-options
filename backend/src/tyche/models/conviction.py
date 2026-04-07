@@ -51,6 +51,11 @@ class ConvictionSnapshot(Base):
     ema_50_slope: Mapped[float] = mapped_column(Float, default=0.0)
     rsi_14: Mapped[float] = mapped_column(Float, default=0.0)
 
+    iv_rank: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    iv_percentile: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    atm_iv: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    vrp: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     def to_dict(self) -> dict:
@@ -76,6 +81,10 @@ class ConvictionSnapshot(Base):
             "ema_50": round(self.ema_50 or 0.0, 4),
             "ema_50_slope": round(self.ema_50_slope or 0.0, 6),
             "rsi_14": round(self.rsi_14 or 0.0, 2),
+            "iv_rank": round(self.iv_rank, 1) if self.iv_rank is not None else None,
+            "iv_percentile": round(self.iv_percentile, 1) if self.iv_percentile is not None else None,
+            "atm_iv": round(self.atm_iv, 4) if self.atm_iv is not None else None,
+            "vrp": round(self.vrp, 4) if self.vrp is not None else None,
             "computed_at": self.computed_at.isoformat() if self.computed_at else None,
         }
 

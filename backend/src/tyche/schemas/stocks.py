@@ -30,6 +30,10 @@ class ConvictionSnapshotResponse(BaseModel):
     ema_50: float = 0.0
     ema_50_slope: float = 0.0
     rsi_14: float = 0.0
+    iv_rank: float | None = None
+    iv_percentile: float | None = None
+    atm_iv: float | None = None
+    vrp: float | None = None
     computed_at: str | None = None
     market_cap: float | None = None
     institutional_pct: float | None = None

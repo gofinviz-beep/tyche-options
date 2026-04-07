@@ -57,6 +57,10 @@ class PullbackAlert:
     suggested_action: str
     position_size_hint: Literal["standard", "large"]
     stop_loss_level: float
+    iv_rank: float | None = None
+    iv_percentile: float | None = None
+    atm_iv: float | None = None
+    vrp: float | None = None
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> dict:
@@ -74,6 +78,10 @@ class PullbackAlert:
             "ema_50": round(self.ema_50, 4),
             "ema_50_slope": round(self.ema_50_slope, 6),
             "rsi_14": round(self.rsi_14, 2),
+            "iv_rank": round(self.iv_rank, 1) if self.iv_rank is not None else None,
+            "iv_percentile": round(self.iv_percentile, 1) if self.iv_percentile is not None else None,
+            "atm_iv": round(self.atm_iv, 4) if self.atm_iv is not None else None,
+            "vrp": round(self.vrp, 4) if self.vrp is not None else None,
             "volume_declining": self.volume_declining,
             "institutional_pct": round(self.institutional_pct, 4) if self.institutional_pct is not None else None,
             "institutional_label": self.institutional_label,
@@ -193,6 +201,10 @@ def detect_pullback_alerts(
             ema_50=sig.ema_50,
             ema_50_slope=sig.ema_50_slope,
             rsi_14=sig.rsi_14,
+            iv_rank=sig.iv_rank,
+            iv_percentile=sig.iv_percentile,
+            atm_iv=sig.atm_iv,
+            vrp=sig.vrp,
             volume_declining=sig.volume_declining_on_pullback,
             institutional_pct=inst_pct,
             institutional_label=_institutional_label(inst_pct),

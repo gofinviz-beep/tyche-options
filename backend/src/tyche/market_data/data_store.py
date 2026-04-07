@@ -80,6 +80,10 @@ CONVICTION_SIGNAL_SCHEMA = pa.schema(
         ("ema_50", pa.float64()),
         ("ema_50_slope", pa.float64()),
         ("rsi_14", pa.float64()),
+        ("iv_rank", pa.float64()),
+        ("iv_percentile", pa.float64()),
+        ("atm_iv", pa.float64()),
+        ("vrp", pa.float64()),
     ]
 )
 
@@ -527,14 +531,27 @@ class TickerMetaStore:
             existing_df = pd.read_parquet(self._parquet_path)
             if "institutional_pct" not in existing_df.columns:
                 existing_df["institutional_pct"] = pd.NA
-            # Preserve existing institutional_pct on upsert
+
+            # Build preservation maps before overwrite: keep existing positive
+            # market_cap and non-null institutional_pct when incoming row has
+            # zero / NaN (the Polygon list API omits market_cap).
+            cap_map = dict(
+                existing_df[existing_df["market_cap"] > 0][
+                    ["ticker", "market_cap"]
+                ].values
+            )
             inst_map = dict(
                 existing_df.dropna(subset=["institutional_pct"])[
                     ["ticker", "institutional_pct"]
                 ].values
             )
+
             combined = pd.concat([existing_df, new_df], ignore_index=True)
             combined = combined.drop_duplicates(subset=["ticker"], keep="last")
+
+            for ticker, cap in cap_map.items():
+                mask = (combined["ticker"] == ticker) & (combined["market_cap"] <= 0)
+                combined.loc[mask, "market_cap"] = cap
             for ticker, pct in inst_map.items():
                 mask = (combined["ticker"] == ticker) & combined["institutional_pct"].isna()
                 combined.loc[mask, "institutional_pct"] = pct
@@ -766,6 +783,10 @@ class ConvictionSignalStore:
                 "ema_50": getattr(sig, "ema_50", 0.0),
                 "ema_50_slope": getattr(sig, "ema_50_slope", 0.0),
                 "rsi_14": getattr(sig, "rsi_14", 0.0),
+                "iv_rank": getattr(sig, "iv_rank", None),
+                "iv_percentile": getattr(sig, "iv_percentile", None),
+                "atm_iv": getattr(sig, "atm_iv", None),
+                "vrp": getattr(sig, "vrp", None),
             })
 
         if not rows:
@@ -1416,27 +1437,28 @@ async def bootstrap_ohlcv(
     polygon: PolygonClient,
     store: OHLCVStore,
     days: int = 120,
-    meta_store: TickerMetaStore | None = None,
     include_today: bool = False,
+    # Deprecated — ignored. Ticker metadata is a separate operation
+    # (ingest_data.py --meta). Kept for caller compatibility.
+    meta_store: TickerMetaStore | None = None,
     backfill_market_caps: bool = True,
     market_cap_concurrency: int = 20,
     market_cap_rpm: int = 500,
 ) -> dict[str, int]:
-    """Bootstrap the data store by fetching N trading days of grouped daily bars.
+    """Bootstrap the OHLCV store by fetching grouped daily bars from Polygon.
 
-    Uses one API call per calendar date (skips weekends).
-    Also fetches ticker reference data (market cap, exchange, type) and
-    persists it in the TickerMetaStore for backtesting and screening.
+    This function ONLY fetches price bars. Ticker reference metadata (market
+    cap, exchange, type) is managed separately via ``ingest_data.py --meta``
+    or the ``refresh_ticker_meta()`` helper. This avoids overwriting stable
+    metadata on every incremental OHLCV refresh.
 
     Args:
         include_today: When True, fetch up to today (use after market close).
-            When False (default), stop at yesterday for safety during market hours.
-        backfill_market_caps: When True (default), automatically backfill
-            market caps from the per-ticker detail endpoint after write_meta().
-        market_cap_concurrency: Max concurrent requests for market cap backfill.
-        market_cap_rpm: Rate limit for market cap backfill requests.
+            When False (default), stop at yesterday for safety during market
+            hours.
 
-    Returns stats dict with dates_fetched, bars_stored, tickers_found, tickers_meta.
+    Returns:
+        Stats dict with dates_fetched, bars_stored, tickers_found.
     """
     end = date.today() if include_today else date.today() - timedelta(days=1)
     start = end - timedelta(days=int(days * 1.5))
@@ -1483,24 +1505,48 @@ async def bootstrap_ohlcv(
                 exc_info=True,
             )
 
-    # Fetch and persist ticker reference metadata (market cap, exchange, type)
+    ticker_count = store.get_ticker_count()
+    logger.info(
+        "bootstrap_complete",
+        dates_fetched=dates_fetched,
+        total_bars=total_bars,
+        tickers=ticker_count,
+    )
+    return {
+        "dates_fetched": dates_fetched,
+        "bars_stored": total_bars,
+        "tickers_found": ticker_count,
+        "tickers_meta": 0,
+    }
+
+
+async def refresh_ticker_meta(
+    polygon: PolygonClient,
+    meta_store: TickerMetaStore,
+    backfill_market_caps: bool = True,
+    market_cap_concurrency: int = 20,
+    market_cap_rpm: int = 500,
+) -> dict[str, int]:
+    """Refresh ticker reference metadata (type, exchange, market cap).
+
+    This is an infrequent operation — market cap and type data change slowly.
+    Run explicitly via ``ingest_data.py --meta`` or on a weekly schedule,
+    NOT on every OHLCV refresh.
+    """
     tickers_meta = 0
     market_caps_updated = 0
-    if meta_store is None:
-        meta_store = TickerMetaStore(data_dir=str(store._data_dir))
 
     try:
-        logger.info("bootstrap_fetching_ticker_meta")
+        logger.info("refresh_fetching_ticker_meta")
         ticker_infos = await polygon.get_tickers(
             market="stocks", active=True, ticker_type="CS"
         )
         if ticker_infos:
             tickers_meta = meta_store.write_meta(ticker_infos)
-            logger.info("bootstrap_ticker_meta_complete", tickers=tickers_meta)
+            logger.info("refresh_ticker_meta_complete", tickers=tickers_meta)
     except Exception:
-        logger.warning("bootstrap_ticker_meta_failed", exc_info=True)
+        logger.warning("refresh_ticker_meta_failed", exc_info=True)
 
-    # Backfill market caps from per-ticker detail endpoint
     if backfill_market_caps and meta_store.exists:
         try:
             market_caps_updated = await _backfill_market_caps(
@@ -1510,20 +1556,14 @@ async def bootstrap_ohlcv(
                 rate_limit_rpm=market_cap_rpm,
             )
         except Exception:
-            logger.warning("bootstrap_market_cap_backfill_failed", exc_info=True)
+            logger.warning("refresh_market_cap_backfill_failed", exc_info=True)
 
-    ticker_count = store.get_ticker_count()
     logger.info(
-        "bootstrap_complete",
-        dates_fetched=dates_fetched,
-        total_bars=total_bars,
-        tickers=ticker_count,
+        "refresh_ticker_meta_done",
         tickers_meta=tickers_meta,
         market_caps_updated=market_caps_updated,
     )
     return {
-        "dates_fetched": dates_fetched,
-        "bars_stored": total_bars,
-        "tickers_found": ticker_count,
         "tickers_meta": tickers_meta,
+        "market_caps_updated": market_caps_updated,
     }

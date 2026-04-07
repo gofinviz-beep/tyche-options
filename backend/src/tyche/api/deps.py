@@ -17,6 +17,7 @@ from tyche.conviction.engine import ConvictionEngine
 from tyche.conviction.features import ConvictionFeatureEngine
 from tyche.conviction.csp_policy import CSPEligibilityPolicy
 from tyche.market_data.data_store import ConvictionSignalStore, OHLCVStore, TickerMetaStore
+from tyche.market_data.derived_store import DerivedMetricsStore
 from tyche.market_data.earnings import EarningsCalendarClient
 from tyche.market_data.polygon import PolygonClient
 from tyche.market_data.universe import UniverseBuilder
@@ -55,6 +56,7 @@ _csp_policy: CSPEligibilityPolicy | None = None
 _active_monitor: ActiveMonitor | None = None
 _ticker_meta_store: TickerMetaStore | None = None
 _conviction_signal_store: ConvictionSignalStore | None = None
+_derived_store: DerivedMetricsStore | None = None
 _portfolio_allocator: PortfolioAllocator | None = None
 
 
@@ -250,6 +252,20 @@ def get_conviction_signal_store(
     return _conviction_signal_store
 
 
+def get_derived_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> DerivedMetricsStore:
+    """Provide the derived metrics store (IV rank, VRP, etc.)."""
+    global _derived_store
+    if _derived_store is None:
+        _derived_store = DerivedMetricsStore(data_dir=settings.data_dir)
+        logger.info(
+            "derived_store_initialized",
+            path=str(_derived_store.store_dir),
+        )
+    return _derived_store
+
+
 def get_feature_engine(
     settings: TycheSettings = Depends(get_settings),
 ) -> ConvictionFeatureEngine:
@@ -257,11 +273,13 @@ def get_feature_engine(
     global _feature_engine
     if _feature_engine is None:
         signal_store = get_conviction_signal_store(settings)
+        derived = get_derived_store(settings)
         _feature_engine = ConvictionFeatureEngine(
             ema_fast=settings.ema_fast_period,
             ema_slow=settings.ema_slow_period,
             pullback_proximity_pct=settings.pullback_proximity_pct,
             signal_store=signal_store,
+            derived_store=derived,
         )
         logger.info(
             "feature_engine_initialized",
@@ -300,6 +318,7 @@ def get_conviction_engine(
     global _conviction_engine
     if _conviction_engine is None:
         signal_store = get_conviction_signal_store(settings)
+        derived = get_derived_store(settings)
         _conviction_engine = ConvictionEngine(
             ema_fast=settings.ema_fast_period,
             ema_slow=settings.ema_slow_period,
@@ -310,6 +329,7 @@ def get_conviction_engine(
             pullback_csp_enabled=settings.pullback_csp_enabled,
             min_prior_streak=settings.min_prior_streak,
             signal_store=signal_store,
+            derived_store=derived,
         )
         logger.info(
             "conviction_engine_initialized",
@@ -360,6 +380,7 @@ def reset_all() -> None:
     global _polygon_client, _data_store, _conviction_engine
     global _active_monitor, _ticker_meta_store, _portfolio_allocator
     global _conviction_signal_store, _feature_engine, _csp_policy
+    global _derived_store
     _broker_instance = None
     _gemini_instance = None
     _analysis_agent = None
@@ -376,4 +397,5 @@ def reset_all() -> None:
     _active_monitor = None
     _ticker_meta_store = None
     _conviction_signal_store = None
+    _derived_store = None
     _portfolio_allocator = None

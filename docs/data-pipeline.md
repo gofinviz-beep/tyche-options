@@ -141,7 +141,9 @@ The `get_tickers` method handles cursor-based pagination via `next_url`. The API
 
 ## Bootstrap Flow
 
-The `bootstrap_ohlcv()` function in `data_store.py` orchestrates the full data population:
+### OHLCV (Price Bars)
+
+`bootstrap_ohlcv()` in `data_store.py` fetches grouped daily bars only — it does **not** touch ticker metadata:
 
 ```mermaid
 flowchart TD
@@ -151,10 +153,19 @@ flowchart TD
     FetchAll --> FetchLoop["For each weekday:\nPolygon get_grouped_daily()"]
     FetchIncremental --> FetchLoop
     FetchLoop --> WriteOHLCV["Write bars to\nohlcv_daily.parquet"]
-    WriteOHLCV --> FetchMeta["Fetch ticker reference\nPolygon get_tickers()"]
-    FetchMeta --> WriteMeta["Write metadata to\nticker_meta.parquet"]
-    WriteMeta --> Done["Return stats:\ndates_fetched, bars_stored,\ntickers_found, tickers_meta"]
+    WriteOHLCV --> Done["Return stats:\ndates_fetched, bars_stored,\ntickers_found"]
 ```
+
+### Ticker Metadata (Market Cap, Type, Exchange)
+
+Ticker reference metadata is managed **separately** via `refresh_ticker_meta()` or `ingest_data.py --meta`. This data changes infrequently — market cap, type, and exchange don't need daily refreshes. Running metadata refresh on every OHLCV pull previously caused market caps to be overwritten with zeros (the Polygon list API omits market cap).
+
+```bash
+# Refresh metadata explicitly (infrequent — weekly or on demand)
+python scripts/ingest_data.py --meta
+```
+
+`write_meta()` preserves existing positive market caps when incoming values are zero, as defense-in-depth.
 
 ### Triggering Bootstrap
 
@@ -165,13 +176,12 @@ curl -X POST http://localhost:8000/conviction/bootstrap
 
 Via Python:
 ```python
-from tyche.market_data.data_store import bootstrap_ohlcv, OHLCVStore, TickerMetaStore
+from tyche.market_data.data_store import bootstrap_ohlcv, OHLCVStore
 from tyche.market_data.polygon import PolygonClient
 
 polygon = PolygonClient(api_key="...")
 store = OHLCVStore(data_dir="data")
-meta = TickerMetaStore(data_dir="data")
-result = await bootstrap_ohlcv(polygon, store, days=120, meta_store=meta)
+result = await bootstrap_ohlcv(polygon, store, days=120)
 ```
 
 ### Incremental Updates
@@ -183,7 +193,7 @@ If the store already contains data, bootstrap only fetches dates after the lates
 By default, `bootstrap_ohlcv()` stops at yesterday (`end = date.today() - 1`). To include today's data (after market close), use `include_today=True`:
 
 ```python
-result = await bootstrap_ohlcv(polygon, store, days=5, meta_store=meta, include_today=True)
+result = await bootstrap_ohlcv(polygon, store, days=5, include_today=True)
 ```
 
 Or via API:
@@ -202,6 +212,8 @@ The OHLCV refresh is scheduled automatically via APScheduler:
 | 4:10 PM | `options_snapshot` | Captures live options chains from Tradier for large-cap tickers |
 
 This ensures the exit monitor always operates on fresh data and options chains are captured while Tradier still serves closing data.
+
+> **Note:** None of these scheduled jobs touch `ticker_meta.parquet`. Metadata refresh is a separate, infrequent operation.
 
 ### Historical Data Scripts
 

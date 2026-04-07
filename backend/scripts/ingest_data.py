@@ -412,14 +412,17 @@ async def _run(
 
     if days is not None:
         click.echo(f"Full bootstrap: {days} calendar days back")
-        result = await bootstrap_ohlcv(
-            polygon, store, days=days, meta_store=meta_store,
-            backfill_market_caps=backfill_caps,
-            market_cap_concurrency=cap_concurrency,
-            market_cap_rpm=cap_rpm,
-        )
+        result = await bootstrap_ohlcv(polygon, store, days=days)
         click.echo(f"\nDone: {result['dates_fetched']} days, {result['bars_stored']:,} bars, "
-                    f"{result['tickers_found']:,} tickers, {result['tickers_meta']:,} metadata")
+                    f"{result['tickers_found']:,} tickers")
+
+        if meta:
+            await _fetch_meta(
+                polygon, meta_store,
+                backfill_caps=backfill_caps,
+                cap_concurrency=cap_concurrency,
+                cap_rpm=cap_rpm,
+            )
     else:
         if from_date is None:
             latest = store.get_latest_date()

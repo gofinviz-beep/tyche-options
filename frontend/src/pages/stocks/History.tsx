@@ -209,6 +209,8 @@ export function ConvictionHistory() {
                       <th className="pb-2 pr-3">% to 8</th>
                       <th className="pb-2 pr-3">% to 21</th>
                       <th className="pb-2 pr-3">RSI</th>
+                      <th className="pb-2 pr-3">IV Rank</th>
+                      <th className="pb-2 pr-3">VRP</th>
                       <th className="pb-2 pr-3">50-EMA</th>
                       <th className="pb-2 pr-3">Days Above</th>
                       <th className="pb-2">Conviction</th>
@@ -250,6 +252,24 @@ export function ConvictionHistory() {
                           <span className={s.rsi_14 < 30 ? "text-red-600" : s.rsi_14 < 40 ? "text-amber-600" : s.rsi_14 > 70 ? "text-purple-600" : ""}>
                             {s.rsi_14.toFixed(0)}
                           </span>
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          {s.iv_rank != null ? (
+                            <span className={s.iv_rank < 20 ? "text-emerald-600" : s.iv_rank > 80 ? "text-red-600" : ""}>
+                              {s.iv_rank.toFixed(0)}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          {s.vrp != null ? (
+                            <span className={s.vrp > 0 ? "text-emerald-600" : s.vrp < 0 ? "text-red-600" : ""}>
+                              {(s.vrp * 100).toFixed(1)}%
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
                         </td>
                         <td className="py-1.5 pr-3">
                           <span className={s.ema_50_slope > 0 ? "text-emerald-600" : "text-red-500"}>

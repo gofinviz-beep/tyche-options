@@ -55,6 +55,10 @@ _ENV_ONLY_FIELDS: frozenset[str] = frozenset(
         "otel_enabled",
         "notification_smtp_host",
         "notification_smtp_port",
+        "massive_s3_access_key",
+        "massive_s3_secret_key",
+        "massive_s3_url",
+        "massive_s3_bucket",
     }
 )
 
@@ -94,6 +98,12 @@ class _EnvSettings(BaseSettings):
     otel_enabled: bool = True
     notification_smtp_host: str = "smtp.gmail.com"
     notification_smtp_port: int = 587
+
+    # --- Massive S3 flat files ---
+    massive_s3_access_key: str = ""
+    massive_s3_secret_key: str = ""
+    massive_s3_url: str = "https://files.massive.com"
+    massive_s3_bucket: str = "flatfiles"
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +267,12 @@ class TycheSettings(BaseModel):
     gcp_project_id: str = ""
     otel_service_name: str = "tyche-options"
     otel_enabled: bool = True
+
+    # --- Massive S3 flat files (env-only) ---
+    massive_s3_access_key: str = ""
+    massive_s3_secret_key: str = ""
+    massive_s3_url: str = "https://files.massive.com"
+    massive_s3_bucket: str = "flatfiles"
 
     # --- Database (env-only) ---
     database_url: str = ""

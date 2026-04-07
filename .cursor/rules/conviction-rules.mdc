@@ -50,6 +50,16 @@ A stock must pass ALL three:
 
 **Combined conviction** shown to user = `min(EMA conviction, LLM confidence)`. See intent-risk-pipeline rule.
 
+## IV Metrics (Phase 2b — Integrated)
+
+`FeatureSignal` and `ConvictionSignal` carry `iv_rank`, `iv_percentile`, `atm_iv`, `vrp` (all `float | None`). Loaded from `DerivedMetricsStore` via bulk `read_latest_batch()` in `ConvictionFeatureEngine.analyze_batch()`. Currently **display-only** — visible in the UI as filterable columns but NOT used as gates in `CSPEligibilityPolicy` (Phase 2c planned).
+
+| Metric | Ideal for CSPs | Meaning |
+|---|---|---|
+| IV Rank 40-80 | Best premium | IV in upper half of yearly range — rich premiums + mean-reversion tailwind |
+| VRP > 5% | Positive edge | Options overpriced vs realized movement — selling overpriced insurance |
+| VRP < 0 | Avoid CSPs | Realized vol exceeds implied — selling underpriced insurance |
+
 ## Pre-Conviction Filters
 
 - Market cap >= $4B (from TickerMetaStore; **tickers with no market cap data pass through** — only tickers with valid data below threshold are excluded)

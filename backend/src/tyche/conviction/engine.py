@@ -67,6 +67,11 @@ class ConvictionSignal:
     ema_50_slope: float = 0.0
     rsi_14: float = 0.0
 
+    iv_rank: float | None = None
+    iv_percentile: float | None = None
+    atm_iv: float | None = None
+    vrp: float | None = None
+
     gate_results: list[GateResult] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -92,6 +97,10 @@ class ConvictionSignal:
             "ema_50": round(self.ema_50, 4),
             "ema_50_slope": round(self.ema_50_slope, 6),
             "rsi_14": round(self.rsi_14, 2),
+            "iv_rank": round(self.iv_rank, 1) if self.iv_rank is not None else None,
+            "iv_percentile": round(self.iv_percentile, 1) if self.iv_percentile is not None else None,
+            "atm_iv": round(self.atm_iv, 4) if self.atm_iv is not None else None,
+            "vrp": round(self.vrp, 4) if self.vrp is not None else None,
             "gate_results": [g.to_dict() for g in self.gate_results] if self.gate_results else [],
         }
 
@@ -120,6 +129,10 @@ def _feature_to_signal(feature: FeatureSignal, policy_result: dict) -> Convictio
         ema_50=feature.ema_50,
         ema_50_slope=feature.ema_50_slope,
         rsi_14=feature.rsi_14,
+        iv_rank=feature.iv_rank,
+        iv_percentile=feature.iv_percentile,
+        atm_iv=feature.atm_iv,
+        vrp=feature.vrp,
         gate_results=policy_result["gate_results"],
     )
 
@@ -149,6 +162,7 @@ class ConvictionEngine:
         pullback_csp_enabled: bool = True,
         min_prior_streak: int = 5,
         signal_store: Any | None = None,
+        derived_store: Any | None = None,
     ) -> None:
         self._feature_engine = ConvictionFeatureEngine(
             ema_fast=ema_fast,
@@ -156,6 +170,7 @@ class ConvictionEngine:
             pullback_proximity_pct=pullback_proximity_pct,
             min_bars=min_bars,
             signal_store=signal_store,
+            derived_store=derived_store,
         )
         self._csp_policy = CSPEligibilityPolicy(
             max_extension_pct=max_extension_pct,

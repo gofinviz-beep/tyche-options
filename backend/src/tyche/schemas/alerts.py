@@ -40,6 +40,10 @@ class PullbackAlertResponse(BaseModel):
     ema_50: float = 0.0
     ema_50_slope: float = 0.0
     rsi_14: float = 0.0
+    iv_rank: float | None = None
+    iv_percentile: float | None = None
+    atm_iv: float | None = None
+    vrp: float | None = None
     volume_declining: bool
     institutional_pct: float | None = None
     institutional_label: str
@@ -76,6 +80,10 @@ class StockBuyRecommendationResponse(BaseModel):
     ema_21_slope: float
     ema_50_slope: float = 0.0
     rsi_14: float = 0.0
+    iv_rank: float | None = None
+    iv_percentile: float | None = None
+    atm_iv: float | None = None
+    vrp: float | None = None
     related_csp_strike: float | None = None
     has_active_csp: bool
     recommendation: str

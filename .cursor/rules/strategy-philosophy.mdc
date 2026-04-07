@@ -43,6 +43,15 @@ Backtest results on $4B+ market cap stocks (2024-2026 data):
 
 Within the same conviction level, pullback CSPs are sorted first (safer per backtest data), with prior streak as tiebreaker (longer prior uptrend = stronger setup).
 
+## IV Metrics (Informational — Phase 2c will add gates)
+
+IV Rank and VRP are computed from historical options data and displayed in the conviction UI but **not yet used as scanner gates**.
+
+- **IV Rank 40-80:** Best for selling CSPs — IV is elevated relative to its year, meaning richer premiums + mean-reversion tailwind.
+- **VRP > 5%:** Options are overpriced vs realized movement — positive edge for premium sellers.
+- **VRP < 0:** Realized vol exceeds implied vol — avoid selling CSPs (underpriced insurance).
+- **Stock pullbacks:** IV metrics are informational context, not filters. A quality 21-EMA pullback with low IV Rank is still a good stock buy.
+
 ## Strike Selection
 
 - **Pullback CSPs:** Strike = support_EMA × (1 - `pullback_strike_offset_pct` / 100). Default 5% below support.

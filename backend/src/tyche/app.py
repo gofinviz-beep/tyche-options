@@ -102,7 +102,7 @@ async def _scheduled_morning_scan() -> None:
 
 async def _scheduled_ohlcv_refresh() -> None:
     """Fetch today's OHLCV data from Polygon after market close."""
-    from tyche.api.deps import get_data_store, get_polygon, get_ticker_meta_store
+    from tyche.api.deps import get_data_store, get_polygon
     from tyche.config import get_settings as _gs
     from tyche.market_data.data_store import bootstrap_ohlcv
 
@@ -113,9 +113,8 @@ async def _scheduled_ohlcv_refresh() -> None:
             logger.warning("ohlcv_refresh_skipped_no_polygon_key")
             return
         store = get_data_store(settings)
-        meta_store = get_ticker_meta_store(settings)
         result = await bootstrap_ohlcv(
-            polygon, store, days=5, meta_store=meta_store, include_today=True,
+            polygon, store, days=5, include_today=True,
         )
         logger.info("scheduled_ohlcv_refresh_complete", **result)
     except Exception:
@@ -128,7 +127,7 @@ async def _scheduled_exit_monitor() -> None:
     Refreshes OHLCV data first as a safety net, in case the scheduled
     refresh job hasn't run or failed.
     """
-    from tyche.api.deps import get_data_store, get_polygon, get_ticker_meta_store
+    from tyche.api.deps import get_data_store, get_polygon
     from tyche.config import get_settings as _gs
     from tyche.market_data.data_store import bootstrap_ohlcv
     from tyche.workflow.exit_monitor import check_exit_signals
@@ -138,9 +137,8 @@ async def _scheduled_exit_monitor() -> None:
         polygon = get_polygon(settings)
         store = get_data_store(settings)
         if polygon is not None:
-            meta_store = get_ticker_meta_store(settings)
             await bootstrap_ohlcv(
-                polygon, store, days=5, meta_store=meta_store, include_today=True,
+                polygon, store, days=5, include_today=True,
             )
         result = await check_exit_signals(store)
         logger.info(
@@ -254,6 +252,10 @@ async def _migrate_conviction_columns() -> None:
         ("conviction_snapshots", "ema_50", "REAL DEFAULT 0.0"),
         ("conviction_snapshots", "ema_50_slope", "REAL DEFAULT 0.0"),
         ("conviction_snapshots", "rsi_14", "REAL DEFAULT 0.0"),
+        ("conviction_snapshots", "iv_rank", "REAL DEFAULT NULL"),
+        ("conviction_snapshots", "iv_percentile", "REAL DEFAULT NULL"),
+        ("conviction_snapshots", "atm_iv", "REAL DEFAULT NULL"),
+        ("conviction_snapshots", "vrp", "REAL DEFAULT NULL"),
     ]
 
     async with engine.begin() as conn:

@@ -500,6 +500,60 @@ const pullbackColumns: DataTableColumn<PullbackAlert>[] = [
     },
   },
   {
+    key: "iv_rank",
+    header: "IV Rank",
+    accessor: (r) => r.iv_rank ?? -1,
+    sortable: true,
+    align: "right",
+    render: (r) => {
+      if (r.iv_rank == null) return <span className="text-gray-300">—</span>;
+      const color = r.iv_rank < 20 ? "text-emerald-600" : r.iv_rank > 80 ? "text-red-600" : "text-gray-700";
+      return <span className={`font-mono text-xs ${color}`}>{r.iv_rank.toFixed(0)}</span>;
+    },
+    filter: {
+      type: "range",
+      minOptions: [
+        { value: "0", label: "0" },
+        { value: "20", label: "20" },
+        { value: "40", label: "40" },
+        { value: "60", label: "60" },
+        { value: "80", label: "80" },
+      ],
+      maxOptions: [
+        { value: "20", label: "20" },
+        { value: "40", label: "40" },
+        { value: "60", label: "60" },
+        { value: "80", label: "80" },
+        { value: "100", label: "100" },
+      ],
+    },
+  },
+  {
+    key: "vrp",
+    header: "VRP",
+    accessor: (r) => r.vrp ?? 0,
+    sortable: true,
+    align: "right",
+    render: (r) => {
+      if (r.vrp == null) return <span className="text-gray-300">—</span>;
+      const color = r.vrp > 0 ? "text-emerald-600" : r.vrp < 0 ? "text-red-600" : "text-gray-700";
+      return <span className={`font-mono text-xs ${color}`}>{(r.vrp * 100).toFixed(1)}%</span>;
+    },
+    filter: {
+      type: "range",
+      minOptions: [
+        { value: "-0.2", label: "-20%" },
+        { value: "-0.1", label: "-10%" },
+        { value: "0", label: "0%" },
+      ],
+      maxOptions: [
+        { value: "0.1", label: "10%" },
+        { value: "0.2", label: "20%" },
+        { value: "0.5", label: "50%" },
+      ],
+    },
+  },
+  {
     key: "ema_50_slope",
     header: "50-EMA",
     accessor: (r) => r.ema_50_slope,

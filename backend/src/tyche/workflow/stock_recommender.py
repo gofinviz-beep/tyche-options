@@ -45,6 +45,10 @@ class StockBuyRecommendation:
     has_active_csp: bool
     recommendation: str
     risk_reward_note: str
+    iv_rank: float | None = None
+    iv_percentile: float | None = None
+    atm_iv: float | None = None
+    vrp: float | None = None
     overlap_decision: OverlapDecision = "add_standard"
     overlap_reason: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -70,6 +74,10 @@ class StockBuyRecommendation:
             "ema_21_slope": round(self.ema_21_slope, 6),
             "ema_50_slope": round(self.ema_50_slope, 6),
             "rsi_14": round(self.rsi_14, 2),
+            "iv_rank": round(self.iv_rank, 1) if self.iv_rank is not None else None,
+            "iv_percentile": round(self.iv_percentile, 1) if self.iv_percentile is not None else None,
+            "atm_iv": round(self.atm_iv, 4) if self.atm_iv is not None else None,
+            "vrp": round(self.vrp, 4) if self.vrp is not None else None,
             "related_csp_strike": (
                 round(self.related_csp_strike, 2)
                 if self.related_csp_strike is not None
@@ -223,6 +231,10 @@ def generate_stock_recommendations(
             ema_21_slope=alert.ema_21_slope,
             ema_50_slope=alert.ema_50_slope,
             rsi_14=alert.rsi_14,
+            iv_rank=alert.iv_rank,
+            iv_percentile=alert.iv_percentile,
+            atm_iv=alert.atm_iv,
+            vrp=alert.vrp,
             related_csp_strike=csp_strike,
             has_active_csp=has_csp,
             recommendation=_build_recommendation_text(alert, has_csp, csp_strike),
@@ -301,6 +313,10 @@ def generate_recommendations_from_snapshots(
             ema_21_slope=snap.ema_21_slope,
             ema_50_slope=getattr(snap, "ema_50_slope", 0.0) or 0.0,
             rsi_14=getattr(snap, "rsi_14", 0.0) or 0.0,
+            iv_rank=getattr(snap, "iv_rank", None),
+            iv_percentile=getattr(snap, "iv_percentile", None),
+            atm_iv=getattr(snap, "atm_iv", None),
+            vrp=getattr(snap, "vrp", None),
             related_csp_strike=csp_strike,
             has_active_csp=has_csp,
             recommendation=rec_text,

@@ -197,6 +197,10 @@ def _snapshot_to_pullback_alert(
         ema_50=round(getattr(snap, "ema_50", 0.0) or 0.0, 4),
         ema_50_slope=round(getattr(snap, "ema_50_slope", 0.0) or 0.0, 6),
         rsi_14=round(getattr(snap, "rsi_14", 0.0) or 0.0, 2),
+        iv_rank=round(snap.iv_rank, 1) if getattr(snap, "iv_rank", None) is not None else None,
+        iv_percentile=round(snap.iv_percentile, 1) if getattr(snap, "iv_percentile", None) is not None else None,
+        atm_iv=round(snap.atm_iv, 4) if getattr(snap, "atm_iv", None) is not None else None,
+        vrp=round(snap.vrp, 4) if getattr(snap, "vrp", None) is not None else None,
         volume_declining=snap.volume_declining,
         institutional_pct=round(inst_pct, 4) if inst_pct is not None else None,
         institutional_label=_institutional_label(inst_pct),
@@ -592,7 +596,7 @@ async def refresh_ohlcv(
     include_today: bool = Query(True, description="Include today's bars (use after market close)"),
 ) -> dict:
     """On-demand OHLCV data refresh from Polygon."""
-    from tyche.api.deps import get_polygon, get_ticker_meta_store
+    from tyche.api.deps import get_polygon
     from tyche.market_data.data_store import bootstrap_ohlcv
 
     settings = get_settings()
@@ -605,9 +609,8 @@ async def refresh_ohlcv(
             detail="Polygon API key not configured",
         )
 
-    meta_store = get_ticker_meta_store(settings)
     result = await bootstrap_ohlcv(
-        polygon, data_store, days=5, meta_store=meta_store,
+        polygon, data_store, days=5,
         include_today=include_today,
     )
     return {

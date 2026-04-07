@@ -322,69 +322,131 @@ class TestBackfillMarketCaps:
         meta_store.update_market_caps.assert_not_called()
 
 
-class TestBootstrapOhlcvBackfill:
-    """Tests that bootstrap_ohlcv calls backfill when enabled."""
+class TestBootstrapOhlcvNoMeta:
+    """Verify bootstrap_ohlcv does NOT touch ticker metadata."""
 
     @pytest.mark.asyncio
-    async def test_backfill_called_after_meta(self):
+    async def test_bootstrap_does_not_call_write_meta(self):
         from tyche.market_data.data_store import bootstrap_ohlcv
 
         polygon = AsyncMock()
         polygon.get_grouped_daily.return_value = []
-        polygon.get_tickers.return_value = []
 
         store = MagicMock()
         store.get_latest_date.return_value = None
-        store._data_dir = "/tmp/test"
         store.get_ticker_count.return_value = 0
-
-        meta_store = MagicMock()
-        meta_store.exists = True
-        meta_store.get_market_caps.return_value = {"A": 0.0, "B": 5e9}
-
-        polygon.get_batch_market_caps_concurrent.return_value = {"A": 1e10}
-        meta_store.update_market_caps.return_value = 1
 
         with patch("tyche.market_data.data_store.date") as mock_date:
             mock_date.today.return_value = date(2026, 4, 1)
             mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
 
-            result = await bootstrap_ohlcv(
-                polygon, store, days=5, meta_store=meta_store,
-                backfill_market_caps=True,
-                market_cap_concurrency=10,
-                market_cap_rpm=100,
-            )
+            await bootstrap_ohlcv(polygon, store, days=5)
+
+        polygon.get_tickers.assert_not_called()
+        polygon.get_batch_market_caps_concurrent.assert_not_called()
+
+
+class TestRefreshTickerMeta:
+    """Tests for the standalone refresh_ticker_meta function."""
+
+    @pytest.mark.asyncio
+    async def test_backfill_called_after_meta(self):
+        from tyche.market_data.data_store import refresh_ticker_meta
+
+        polygon = AsyncMock()
+        polygon.get_tickers.return_value = []
+
+        meta_store = MagicMock()
+        meta_store.exists = True
+        meta_store.get_market_caps.return_value = {"A": 0.0, "B": 5e9}
+        meta_store.write_meta.return_value = 0
+
+        polygon.get_batch_market_caps_concurrent.return_value = {"A": 1e10}
+        meta_store.update_market_caps.return_value = 1
+
+        result = await refresh_ticker_meta(
+            polygon, meta_store,
+            backfill_market_caps=True,
+            market_cap_concurrency=10,
+            market_cap_rpm=100,
+        )
 
         polygon.get_batch_market_caps_concurrent.assert_called_once()
         meta_store.update_market_caps.assert_called_once_with({"A": 1e10})
 
     @pytest.mark.asyncio
     async def test_backfill_skipped_when_disabled(self):
-        from tyche.market_data.data_store import bootstrap_ohlcv
+        from tyche.market_data.data_store import refresh_ticker_meta
 
         polygon = AsyncMock()
-        polygon.get_grouped_daily.return_value = []
         polygon.get_tickers.return_value = []
-
-        store = MagicMock()
-        store.get_latest_date.return_value = None
-        store._data_dir = "/tmp/test"
-        store.get_ticker_count.return_value = 0
 
         meta_store = MagicMock()
         meta_store.exists = True
+        meta_store.write_meta.return_value = 0
 
-        with patch("tyche.market_data.data_store.date") as mock_date:
-            mock_date.today.return_value = date(2026, 4, 1)
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
-
-            await bootstrap_ohlcv(
-                polygon, store, days=5, meta_store=meta_store,
-                backfill_market_caps=False,
-            )
+        await refresh_ticker_meta(
+            polygon, meta_store,
+            backfill_market_caps=False,
+        )
 
         polygon.get_batch_market_caps_concurrent.assert_not_called()
+
+
+class TestWriteMetaPreservesMarketCap:
+    """Verify write_meta preserves existing market caps when incoming is zero."""
+
+    def test_existing_cap_not_overwritten_by_zero(self, tmp_path):
+        from tyche.market_data.data_store import TickerMetaStore
+        from tyche.market_data.polygon import TickerInfo
+
+        store = TickerMetaStore(data_dir=str(tmp_path))
+
+        good_tickers = [
+            TickerInfo(ticker="AAPL", name="Apple", market="stocks", locale="us",
+                       type="CS", active=True, primary_exchange="XNAS", market_cap=3e12),
+            TickerInfo(ticker="MSFT", name="Microsoft", market="stocks", locale="us",
+                       type="CS", active=True, primary_exchange="XNAS", market_cap=2.8e12),
+        ]
+        store.write_meta(good_tickers)
+
+        caps = store.get_market_caps(["AAPL", "MSFT"])
+        assert caps["AAPL"] == 3e12
+        assert caps["MSFT"] == 2.8e12
+
+        zero_tickers = [
+            TickerInfo(ticker="AAPL", name="Apple Inc", market="stocks", locale="us",
+                       type="CS", active=True, primary_exchange="XNAS", market_cap=0.0),
+            TickerInfo(ticker="MSFT", name="Microsoft Corp", market="stocks", locale="us",
+                       type="CS", active=True, primary_exchange="XNAS", market_cap=0.0),
+            TickerInfo(ticker="GOOGL", name="Alphabet", market="stocks", locale="us",
+                       type="CS", active=True, primary_exchange="XNAS", market_cap=0.0),
+        ]
+        store.write_meta(zero_tickers)
+
+        caps = store.get_market_caps(["AAPL", "MSFT", "GOOGL"])
+        assert caps["AAPL"] == 3e12, "Existing cap should be preserved"
+        assert caps["MSFT"] == 2.8e12, "Existing cap should be preserved"
+        assert caps["GOOGL"] == 0.0, "New ticker with zero is fine"
+
+    def test_newer_positive_cap_replaces_old(self, tmp_path):
+        from tyche.market_data.data_store import TickerMetaStore
+        from tyche.market_data.polygon import TickerInfo
+
+        store = TickerMetaStore(data_dir=str(tmp_path))
+
+        store.write_meta([
+            TickerInfo(ticker="AAPL", name="Apple", market="stocks", locale="us",
+                       type="CS", active=True, primary_exchange="XNAS", market_cap=2.5e12),
+        ])
+
+        store.write_meta([
+            TickerInfo(ticker="AAPL", name="Apple Inc", market="stocks", locale="us",
+                       type="CS", active=True, primary_exchange="XNAS", market_cap=3e12),
+        ])
+
+        caps = store.get_market_caps(["AAPL"])
+        assert caps["AAPL"] == 3e12, "Positive update should replace old value"
 
 
 class TestConfigDefaults:

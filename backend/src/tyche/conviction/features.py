@@ -90,6 +90,11 @@ class FeatureSignal:
     ema_50_slope: float = 0.0
     rsi_14: float = 0.0
 
+    iv_rank: float | None = None
+    iv_percentile: float | None = None
+    atm_iv: float | None = None
+    vrp: float | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "ticker": self.ticker,
@@ -111,6 +116,10 @@ class FeatureSignal:
             "ema_50": round(self.ema_50, 4),
             "ema_50_slope": round(self.ema_50_slope, 6),
             "rsi_14": round(self.rsi_14, 2),
+            "iv_rank": round(self.iv_rank, 1) if self.iv_rank is not None else None,
+            "iv_percentile": round(self.iv_percentile, 1) if self.iv_percentile is not None else None,
+            "atm_iv": round(self.atm_iv, 4) if self.atm_iv is not None else None,
+            "vrp": round(self.vrp, 4) if self.vrp is not None else None,
         }
 
 
@@ -165,15 +174,19 @@ class ConvictionFeatureEngine:
         pullback_proximity_pct: float = 2.0,
         min_bars: int = 50,
         signal_store: Any | None = None,
+        derived_store: Any | None = None,
     ) -> None:
         self._fast = ema_fast
         self._slow = ema_slow
         self._proximity_pct = pullback_proximity_pct
         self._min_bars = min_bars
         self._signal_store = signal_store
+        self._derived_store = derived_store
 
         self._cache: dict[str, FeatureSignal] = {}
         self._cache_date: str | None = None
+        self._derived_cache: dict[str, dict] = {}
+        self._derived_cache_date: str | None = None
 
     def invalidate_cache(self) -> None:
         """Clear the per-ticker feature cache and disk store."""
@@ -274,6 +287,8 @@ class ConvictionFeatureEngine:
         if isinstance(as_of, str):
             as_of = date.fromisoformat(as_of)
 
+        iv_metrics = self._derived_cache.get(cache_key, {})
+
         signal = FeatureSignal(
             ticker=ticker,
             trend_state=trend_state,
@@ -294,6 +309,10 @@ class ConvictionFeatureEngine:
             ema_50=last_ema_50,
             ema_50_slope=ema_50_slope,
             rsi_14=rsi_14,
+            iv_rank=iv_metrics.get("iv_rank"),
+            iv_percentile=iv_metrics.get("iv_percentile"),
+            atm_iv=iv_metrics.get("atm_iv"),
+            vrp=iv_metrics.get("vrp"),
         )
         self._cache[cache_key] = signal
         return signal
@@ -319,6 +338,8 @@ class ConvictionFeatureEngine:
                 cached_rows = self._signal_store.read_signals(as_of_date)
                 if cached_rows:
                     self._warm_from_store(cached_rows)
+
+        self._ensure_derived_cache(ticker_data)
 
         signals: list[FeatureSignal] = []
 
@@ -355,6 +376,28 @@ class ConvictionFeatureEngine:
         )
         return signals
 
+    def _ensure_derived_cache(self, ticker_data: dict[str, pd.DataFrame]) -> None:
+        """Bulk-load derived IV metrics for all tickers in the batch."""
+        if self._derived_store is None or not ticker_data:
+            return
+
+        sample_df = next(iter(ticker_data.values()), None)
+        if sample_df is None or sample_df.empty:
+            return
+
+        raw_as_of = sample_df["date"].iloc[-1]
+        as_of_str = raw_as_of if isinstance(raw_as_of, str) else raw_as_of.isoformat()
+
+        if self._derived_cache_date == as_of_str and self._derived_cache:
+            return
+
+        as_of_date = raw_as_of if isinstance(raw_as_of, date) else date.fromisoformat(str(raw_as_of))
+        tickers = list(ticker_data.keys())
+        self._derived_cache = self._derived_store.read_latest_batch(tickers, as_of_date)
+        self._derived_cache_date = as_of_str
+        if self._derived_cache:
+            logger.info("derived_metrics_loaded", tickers=len(self._derived_cache))
+
     def _warm_from_store(self, cached_rows: list[dict]) -> int:
         """Warm in-memory cache from stored EMA data, recomputing trend/conviction."""
         warmed = 0
@@ -383,6 +426,11 @@ class ConvictionFeatureEngine:
                 pullback_declining, streak,
             )
 
+            def _opt_float(val: Any) -> float | None:
+                if val is None or (isinstance(val, float) and np.isnan(val)):
+                    return None
+                return float(val)
+
             signal = FeatureSignal(
                 ticker=row["ticker"],
                 trend_state=trend_state,
@@ -403,6 +451,10 @@ class ConvictionFeatureEngine:
                 ema_50=float(row.get("ema_50", 0.0)),
                 ema_50_slope=float(row.get("ema_50_slope", 0.0)),
                 rsi_14=float(row.get("rsi_14", 0.0)),
+                iv_rank=_opt_float(row.get("iv_rank")),
+                iv_percentile=_opt_float(row.get("iv_percentile")),
+                atm_iv=_opt_float(row.get("atm_iv")),
+                vrp=_opt_float(row.get("vrp")),
             )
             self._cache[signal.ticker.upper()] = signal
             warmed += 1
