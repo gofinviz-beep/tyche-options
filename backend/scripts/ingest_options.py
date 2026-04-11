@@ -174,8 +174,8 @@ Examples:
         help="Tradier API rate limit in requests/minute (default: from config, typically 120)",
     )
     parser.add_argument(
-        "--min-market-cap", type=float, default=5e9,
-        help="Min market cap filter when using --from-ohlcv (default: $5B)",
+        "--min-market-cap", type=float, default=1e9,
+        help="Min market cap filter when using --from-ohlcv (default: $1B)",
     )
     parser.add_argument(
         "--dry-run", action="store_true",

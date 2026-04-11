@@ -9,7 +9,8 @@ option contract bars via Black-Scholes inverse.  Deduplicated on ``date``.
 
 from __future__ import annotations
 
-from datetime import date
+import json
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -179,3 +180,36 @@ class HistoricalIVStore:
             "earliest_date": str(earliest) if earliest else None,
             "latest_date": str(latest) if latest else None,
         }
+
+    # ── IV extraction checkpoint ─────────────────────────────────────
+
+    @property
+    def _checkpoint_path(self) -> Path:
+        return self._store_dir / "_iv_checkpoint.json"
+
+    def get_checkpoint(self) -> dict | None:
+        """Return the last IV extraction checkpoint, or None if never run."""
+        if not self._checkpoint_path.exists():
+            return None
+        try:
+            return json.loads(self._checkpoint_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def write_checkpoint(
+        self,
+        *,
+        last_options_date: str,
+        tickers_processed: int,
+        iv_points: int,
+    ) -> None:
+        """Atomically persist an IV extraction checkpoint."""
+        payload = {
+            "last_run_iso": datetime.now(timezone.utc).isoformat(),
+            "last_options_date": last_options_date,
+            "tickers_processed": tickers_processed,
+            "iv_points": iv_points,
+        }
+        tmp = self._checkpoint_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2))
+        tmp.replace(self._checkpoint_path)

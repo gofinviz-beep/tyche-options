@@ -34,7 +34,7 @@
 
 ## Testing
 
-- 952 unit tests in `tests/unit/`, run with `pytest`
+- 961 unit tests in `tests/unit/`, run with `pytest`
 - External APIs are always mocked — no network calls in tests
 - Use `AsyncMock` for async broker/LLM calls, `MagicMock` for data stores
 - `morning_scan.py`, `analysis/client.py` have 100% coverage; `exit_monitor.py` at 95%

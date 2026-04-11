@@ -67,7 +67,7 @@ logger = structlog.get_logger()
 
 S3_PREFIX = "us_options_opra/day_aggs_v1"
 
-MIN_MARKET_CAP = 4_000_000_000
+MIN_MARKET_CAP = 1_000_000_000
 TARGET_DTE = 30
 DTE_TOLERANCE = 5
 CSV_CHUNK_SIZE = 500_000
@@ -158,7 +158,8 @@ def _download_date_file(  # noqa: ANN001
         return raw
     except Exception as exc:
         err_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
-        if err_code in ("404", "NoSuchKey"):
+        # Massive S3 returns 403 (not 404) for objects that don't exist yet.
+        if err_code in ("403", "404", "NoSuchKey"):
             logger.debug("s3_file_not_found", date=str(d), key=key)
             return None
         logger.warning("s3_download_error", date=str(d), error=str(exc))
@@ -498,7 +499,8 @@ def _run_download_phase(
                     eta_min=round(eta_min, 1),
                 )
 
-    stats["tickers_touched"] = len(stats["tickers_touched"])
+    stats["tickers_touched_set"] = stats["tickers_touched"]
+    stats["tickers_touched"] = len(stats["tickers_touched_set"])
     return stats
 
 
@@ -508,12 +510,23 @@ def _run_iv_extraction(
     iv_store: HistoricalIVStore,
     derived_store: DerivedMetricsStore,
     skip_derived: bool,
+    tickers_subset: set[str] | None = None,
 ) -> dict:
     """Extract ATM IV from stored options history and compute derived metrics.
 
+    Args:
+        tickers_subset: When provided, only process these tickers (incremental).
+            When None, process all tickers in the history store (full recompute).
+
     Returns summary statistics.
     """
-    tickers = history_store.get_all_tickers()
+    if tickers_subset is not None:
+        tickers = sorted(tickers_subset)
+        logger.info("iv_extraction_incremental", tickers=len(tickers))
+    else:
+        tickers = history_store.get_all_tickers()
+        logger.info("iv_extraction_full", tickers=len(tickers))
+
     stats = {
         "tickers_processed": 0,
         "iv_points": 0,
@@ -591,6 +604,7 @@ def _load_ohlcv_closes(
 @click.option("--skip-iv", is_flag=True, help="Only download raw data, skip IV")
 @click.option("--skip-derived", is_flag=True, help="Compute IV but skip derived metrics")
 @click.option("--force", is_flag=True, help="Reprocess already-completed dates")
+@click.option("--force-iv", is_flag=True, help="Force IV extraction even when no new data downloaded")
 @click.option("--dry-run", is_flag=True, help="Show plan without downloading")
 @click.option("--min-market-cap", type=float, default=MIN_MARKET_CAP, help="Min market cap")
 @click.option("--min-institutional-pct", type=float, default=0, help="Min institutional %")
@@ -610,6 +624,7 @@ def main(
     skip_iv: bool,
     skip_derived: bool,
     force: bool,
+    force_iv: bool,
     dry_run: bool,
     min_market_cap: float,
     min_institutional_pct: float,
@@ -665,6 +680,15 @@ def main(
 
     if dry_run:
         click.echo("DRY RUN — no data downloaded or stored.")
+        checkpoint = iv_store.get_checkpoint()
+        if checkpoint:
+            click.echo(
+                f"\nLast IV checkpoint: {checkpoint.get('last_run_iso', 'unknown')}, "
+                f"through {checkpoint.get('last_options_date', 'unknown')}, "
+                f"{checkpoint.get('tickers_processed', '?')} tickers"
+            )
+        else:
+            click.echo("\nNo IV checkpoint found (Phase 2 has never completed).")
         click.echo(f"\nFirst 10 dates: {[d.isoformat() for d in all_dates[:10]]}")
         click.echo(f"Last 10 dates:  {[d.isoformat() for d in all_dates[-10:]]}")
         click.echo(f"\nFirst 20 tickers:")
@@ -709,24 +733,54 @@ def main(
     click.echo(f"  Tickers with data:    {dl_stats['tickers_touched']}")
 
     # Phase 2: ATM IV extraction
+    tickers_touched_set: set[str] = dl_stats.get("tickers_touched_set", set())
+    has_new_data = dl_stats["dates_processed"] > 0
+
     if not skip_iv:
-        click.echo("\nPhase 2: Extracting ATM IV and computing derived metrics...")
-        iv_start = time.monotonic()
+        if not has_new_data and not force_iv:
+            checkpoint = iv_store.get_checkpoint()
+            click.echo("\nPhase 2: Skipped — no new options data downloaded.")
+            click.echo("  Use --force-iv to recompute anyway.")
+            if checkpoint:
+                iv_pts = checkpoint.get("iv_points", 0)
+                click.echo(
+                    f"  Last IV run: {checkpoint.get('last_run_iso', 'unknown')}, "
+                    f"through {checkpoint.get('last_options_date', 'unknown')}, "
+                    f"{checkpoint.get('tickers_processed', '?')} tickers, "
+                    f"{iv_pts:,} IV points"
+                )
+        else:
+            tickers_for_iv = tickers_touched_set if (has_new_data and not force_iv) else None
+            mode_label = (
+                f"incremental ({len(tickers_for_iv)} tickers with new data)"
+                if tickers_for_iv is not None
+                else "full recompute"
+            )
+            click.echo(f"\nPhase 2: Extracting ATM IV and computing derived metrics ({mode_label})...")
+            iv_start = time.monotonic()
 
-        iv_stats = _run_iv_extraction(
-            history_store=history_store,
-            ohlcv_store=ohlcv_store,
-            iv_store=iv_store,
-            derived_store=derived_store,
-            skip_derived=skip_derived,
-        )
+            iv_stats = _run_iv_extraction(
+                history_store=history_store,
+                ohlcv_store=ohlcv_store,
+                iv_store=iv_store,
+                derived_store=derived_store,
+                skip_derived=skip_derived,
+                tickers_subset=tickers_for_iv,
+            )
 
-        iv_elapsed = time.monotonic() - iv_start
-        click.echo(f"\n  Phase 2 complete in {iv_elapsed / 60:.1f} minutes")
-        click.echo(f"  Tickers with IV:      {iv_stats['tickers_processed']}")
-        click.echo(f"  IV data points:       {iv_stats['iv_points']:,}")
-        if not skip_derived:
-            click.echo(f"  Derived tickers:      {iv_stats['derived_tickers']}")
+            iv_elapsed = time.monotonic() - iv_start
+            click.echo(f"\n  Phase 2 complete in {iv_elapsed / 60:.1f} minutes")
+            click.echo(f"  Tickers with IV:      {iv_stats['tickers_processed']}")
+            click.echo(f"  IV data points:       {iv_stats['iv_points']:,}")
+            if not skip_derived:
+                click.echo(f"  Derived tickers:      {iv_stats['derived_tickers']}")
+
+            last_date = all_dates[-1].isoformat() if all_dates else "unknown"
+            iv_store.write_checkpoint(
+                last_options_date=last_date,
+                tickers_processed=iv_stats["tickers_processed"],
+                iv_points=iv_stats["iv_points"],
+            )
 
     total_elapsed = time.monotonic() - overall_start
 
