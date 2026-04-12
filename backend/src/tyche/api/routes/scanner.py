@@ -14,6 +14,7 @@ from tyche.api.deps import (
     get_conviction_engine,
     get_data_store,
     get_earnings_client,
+    get_economic_calendar,
     get_portfolio_allocator,
     get_settings,
     get_strategy_engine,
@@ -211,6 +212,7 @@ async def trigger_scan(
     store: OHLCVStore = Depends(get_data_store),
     meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
     allocator: PortfolioAllocator = Depends(get_portfolio_allocator),
+    econ_calendar: Any = Depends(get_economic_calendar),
     settings: TycheSettings = Depends(get_settings),
 ) -> dict[str, Any]:
     """Trigger a full morning scan, persist results, and create trade intents.
@@ -272,6 +274,7 @@ async def trigger_scan(
         csp_min_oi=settings.csp_min_oi,
         min_institutional_pct_stock_buy=settings.min_institutional_pct_stock_buy,
         notification_dispatcher=notification_dispatcher,
+        economic_calendar=econ_calendar,
     )
 
     intents_created = 0

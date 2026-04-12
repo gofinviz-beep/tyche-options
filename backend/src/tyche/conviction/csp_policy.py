@@ -23,6 +23,7 @@ class CSPEligibilityPolicy:
         min_days_above_emas / max_days_above_emas: Streak sweet spot
         pullback_csp_enabled: Whether pullback path (Path B) is active
         min_prior_streak: Min prior uptrend days for pullback path
+        max_rsi: Optional RSI ceiling (0 = disabled). Blocks overbought tickers.
     """
 
     def __init__(
@@ -32,12 +33,14 @@ class CSPEligibilityPolicy:
         max_days_above_emas: int = 10,
         pullback_csp_enabled: bool = True,
         min_prior_streak: int = 5,
+        max_rsi: float = 0.0,
     ) -> None:
         self._max_extension_pct = max_extension_pct
         self._min_days_above = min_days_above_emas
         self._max_days_above = max_days_above_emas
         self._pullback_csp_enabled = pullback_csp_enabled
         self._min_prior_streak = min_prior_streak
+        self._max_rsi = max_rsi
 
     def evaluate(self, feature: FeatureSignal) -> dict:
         """Evaluate CSP gates and return policy fields.
@@ -169,7 +172,40 @@ class CSPEligibilityPolicy:
                 threshold=threshold, reason="Skipped — failed prior gate",
             ))
 
-        csp_eligible = trend_passed and ext_passed and streak_passed
+        # Gate 4 (optional): RSI Overbought
+        rsi_passed = True
+        if self._max_rsi > 0 and trend_passed and ext_passed and streak_passed:
+            rsi_val = feature.rsi_14
+            if rsi_val is not None:
+                rsi_passed = rsi_val <= self._max_rsi
+                gates.append(GateResult(
+                    gate="RSI Overbought",
+                    passed=rsi_passed,
+                    actual=f"{rsi_val:.1f}",
+                    threshold=f"≤{self._max_rsi:.0f}",
+                    reason=(
+                        f"RSI {rsi_val:.1f} within limit"
+                        if rsi_passed
+                        else f"RSI {rsi_val:.1f} exceeds overbought threshold {self._max_rsi:.0f} — mean-reversion risk"
+                    ),
+                ))
+            else:
+                gates.append(GateResult(
+                    gate="RSI Overbought",
+                    passed=True,
+                    actual="n/a",
+                    threshold=f"≤{self._max_rsi:.0f}",
+                    reason="RSI data not available — gate skipped",
+                ))
+        elif self._max_rsi > 0 and not (trend_passed and ext_passed and streak_passed):
+            rsi_passed = True  # don't double-fail
+            gates.append(GateResult(
+                gate="RSI Overbought", passed=False, actual="—",
+                threshold=f"≤{self._max_rsi:.0f}",
+                reason="Skipped — failed prior gate",
+            ))
+
+        csp_eligible = trend_passed and ext_passed and streak_passed and rsi_passed
         conviction_level = feature.raw_conviction
         if not csp_eligible and trend_passed:
             conviction_level = "low"
@@ -210,7 +246,8 @@ class CSPEligibilityPolicy:
             actual = "no data"
             reason = "No OHLCV data in store — bootstrap or check ticker symbol"
 
-        return [
+        skip_reason = "Skipped — failed prior gate" if has_data else "Skipped — no data"
+        gates = [
             GateResult(
                 gate="Trend State", passed=False, actual=actual,
                 threshold="OHLCV data required" if not has_data else "≥50 bars required",
@@ -219,11 +256,18 @@ class CSPEligibilityPolicy:
             GateResult(
                 gate="Extension Cap", passed=False, actual="—",
                 threshold=f"≤{self._max_extension_pct}%",
-                reason="Skipped — failed prior gate" if has_data else "Skipped — no data",
+                reason=skip_reason,
             ),
             GateResult(
                 gate="Days Above EMAs", passed=False, actual="—",
                 threshold=f"{self._min_days_above}–{self._max_days_above}d",
-                reason="Skipped — failed prior gate" if has_data else "Skipped — no data",
+                reason=skip_reason,
             ),
         ]
+        if self._max_rsi > 0:
+            gates.append(GateResult(
+                gate="RSI Overbought", passed=False, actual="—",
+                threshold=f"≤{self._max_rsi:.0f}",
+                reason=skip_reason,
+            ))
+        return gates

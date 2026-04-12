@@ -138,6 +138,7 @@ async def run_morning_scan(
     institutional_batch_size: int = 20,
     institutional_max_retries: int = 2,
     pre_allocator_pool_size: int = 0,
+    economic_calendar: Any | None = None,
 ) -> MorningScanResult:
     """Execute the full morning scan pipeline.
 
@@ -429,6 +430,7 @@ async def run_morning_scan(
             min_scan_dte=min_scan_dte,
             target_dte_sweet_spot=target_dte_sweet_spot,
             pre_allocator_pool_size=pre_allocator_pool_size,
+            economic_calendar=economic_calendar,
         )
         result.csp_candidates = csp_pool[:top_n]
     except Exception as exc:

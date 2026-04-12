@@ -35,6 +35,7 @@ import {
 } from "@/hooks/useApi";
 import type {
   CSPCandidate,
+  ConvictionSignal,
   ScanResult,
   ScanHistoryEntry,
   PipelineStage,
@@ -513,7 +514,10 @@ function ScanResults({ scan }: { scan: ScanResult }) {
       )}
 
       {/* CSP Candidates — grouped by ticker */}
-      <CspCandidatesGrouped candidates={scan.csp_candidates} />
+      <CspCandidatesGrouped
+        candidates={scan.csp_candidates}
+        convictionSignals={scan.conviction_signals}
+      />
 
       {/* Allocation Summary — optimizer-selected trades */}
       {(scan.allocated_trades?.length > 0 || scan.allocation) && (
@@ -729,8 +733,10 @@ interface TickerGroup {
 
 function CspCandidatesGrouped({
   candidates,
+  convictionSignals,
 }: {
   candidates: CSPCandidate[];
+  convictionSignals?: Record<string, ConvictionSignal>;
 }) {
   const groups = useMemo(() => {
     const map = new Map<string, CSPCandidate[]>();
@@ -769,7 +775,11 @@ function CspCandidatesGrouped({
       {candidates.length > 0 ? (
         <div className="space-y-1">
           {groups.map((g) => (
-            <TickerGroupRow key={g.symbol} group={g} />
+            <TickerGroupRow
+              key={g.symbol}
+              group={g}
+              convictionScore={convictionSignals?.[g.symbol]?.conviction_score}
+            />
           ))}
         </div>
       ) : (
@@ -782,9 +792,16 @@ function CspCandidatesGrouped({
   );
 }
 
-function TickerGroupRow({ group }: { group: TickerGroup }) {
+function TickerGroupRow({
+  group,
+  convictionScore,
+}: {
+  group: TickerGroup;
+  convictionScore?: number;
+}) {
   const [expanded, setExpanded] = useState(false);
   const best = group.candidates[0];
+  const cscore = Math.round((convictionScore ?? 0) * 100);
 
   return (
     <div className="rounded-lg border border-gray-100">
@@ -802,6 +819,19 @@ function TickerGroupRow({ group }: { group: TickerGroup }) {
           <span className="text-sm font-bold text-gray-900">
             {group.symbol}
           </span>
+          {convictionScore != null && (
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                cscore >= 70
+                  ? "bg-emerald-50 text-emerald-600"
+                  : cscore >= 40
+                    ? "bg-amber-50 text-amber-600"
+                    : "bg-gray-50 text-gray-500"
+              }`}
+            >
+              {cscore}
+            </span>
+          )}
           {group.hasEarnings && (
             <StatusBadge label="EARNINGS" variant="warning" />
           )}

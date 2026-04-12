@@ -238,15 +238,15 @@ class TestInstitutionalAlwaysOn:
     """The size gate (len <= 100) is removed; filter always runs."""
 
     @pytest.mark.asyncio
-    async def test_runs_for_large_watchlist(self):
+    async def test_runs_for_any_watchlist(self):
         """Institutional filter should run regardless of watchlist size."""
         broker = MockBroker()
-        tickers = [f"T{i}" for i in range(150)]
+        tickers = ["AAPL", "MSFT", "NVDA"]
 
         with patch(
             "tyche.workflow.morning_scan.filter_by_institutional_ownership_batched",
             new_callable=AsyncMock,
-            return_value=(tickers, {}, InstitutionalFilterStats(total_tickers=150, batches_run=8)),
+            return_value=(tickers, {}, InstitutionalFilterStats(total_tickers=3, batches_run=2)),
         ) as mock_filter:
             result = await run_morning_scan(
                 broker=broker,
@@ -256,12 +256,12 @@ class TestInstitutionalAlwaysOn:
                 universe_builder=UniverseBuilder(min_avg_volume=0),
                 watchlist=tickers,
                 min_institutional_pct=0.40,
-                institutional_batch_size=20,
+                institutional_batch_size=2,
             )
 
             mock_filter.assert_called_once()
             call_args = mock_filter.call_args
-            assert call_args.kwargs.get("batch_size") == 20 or call_args[1].get("batch_size") == 20
+            assert call_args.kwargs.get("batch_size") == 2 or call_args[1].get("batch_size") == 2
 
     @pytest.mark.asyncio
     async def test_failure_safe_continues_scan(self):

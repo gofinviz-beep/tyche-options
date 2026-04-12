@@ -207,7 +207,10 @@ class TestGetBatchMarketCapsConcurrent:
                 return _mock_response(429, {})
             return _mock_response(200, {"results": {"market_cap": 2e9}})
 
-        with patch("httpx.AsyncClient") as mock_cls:
+        with (
+            patch("httpx.AsyncClient") as mock_cls,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
             ctx = AsyncMock()
             ctx.get = mock_get
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=ctx)

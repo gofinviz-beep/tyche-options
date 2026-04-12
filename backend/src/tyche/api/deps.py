@@ -19,6 +19,7 @@ from tyche.conviction.csp_policy import CSPEligibilityPolicy
 from tyche.market_data.data_store import ConvictionSignalStore, OHLCVStore, TickerMetaStore
 from tyche.market_data.derived_store import DerivedMetricsStore
 from tyche.market_data.earnings import EarningsCalendarClient
+from tyche.market_data.economic_calendar import EconomicCalendar
 from tyche.market_data.polygon import PolygonClient
 from tyche.market_data.universe import UniverseBuilder
 from tyche.risk.engine import RiskEngine
@@ -45,6 +46,7 @@ _gemini_instance: GeminiClient | None = None
 _analysis_agent: AnalysisAgent | None = None
 _risk_engine: RiskEngine | None = None
 _earnings_client: EarningsCalendarClient | None = None
+_economic_calendar: EconomicCalendar | None = None
 _strategy_engine: StrategyEngine | None = None
 _universe_builder: UniverseBuilder | None = None
 _scheduler: WorkflowScheduler | None = None
@@ -147,6 +149,14 @@ def get_earnings_client(
             manual_overrides=settings.earnings_overrides or None,
         )
     return _earnings_client
+
+
+def get_economic_calendar() -> EconomicCalendar:
+    """Provide the economic/macro event calendar (static, no API needed)."""
+    global _economic_calendar
+    if _economic_calendar is None:
+        _economic_calendar = EconomicCalendar()
+    return _economic_calendar
 
 
 def get_strategy_engine(
@@ -302,6 +312,7 @@ def get_csp_policy(
             max_days_above_emas=settings.max_days_above_emas,
             pullback_csp_enabled=settings.pullback_csp_enabled,
             min_prior_streak=settings.min_prior_streak,
+            max_rsi=settings.csp_max_rsi,
         )
         logger.info("csp_policy_initialized")
     return _csp_policy
@@ -373,14 +384,28 @@ def get_portfolio_allocator(
 
 
 def reset_all() -> None:
-    """Reset all singleton instances (for testing)."""
+    """Reset all singleton instances and flush stale caches.
+
+    Called on config changes (PATCH /system/config) and in tests.
+    Clears in-memory caches AND the on-disk Parquet signal store so the
+    next singleton creation doesn't re-warm from stale data.
+    """
     global _broker_instance, _gemini_instance, _analysis_agent
     global _risk_engine, _earnings_client, _strategy_engine
     global _universe_builder, _scheduler
     global _polygon_client, _data_store, _conviction_engine
     global _active_monitor, _ticker_meta_store, _portfolio_allocator
     global _conviction_signal_store, _feature_engine, _csp_policy
-    global _derived_store
+    global _derived_store, _economic_calendar
+
+    if _conviction_engine is not None:
+        _conviction_engine.invalidate_cache()
+    elif _feature_engine is not None:
+        _feature_engine.invalidate_cache()
+
+    from tyche.api.routes.conviction import invalidate_conviction_cache
+    invalidate_conviction_cache()
+
     _broker_instance = None
     _gemini_instance = None
     _analysis_agent = None
@@ -399,3 +424,4 @@ def reset_all() -> None:
     _conviction_signal_store = None
     _derived_store = None
     _portfolio_allocator = None
+    _economic_calendar = None

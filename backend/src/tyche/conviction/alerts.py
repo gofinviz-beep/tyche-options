@@ -61,6 +61,7 @@ class PullbackAlert:
     iv_percentile: float | None = None
     atm_iv: float | None = None
     vrp: float | None = None
+    conviction_score: float = 0.0
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> dict:
@@ -70,6 +71,7 @@ class PullbackAlert:
             "severity": self.severity,
             "trend_state": self.trend_state.value,
             "conviction_level": self.conviction_level,
+            "conviction_score": round(self.conviction_score, 3),
             "last_close": round(self.last_close, 2),
             "ema_8": round(self.ema_8, 4),
             "ema_21": round(self.ema_21, 4),
@@ -205,6 +207,7 @@ def detect_pullback_alerts(
             iv_percentile=sig.iv_percentile,
             atm_iv=sig.atm_iv,
             vrp=sig.vrp,
+            conviction_score=getattr(sig, "conviction_score", 0.0),
             volume_declining=sig.volume_declining_on_pullback,
             institutional_pct=inst_pct,
             institutional_label=_institutional_label(inst_pct),

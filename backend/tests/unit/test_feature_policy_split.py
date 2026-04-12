@@ -19,6 +19,7 @@ from tyche.conviction.features import (
     ConvictionFeatureEngine,
     FeatureSignal,
     TrendState,
+    compute_conviction_score,
 )
 from tyche.conviction.csp_policy import CSPEligibilityPolicy
 from tyche.conviction.engine import ConvictionEngine, ConvictionSignal
@@ -219,6 +220,127 @@ class TestCSPPolicyIsolation:
         assert ext_gate.passed is True
 
 
+class TestCSPPolicyRSIGate:
+    """RSI overbought gate (Gate 4) — optional, controlled by max_rsi config."""
+
+    def test_rsi_gate_disabled_by_default(self):
+        """max_rsi=0 (default) means no RSI gate — overbought tickers pass."""
+        policy = CSPEligibilityPolicy()
+        feature = FeatureSignal(
+            ticker="OB",
+            trend_state=TrendState.STRONG_UPTREND,
+            raw_conviction="high",
+            days_above_both_emas=7,
+            price_to_8ema_pct=1.5,
+            rsi_14=80.0,
+        )
+        result = policy.evaluate(feature)
+        assert result["csp_eligible"] is True
+        gate_names = [g.gate for g in result["gate_results"]]
+        assert "RSI Overbought" not in gate_names
+
+    def test_rsi_gate_blocks_overbought(self):
+        policy = CSPEligibilityPolicy(max_rsi=70.0)
+        feature = FeatureSignal(
+            ticker="OB",
+            trend_state=TrendState.STRONG_UPTREND,
+            raw_conviction="high",
+            days_above_both_emas=7,
+            price_to_8ema_pct=1.5,
+            rsi_14=76.0,
+        )
+        result = policy.evaluate(feature)
+        assert result["csp_eligible"] is False
+        rsi_gate = next(g for g in result["gate_results"] if g.gate == "RSI Overbought")
+        assert rsi_gate.passed is False
+        assert "76.0" in rsi_gate.actual
+
+    def test_rsi_gate_passes_normal(self):
+        policy = CSPEligibilityPolicy(max_rsi=70.0)
+        feature = FeatureSignal(
+            ticker="OK",
+            trend_state=TrendState.STRONG_UPTREND,
+            raw_conviction="high",
+            days_above_both_emas=7,
+            price_to_8ema_pct=1.5,
+            rsi_14=55.0,
+        )
+        result = policy.evaluate(feature)
+        assert result["csp_eligible"] is True
+        rsi_gate = next(g for g in result["gate_results"] if g.gate == "RSI Overbought")
+        assert rsi_gate.passed is True
+
+    def test_rsi_gate_at_boundary(self):
+        """RSI exactly at threshold should pass (≤ check)."""
+        policy = CSPEligibilityPolicy(max_rsi=70.0)
+        feature = FeatureSignal(
+            ticker="EDGE",
+            trend_state=TrendState.STRONG_UPTREND,
+            raw_conviction="high",
+            days_above_both_emas=7,
+            price_to_8ema_pct=1.5,
+            rsi_14=70.0,
+        )
+        result = policy.evaluate(feature)
+        assert result["csp_eligible"] is True
+
+    def test_rsi_gate_skips_when_no_data(self):
+        """RSI=None should pass (data unavailable, no penalty)."""
+        policy = CSPEligibilityPolicy(max_rsi=70.0)
+        feature = FeatureSignal(
+            ticker="NODATA",
+            trend_state=TrendState.STRONG_UPTREND,
+            raw_conviction="high",
+            days_above_both_emas=7,
+            price_to_8ema_pct=1.5,
+            rsi_14=None,
+        )
+        result = policy.evaluate(feature)
+        assert result["csp_eligible"] is True
+        rsi_gate = next(g for g in result["gate_results"] if g.gate == "RSI Overbought")
+        assert rsi_gate.passed is True
+        assert "n/a" in rsi_gate.actual
+
+    def test_rsi_gate_skipped_when_prior_gate_fails(self):
+        """If trend gate fails, RSI gate should show as skipped."""
+        policy = CSPEligibilityPolicy(max_rsi=70.0)
+        feature = FeatureSignal(
+            ticker="DOWN",
+            trend_state=TrendState.DOWNTREND,
+            raw_conviction="none",
+            rsi_14=80.0,
+        )
+        result = policy.evaluate(feature)
+        assert result["csp_eligible"] is False
+
+    def test_rsi_gate_in_insufficient_data(self):
+        """RSI gate shows in insufficient data result when enabled."""
+        policy = CSPEligibilityPolicy(max_rsi=70.0)
+        feature = FeatureSignal(
+            ticker="BAD",
+            trend_state=TrendState.INSUFFICIENT_DATA,
+        )
+        result = policy.evaluate(feature)
+        gate_names = [g.gate for g in result["gate_results"]]
+        assert "RSI Overbought" in gate_names
+
+    def test_rsi_gate_works_on_pullback_path(self):
+        """Pullback path + overbought RSI should block eligibility."""
+        policy = CSPEligibilityPolicy(max_rsi=70.0, min_prior_streak=5)
+        feature = FeatureSignal(
+            ticker="PB_OB",
+            trend_state=TrendState.PULLBACK_TO_21EMA,
+            raw_conviction="high",
+            prior_streak=10,
+            ema_21_slope=0.5,
+            rsi_14=75.0,
+        )
+        result = policy.evaluate(feature)
+        assert result["csp_eligible"] is False
+        rsi_gate = next(g for g in result["gate_results"] if g.gate == "RSI Overbought")
+        assert rsi_gate.passed is False
+
+
 class TestBlastRadiusIsolation:
     """Small batch doesn't corrupt cached data from large batch."""
 
@@ -351,3 +473,122 @@ class TestConfigChangeRecomputation:
 
         assert wide_result["csp_eligible"] != narrow_result["csp_eligible"] or \
             aapl_feature.days_above_both_emas <= 3
+
+
+class TestConvictionScore:
+    """Tests for the 0-1 conviction score computed from FeatureSignal fields."""
+
+    def _base_signal(self, **overrides) -> FeatureSignal:
+        defaults = dict(
+            ticker="TEST",
+            trend_state=TrendState.PULLBACK_TO_21EMA,
+            raw_conviction="high",
+            last_close=100.0,
+            ema_8=101.0,
+            ema_21=100.5,
+            ema_8_slope=0.1,
+            ema_21_slope=0.6,
+            price_to_8ema_pct=-1.0,
+            price_to_21ema_pct=-0.5,
+            volume_declining_on_pullback=True,
+            avg_volume_20d=1_000_000,
+            latest_volume=800_000,
+            days_above_both_emas=0,
+            prior_streak=15,
+            ema_50=98.0,
+            ema_50_slope=0.15,
+            rsi_14=45.0,
+            iv_rank=55.0,
+            vrp=30.0,
+        )
+        defaults.update(overrides)
+        return FeatureSignal(**defaults)
+
+    def test_perfect_pullback_scores_high(self):
+        sig = self._base_signal()
+        score = compute_conviction_score(sig)
+        assert score >= 0.80
+
+    def test_score_bounded_0_to_1(self):
+        sig = self._base_signal()
+        score = compute_conviction_score(sig)
+        assert 0.0 <= score <= 1.0
+
+    def test_downtrend_scores_zero(self):
+        sig = self._base_signal(
+            trend_state=TrendState.DOWNTREND,
+            raw_conviction="none",
+            prior_streak=0,
+            ema_21_slope=-0.1,
+            volume_declining_on_pullback=False,
+            rsi_14=30.0,
+            iv_rank=None,
+            vrp=None,
+        )
+        score = compute_conviction_score(sig)
+        assert score <= 0.15
+
+    def test_trend_state_ordering(self):
+        strong = compute_conviction_score(
+            self._base_signal(trend_state=TrendState.STRONG_UPTREND, days_above_both_emas=10)
+        )
+        pullback_21 = compute_conviction_score(
+            self._base_signal(trend_state=TrendState.PULLBACK_TO_21EMA)
+        )
+        pullback_8 = compute_conviction_score(
+            self._base_signal(trend_state=TrendState.PULLBACK_TO_8EMA)
+        )
+        uptrend = compute_conviction_score(
+            self._base_signal(trend_state=TrendState.UPTREND, days_above_both_emas=10)
+        )
+        assert strong > uptrend
+        assert pullback_21 > pullback_8
+
+    def test_longer_streak_scores_higher(self):
+        short = compute_conviction_score(self._base_signal(prior_streak=3))
+        long = compute_conviction_score(self._base_signal(prior_streak=12))
+        assert long > short
+
+    def test_rsi_sweet_spot(self):
+        ideal = compute_conviction_score(self._base_signal(rsi_14=40.0))
+        elevated = compute_conviction_score(self._base_signal(rsi_14=65.0))
+        overbought = compute_conviction_score(self._base_signal(rsi_14=75.0))
+        assert ideal > elevated
+        assert elevated > overbought
+
+    def test_iv_rank_sweet_spot(self):
+        sweet = compute_conviction_score(self._base_signal(iv_rank=55.0))
+        low = compute_conviction_score(self._base_signal(iv_rank=10.0))
+        spiked = compute_conviction_score(self._base_signal(iv_rank=95.0))
+        assert sweet > low
+        assert sweet > spiked
+
+    def test_vrp_bonus(self):
+        positive = compute_conviction_score(self._base_signal(vrp=20.0))
+        zero = compute_conviction_score(self._base_signal(vrp=0.0))
+        none = compute_conviction_score(self._base_signal(vrp=None))
+        assert positive > zero
+        assert zero == none
+
+    def test_volume_declining_bonus(self):
+        declining = compute_conviction_score(
+            self._base_signal(volume_declining_on_pullback=True)
+        )
+        rising = compute_conviction_score(
+            self._base_signal(volume_declining_on_pullback=False)
+        )
+        assert declining > rising
+        assert declining - rising == pytest.approx(0.05, abs=0.001)
+
+    def test_missing_iv_no_penalty(self):
+        with_iv = compute_conviction_score(self._base_signal(iv_rank=55.0, vrp=15.0))
+        no_iv = compute_conviction_score(self._base_signal(iv_rank=None, vrp=None))
+        assert with_iv > no_iv
+        assert no_iv > 0.5
+
+    def test_score_in_to_dict(self):
+        sig = self._base_signal()
+        sig.conviction_score = compute_conviction_score(sig)
+        d = sig.to_dict()
+        assert "conviction_score" in d
+        assert d["conviction_score"] > 0

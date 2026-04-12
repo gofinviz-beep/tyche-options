@@ -17,6 +17,7 @@ from tyche.broker.base import (
 )
 from tyche.strategy.ranking import RankingWeights, rank_candidates
 from tyche.strategy.strategies.base import ScoredCandidate
+from tyche.market_data.economic_calendar import EconomicCalendar
 from tyche.strategy.strategies.cash_secured_put import CashSecuredPutStrategy
 from tyche.strategy.strategies.covered_call import CoveredCallStrategy
 from tyche.telemetry import csp_scan_candidates_found, csp_scan_drops
@@ -139,6 +140,7 @@ class StrategyEngine:
         ranking_mode: str = "legacy",
         ranking_weights: RankingWeights | None = None,
         pre_allocator_pool_size: int = 0,
+        economic_calendar: EconomicCalendar | None = None,
     ) -> tuple[list[ScoredCandidate], dict[str, int]]:
         """Scan the watchlist for CSP opportunities.
 
@@ -184,6 +186,7 @@ class StrategyEngine:
         vrp_map: dict[str, float] = {}
         iv_rank_map: dict[str, float] = {}
         trend_confirm_map: dict[str, bool] = {}
+        rsi_map: dict[str, float] = {}
         if conviction_signals:
             for sym, sig in conviction_signals.items():
                 v = getattr(sig, "vrp", None)
@@ -196,6 +199,9 @@ class StrategyEngine:
                 lc = getattr(sig, "last_close", 0.0)
                 if ema50 > 0 and lc > 0:
                     trend_confirm_map[sym] = lc >= ema50
+                rsi = getattr(sig, "rsi_14", None)
+                if rsi is not None:
+                    rsi_map[sym] = rsi
 
         semaphore = asyncio.Semaphore(10)
 
@@ -370,22 +376,36 @@ class StrategyEngine:
                         )
                         continue
 
+                    earnings_date = earnings_dates.get(symbol)
+                    earnings_set: set[str] = set()
+                    if earnings_date:
+                        for fc in filtered:
+                            if fc.dte > 0 and earnings_date <= fc.expiration:
+                                earnings_set.add(fc.symbol)
+                                break
+
                     scored = self.csp.score(
                         filtered, available_cash,
                         vrp_map=vrp_map,
                         iv_rank_map=iv_rank_map,
                         trend_confirm_map=trend_confirm_map,
+                        rsi_map=rsi_map,
+                        earnings_within_dte_set=earnings_set,
                     )
                     if not scored:
                         local_drops["insufficient_capital"] = local_drops.get("insufficient_capital", 0) + 1
                         continue
 
-                    earnings_date = earnings_dates.get(symbol)
                     for sc in scored:
                         if earnings_date and sc.dte > 0:
                             sc.earnings_date = earnings_date
                             sc.earnings_within_dte = (
                                 earnings_date <= sc.expiration
+                            )
+                        if economic_calendar and sc.dte > 0:
+                            today = date.today()
+                            sc.macro_event_in_dte = economic_calendar.has_high_impact_event(
+                                today, sc.expiration,
                             )
 
                     scored_out.extend(scored)

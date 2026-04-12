@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -401,7 +401,7 @@ class TestConvictionSnapshotsEndpoint:
     @patch("tyche.api.routes.stocks.get_snapshots_for_date", new_callable=AsyncMock)
     async def test_no_fallback_when_latest_is_future(self, mock_snaps, mock_latest):
         """If latest snapshot date >= target, don't retry (avoids infinite loop)."""
-        mock_latest.return_value = date(2026, 4, 5)
+        mock_latest.return_value = date.today() + timedelta(days=1)
         mock_snaps.return_value = []
 
         from tyche.api.routes.stocks import get_conviction_snapshots_endpoint

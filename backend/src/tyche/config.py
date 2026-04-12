@@ -167,6 +167,9 @@ class TycheSettings(BaseModel):
     max_days_above_emas: int = 10
     bootstrap_days: int = 120
 
+    # --- CSP RSI Gate ---
+    csp_max_rsi: float = 0.0  # 0 = disabled; e.g. 70 blocks overbought tickers
+
     # --- Pullback CSP ---
     pullback_csp_enabled: bool = True
     min_prior_streak: int = 5

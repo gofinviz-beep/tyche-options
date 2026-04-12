@@ -96,6 +96,35 @@ const snapshotColumns: DataTableColumn<ConvictionSnapshot>[] = [
     },
   },
   {
+    key: "conviction_score",
+    header: "Score",
+    accessor: (r) => r.conviction_score ?? 0,
+    sortable: true,
+    align: "right" as const,
+    render: (r: ConvictionSnapshot) => {
+      const s = r.conviction_score ?? 0;
+      const pct = Math.round(s * 100);
+      const color =
+        pct >= 70
+          ? "text-emerald-600"
+          : pct >= 40
+            ? "text-amber-600"
+            : "text-gray-400";
+      return (
+        <div className="flex items-center gap-1.5 justify-end">
+          <div className="h-1.5 w-12 rounded-full bg-gray-100 overflow-hidden">
+            <div
+              className={`h-full rounded-full ${pct >= 70 ? "bg-emerald-500" : pct >= 40 ? "bg-amber-400" : "bg-gray-300"}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <span className={`font-mono text-xs ${color}`}>{pct}</span>
+        </div>
+      );
+    },
+    filter: { type: "min" as const, placeholder: "Min" },
+  },
+  {
     key: "last_close",
     header: "Price",
     accessor: (r) => r.last_close,

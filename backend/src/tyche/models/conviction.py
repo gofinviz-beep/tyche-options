@@ -56,6 +56,8 @@ class ConvictionSnapshot(Base):
     atm_iv: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     vrp: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
+    conviction_score: Mapped[float] = mapped_column(Float, default=0.0)
+
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     def to_dict(self) -> dict:
@@ -85,6 +87,7 @@ class ConvictionSnapshot(Base):
             "iv_percentile": round(self.iv_percentile, 1) if self.iv_percentile is not None else None,
             "atm_iv": round(self.atm_iv, 4) if self.atm_iv is not None else None,
             "vrp": round(self.vrp, 4) if self.vrp is not None else None,
+            "conviction_score": round(self.conviction_score or 0.0, 3),
             "computed_at": self.computed_at.isoformat() if self.computed_at else None,
         }
 

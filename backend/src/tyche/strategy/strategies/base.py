@@ -57,6 +57,9 @@ class ScoredCandidate(FilteredCandidate):
     earnings_within_dte: bool = False
     earnings_date: date | None = None
 
+    # Macro catalyst context (populated later)
+    macro_event_in_dte: bool = False
+
 
 class StrategyProtocol(Protocol):
     """Protocol that all strategy implementations must follow."""

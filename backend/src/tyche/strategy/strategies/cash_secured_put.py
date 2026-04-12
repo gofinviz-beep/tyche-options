@@ -132,6 +132,16 @@ class CashSecuredPutStrategy:
                 filtered.append(fc)
         return filtered
 
+    # Backtest-derived day-of-week multipliers for CSP entry quality.
+    # Tuesday/Wednesday are optimal; Thursday/Friday are weakest.
+    _DOW_FACTORS: dict[int, float] = {
+        0: 0.85,  # Monday
+        1: 1.00,  # Tuesday  (optimal)
+        2: 1.00,  # Wednesday (optimal)
+        3: 0.70,  # Thursday
+        4: 0.70,  # Friday
+    }
+
     def score(
         self,
         candidates: list[FilteredCandidate],
@@ -139,6 +149,9 @@ class CashSecuredPutStrategy:
         vrp_map: dict[str, float] | None = None,
         iv_rank_map: dict[str, float] | None = None,
         trend_confirm_map: dict[str, bool] | None = None,
+        rsi_map: dict[str, float] | None = None,
+        earnings_within_dte_set: set[str] | None = None,
+        scan_date: date | None = None,
     ) -> list[ScoredCandidate]:
         """Score and rank CSP candidates by risk-adjusted premium quality.
 
@@ -146,13 +159,22 @@ class CashSecuredPutStrategy:
         - **liquidity_factor**: scales to 1.0 at OI >= 1000
         - **dte_factor**: penalizes < 7 DTE (3 DTE -> 0.43x, 7+ -> 1.0x)
         - **vrp_factor**: up to 30% bonus for positive VRP tickers
-        - **iv_rank_factor**: 0.7 at rank 0, scales to 1.0 at rank 60+
+        - **iv_rank_factor**: 0.7 at rank 0, 1.0 at rank 60-85, drops to 0.8 at 100
         - **trend_confirm_factor**: 0.85 penalty when price < 50-EMA
+        - **rsi_factor**: 0.7 penalty when RSI > 70 (overbought mean-reversion risk)
+        - **earnings_factor**: 0.5 penalty when earnings fall within DTE
+        - **dow_factor**: day-of-week penalty (Mon 0.85x, Thu/Fri 0.70x, Tue/Wed 1.0x)
+        - **iv_catalyst_factor**: 0.5 penalty when IV Rank > 80 AND earnings within DTE
         """
         scored: list[ScoredCandidate] = []
         vrp_map = vrp_map or {}
         iv_rank_map = iv_rank_map or {}
         trend_confirm_map = trend_confirm_map or {}
+        rsi_map = rsi_map or {}
+        earnings_within_dte_set = earnings_within_dte_set or set()
+
+        effective_date = scan_date or date.today()
+        dow_factor = self._DOW_FACTORS.get(effective_date.weekday(), 1.0)
 
         for c in candidates:
             collateral_per_contract = c.strike * 100
@@ -177,12 +199,33 @@ class CashSecuredPutStrategy:
             vrp_factor = 1.0 + min(0.3, max(0.0, vrp) * 1.0)
 
             iv_rank = iv_rank_map.get(c.symbol)
-            iv_rank_factor = (0.7 + 0.3 * min(1.0, iv_rank / 60)) if iv_rank is not None else 1.0
+            if iv_rank is not None:
+                if iv_rank <= 60:
+                    iv_rank_factor = 0.7 + 0.3 * (iv_rank / 60)
+                elif iv_rank <= 85:
+                    iv_rank_factor = 1.0
+                else:
+                    # IV Rank > 85: event-driven spike risk — linearly penalize
+                    # 85 → 1.0, 100 → 0.8
+                    iv_rank_factor = 1.0 - (iv_rank - 85) * (0.2 / 15)
+            else:
+                iv_rank_factor = 1.0
 
             above_50ema = trend_confirm_map.get(c.symbol)
             trend_confirm_factor = 1.0 if above_50ema is None else (1.0 if above_50ema else 0.85)
 
-            score = annualized * liquidity_factor * dte_factor * vrp_factor * iv_rank_factor * trend_confirm_factor
+            rsi = rsi_map.get(c.symbol)
+            rsi_factor = 0.7 if (rsi is not None and rsi > 70) else 1.0
+
+            has_earnings = c.symbol in earnings_within_dte_set
+            earnings_factor = 0.5 if has_earnings else 1.0
+
+            # Compound penalty: high IV + earnings = likely IV trap
+            iv_catalyst_factor = 1.0
+            if has_earnings and iv_rank is not None and iv_rank > 80:
+                iv_catalyst_factor = 0.5
+
+            score = annualized * liquidity_factor * dte_factor * vrp_factor * iv_rank_factor * trend_confirm_factor * rsi_factor * earnings_factor * dow_factor * iv_catalyst_factor
 
             sc = ScoredCandidate(
                 **{k: getattr(c, k) for k in FilteredCandidate.__dataclass_fields__},

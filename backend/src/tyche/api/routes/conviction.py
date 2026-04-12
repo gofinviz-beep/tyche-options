@@ -326,6 +326,7 @@ def _signal_to_response(
         iv_percentile=round(s.iv_percentile, 1) if s.iv_percentile is not None else None,
         atm_iv=round(s.atm_iv, 4) if s.atm_iv is not None else None,
         vrp=round(s.vrp, 4) if s.vrp is not None else None,
+        conviction_score=round(s.conviction_score, 3),
         market_cap=market_cap if market_cap and market_cap > 0 else None,
         institutional_pct=round(institutional_pct, 4) if institutional_pct is not None else None,
         gate_results=[

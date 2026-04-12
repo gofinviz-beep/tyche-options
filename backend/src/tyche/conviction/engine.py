@@ -72,6 +72,8 @@ class ConvictionSignal:
     atm_iv: float | None = None
     vrp: float | None = None
 
+    conviction_score: float = 0.0
+
     gate_results: list[GateResult] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -80,6 +82,7 @@ class ConvictionSignal:
             "trend_state": self.trend_state.value,
             "conviction_level": self.conviction_level,
             "raw_conviction": self.raw_conviction,
+            "conviction_score": round(self.conviction_score, 3),
             "csp_eligible": self.csp_eligible,
             "last_close": round(self.last_close, 2),
             "ema_8": round(self.ema_8, 4),
@@ -133,6 +136,7 @@ def _feature_to_signal(feature: FeatureSignal, policy_result: dict) -> Convictio
         iv_percentile=feature.iv_percentile,
         atm_iv=feature.atm_iv,
         vrp=feature.vrp,
+        conviction_score=feature.conviction_score,
         gate_results=policy_result["gate_results"],
     )
 
@@ -161,6 +165,7 @@ class ConvictionEngine:
         max_days_above_emas: int = 10,
         pullback_csp_enabled: bool = True,
         min_prior_streak: int = 5,
+        max_rsi: float = 0.0,
         signal_store: Any | None = None,
         derived_store: Any | None = None,
     ) -> None:
@@ -178,6 +183,7 @@ class ConvictionEngine:
             max_days_above_emas=max_days_above_emas,
             pullback_csp_enabled=pullback_csp_enabled,
             min_prior_streak=min_prior_streak,
+            max_rsi=max_rsi,
         )
 
     @property

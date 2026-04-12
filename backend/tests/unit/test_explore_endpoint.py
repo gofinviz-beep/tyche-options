@@ -23,6 +23,7 @@ def _reset_deps():
 def client() -> TestClient:
     app = create_app()
     app.dependency_overrides[deps.get_broker] = lambda: MockBroker()
+    app.dependency_overrides[deps.get_analysis_agent] = lambda: None
     return TestClient(app)
 
 

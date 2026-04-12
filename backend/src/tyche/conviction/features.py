@@ -95,11 +95,14 @@ class FeatureSignal:
     atm_iv: float | None = None
     vrp: float | None = None
 
+    conviction_score: float = 0.0
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "ticker": self.ticker,
             "trend_state": self.trend_state.value,
             "raw_conviction": self.raw_conviction,
+            "conviction_score": round(self.conviction_score, 3),
             "last_close": round(self.last_close, 2),
             "ema_8": round(self.ema_8, 4),
             "ema_21": round(self.ema_21, 4),
@@ -121,6 +124,74 @@ class FeatureSignal:
             "atm_iv": round(self.atm_iv, 4) if self.atm_iv is not None else None,
             "vrp": round(self.vrp, 4) if self.vrp is not None else None,
         }
+
+
+_TREND_BASE: dict[TrendState, float] = {
+    TrendState.STRONG_UPTREND: 0.35,
+    TrendState.PULLBACK_TO_21EMA: 0.30,
+    TrendState.PULLBACK_TO_8EMA: 0.25,
+    TrendState.UPTREND: 0.20,
+    TrendState.CONSOLIDATION: 0.05,
+    TrendState.DOWNTREND: 0.0,
+    TrendState.INSUFFICIENT_DATA: 0.0,
+}
+
+
+def compute_conviction_score(sig: FeatureSignal) -> float:
+    """Compute a 0–1 composite conviction score from feature signal fields.
+
+    Components (max total = 1.0):
+      trend_base  (0.00–0.35): trend state quality
+      streak      (0.00–0.20): prior streak (pullback) or days above (uptrend)
+      slope       (0.00–0.10): 21-EMA slope strength
+      volume      (0.00–0.05): declining volume on pullback
+      rsi         (0.00–0.10): RSI sweet-spot (30–50 ideal, penalise >70)
+      iv_rank     (0.00–0.10): IV Rank sweet-spot (40–80 ideal)
+      vrp         (0.00–0.10): positive VRP bonus
+    """
+    trend_base = _TREND_BASE.get(sig.trend_state, 0.0)
+
+    is_pullback = sig.trend_state in (
+        TrendState.PULLBACK_TO_8EMA,
+        TrendState.PULLBACK_TO_21EMA,
+    )
+    streak_raw = sig.prior_streak if is_pullback else sig.days_above_both_emas
+    streak = min(1.0, streak_raw / 15) * 0.20
+
+    slope = min(1.0, max(0.0, sig.ema_21_slope) / 0.5) * 0.10
+
+    volume = 0.05 if (is_pullback and sig.volume_declining_on_pullback) else 0.0
+
+    rsi = sig.rsi_14
+    if 30 <= rsi <= 50:
+        rsi_component = 0.10
+    elif 50 < rsi <= 70:
+        rsi_component = 0.10 * (1.0 - (rsi - 50) / 20)
+    else:
+        rsi_component = 0.0
+
+    iv_rank_component = 0.0
+    if sig.iv_rank is not None:
+        ivr = sig.iv_rank
+        if 40 <= ivr <= 80:
+            iv_rank_component = 0.10
+        elif 20 <= ivr < 40:
+            iv_rank_component = 0.10 * ((ivr - 20) / 20)
+        elif 80 < ivr <= 85:
+            iv_rank_component = 0.10
+        elif ivr > 85:
+            iv_rank_component = 0.10 * max(0.0, 1.0 - (ivr - 85) / 15)
+        # ivr < 20 → 0.0
+
+    vrp_component = 0.0
+    if sig.vrp is not None and sig.vrp > 0:
+        vrp_component = min(1.0, sig.vrp / 30) * 0.10
+
+    return round(
+        trend_base + streak + slope + volume + rsi_component
+        + iv_rank_component + vrp_component,
+        3,
+    )
 
 
 def compute_ema(series: pd.Series, period: int) -> pd.Series:
@@ -314,6 +385,7 @@ class ConvictionFeatureEngine:
             atm_iv=iv_metrics.get("atm_iv"),
             vrp=iv_metrics.get("vrp"),
         )
+        signal.conviction_score = compute_conviction_score(signal)
         self._cache[cache_key] = signal
         return signal
 
@@ -456,6 +528,7 @@ class ConvictionFeatureEngine:
                 atm_iv=_opt_float(row.get("atm_iv")),
                 vrp=_opt_float(row.get("vrp")),
             )
+            signal.conviction_score = compute_conviction_score(signal)
             self._cache[signal.ticker.upper()] = signal
             warmed += 1
 

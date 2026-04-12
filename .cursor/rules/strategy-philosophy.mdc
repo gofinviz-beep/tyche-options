@@ -43,6 +43,46 @@ Backtest results on $4B+ market cap stocks (2024-2026 data):
 
 Within the same conviction level, pullback CSPs are sorted first (safer per backtest data), with prior streak as tiebreaker (longer prior uptrend = stronger setup).
 
+## Conviction Score (0–1 Composite)
+
+A numerical quality score computed per ticker in `ConvictionFeatureEngine`. Displayed on Options Conviction, Stocks Conviction, and Options Scanner pages. **Complements** the categorical conviction level — use conviction level to pick setup type, score to tiebreak within the same level.
+
+### Components (max total = 1.0)
+
+| Component | Weight | Formula |
+|---|---|---|
+| **trend_base** | 0.00–0.35 | `STRONG_UPTREND=0.35`, `PULLBACK_TO_21EMA=0.30`, `PULLBACK_TO_8EMA=0.25`, `UPTREND=0.20`, `CONSOLIDATION=0.05` |
+| **streak** | 0.00–0.20 | `min(1, streak / 15) × 0.20` — prior streak (pullback) or days-above (uptrend), capped at 15d |
+| **slope** | 0.00–0.10 | `min(1, 21-EMA slope / 0.5) × 0.10` — steeper = stronger |
+| **volume** | 0 or 0.05 | 0.05 if pullback with declining volume, else 0 |
+| **rsi** | 0.00–0.10 | Full 0.10 for RSI 30–50 (sweet spot), linear decay 50–70, 0 outside |
+| **iv_rank** | 0.00–0.10 | Full 0.10 for IV Rank 40–80, ramp 20–40, taper above 85 |
+| **vrp** | 0.00–0.10 | `min(1, VRP / 30) × 0.10` for positive VRP, 0 for negative |
+
+### Score vs Conviction Level
+
+- **Conviction level** = setup type quality (21-EMA pullback > 8-EMA pullback per backtest win rates). Categorical.
+- **Score** = technical component quality (streak, slope, IV rank, VRP, RSI). Numerical.
+- A "high" conviction ticker with score 0.69 can be a better trade than a "medium" ticker with score 0.76 — conviction level captures backtest-validated setup hierarchy.
+- **Sort by conviction level first, then use score as tiebreaker.**
+
+### Prior Streak Semantics
+
+**Prior streak = days above BOTH EMAs before the pullback started.** NOT how long the stock has been below the EMA.
+- 5–7 days: meets minimum, legitimate setup
+- 8–15 days: strong institutional trend, full scoring credit at 15
+- 15+ days: maximum confidence, deeply established uptrend (score capped)
+
+### CSP vs Stock Purchase Decision
+
+| Signal | CSP (sell premium) | Stock (buy shares) |
+|---|---|---|
+| IV Rank 40–80 | Required — premium must be rich | Informational only |
+| VRP > 5% | Strong edge — overpriced options | Irrelevant |
+| VRP < 0% | **Avoid** — underpriced insurance | Irrelevant |
+| 21-EMA pullback | Best pullback path for CSPs | Best pullback path for stock buys |
+| Low IV Rank | Poor premiums, skip CSP | No impact — still a valid buy |
+
 ## IV Metrics (Informational — Phase 2c will add gates)
 
 IV Rank and VRP are computed from historical options data and displayed in the conviction UI but **not yet used as scanner gates**.
@@ -77,13 +117,17 @@ The scanner enforces minimum quality thresholds to avoid penny-premium noise:
 
 ### Scoring Formula
 
-`score = annualized_return × liquidity_factor × dte_factor × vrp_factor × iv_rank_factor × trend_confirm_factor`
+`score = annualized_return × liquidity_factor × dte_factor × vrp_factor × iv_rank_factor × trend_confirm_factor × rsi_factor × earnings_factor × dow_factor × iv_catalyst_factor`
 
 - **liquidity_factor**: `min(1.0, OI / 1000)` — scales to 1.0 at OI ≥ 1000
 - **dte_factor**: `min(1.0, DTE / 7)` — penalizes < 7 DTE (3 DTE → 0.43×)
 - **vrp_factor**: `1.0 + min(0.3, max(0, VRP))` — up to 30% bonus for positive VRP
-- **iv_rank_factor**: `0.7 + 0.3 × min(1.0, IV_Rank / 60)` — IV Rank 60+ gets full score; rank 0 gets 30% drag. Missing data = no penalty.
+- **iv_rank_factor**: `0.7 + 0.3 × min(1.0, IV_Rank / 60)` for IV Rank ≤ 60; `1.0` for 60–85; drops linearly to `0.8` at rank 100 (event-driven spike penalty). Missing data = no penalty.
 - **trend_confirm_factor**: `1.0` if price ≥ 50-EMA, `0.85` if price < 50-EMA (15% penalty for selling puts below long-term trend). Missing data = no penalty.
+- **rsi_factor**: `0.7` if RSI > 70 (overbought mean-reversion risk), `1.0` otherwise. Missing data = no penalty.
+- **earnings_factor**: `0.5` if earnings fall within the option's DTE window, `1.0` otherwise.
+- **dow_factor**: day-of-week entry quality — `1.0` for Tue/Wed (optimal), `0.85` for Mon, `0.70` for Thu/Fri (per backtest data).
+- **iv_catalyst_factor**: `0.5` compound penalty when IV Rank > 80 AND earnings within DTE (IV trap signal), `1.0` otherwise.
 
 ### Allocator Risk Weight (Market Cap Bonus)
 
@@ -99,6 +143,7 @@ The MILP allocator adds a mega-cap preference: `cap_w = 1.0 + 0.1 × min(1.0, ma
 | `max_extension_pct` | `3.0` | Max % above 8-EMA for uptrend path |
 | `min_days_above_emas` | `5` | Min streak for uptrend path (Gate 3a) |
 | `max_days_above_emas` | `10` | Max streak for uptrend path (Gate 3a) |
+| `csp_max_rsi` | `0.0` | RSI overbought gate (0 = disabled; e.g. 70 blocks RSI > 70) |
 | `min_scan_dte` | `5` | Min DTE for expiration targeting |
 | `target_dte_sweet_spot` | `14` | Preferred DTE for expiration selection |
 | `csp_min_bid` | `0.50` | Min bid per share for CSP candidates |

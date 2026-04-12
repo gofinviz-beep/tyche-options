@@ -70,6 +70,7 @@ export interface ConvictionSignal {
   trend_state: string;
   conviction_level: string;
   raw_conviction: string;
+  conviction_score: number;
   csp_eligible: boolean;
   is_watchlist: boolean;
   last_close: number;
@@ -592,6 +593,7 @@ export interface ConvictionSnapshot {
   trend_state: string;
   conviction_level: string;
   raw_conviction: string;
+  conviction_score: number;
   csp_eligible: boolean;
   last_close: number;
   ema_8: number;

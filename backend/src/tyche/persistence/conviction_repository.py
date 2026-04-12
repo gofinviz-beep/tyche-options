@@ -64,6 +64,7 @@ async def upsert_snapshots(
             "iv_percentile": sig.iv_percentile,
             "atm_iv": sig.atm_iv,
             "vrp": sig.vrp,
+            "conviction_score": sig.conviction_score,
             "computed_at": now,
         })
 
@@ -73,7 +74,7 @@ async def upsert_snapshots(
         "price_to_8ema_pct", "price_to_21ema_pct", "volume_declining",
         "days_above_both_emas", "prior_streak", "avg_volume_20d", "latest_volume",
         "ema_50", "ema_50_slope", "rsi_14",
-        "iv_rank", "iv_percentile", "atm_iv", "vrp",
+        "iv_rank", "iv_percentile", "atm_iv", "vrp", "conviction_score",
         "computed_at",
     }
 

@@ -308,17 +308,33 @@ class TestCSPScoringFactors:
         ratio = low_ir[0].score / no_ir[0].score
         assert 0.68 <= ratio <= 0.72
 
-    def test_iv_rank_factor_caps_at_60(self) -> None:
+    def test_iv_rank_factor_plateau_60_to_85(self) -> None:
+        """IV Rank 60-85 all score the same (1.0 factor)."""
         csp = CashSecuredPutStrategy()
         c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="CAP")
 
         at_60 = csp.score(
             [c], available_cash=100_000.0, iv_rank_map={"CAP": 60.0},
         )
-        at_100 = csp.score(
-            [c], available_cash=100_000.0, iv_rank_map={"CAP": 100.0},
+        at_85 = csp.score(
+            [c], available_cash=100_000.0, iv_rank_map={"CAP": 85.0},
         )
-        assert at_60[0].score == at_100[0].score
+        assert at_60[0].score == at_85[0].score
+
+    def test_iv_rank_ceiling_penalizes_extreme(self) -> None:
+        """IV Rank > 85 gets penalized (event-driven spike risk)."""
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="SPIKE")
+
+        at_85 = csp.score(
+            [c], available_cash=100_000.0, iv_rank_map={"SPIKE": 85.0},
+        )
+        at_100 = csp.score(
+            [c], available_cash=100_000.0, iv_rank_map={"SPIKE": 100.0},
+        )
+        assert at_100[0].score < at_85[0].score
+        ratio = at_100[0].score / at_85[0].score
+        assert 0.78 <= ratio <= 0.82  # 0.8x at rank 100
 
     def test_iv_rank_missing_defaults_to_no_penalty(self) -> None:
         csp = CashSecuredPutStrategy()
@@ -364,22 +380,199 @@ class TestCSPScoringFactors:
         )
         assert baseline[0].score == with_empty[0].score
 
+    def test_rsi_factor_penalizes_overbought(self) -> None:
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="OB")
+
+        baseline = csp.score([c], available_cash=100_000.0)
+        overbought = csp.score(
+            [c], available_cash=100_000.0,
+            rsi_map={"OB": 76.0},
+        )
+        assert overbought[0].score < baseline[0].score
+        ratio = overbought[0].score / baseline[0].score
+        assert 0.68 <= ratio <= 0.72  # 0.7x penalty
+
+    def test_rsi_factor_no_penalty_below_70(self) -> None:
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="OK")
+
+        baseline = csp.score([c], available_cash=100_000.0)
+        normal = csp.score(
+            [c], available_cash=100_000.0,
+            rsi_map={"OK": 55.0},
+        )
+        assert normal[0].score == baseline[0].score
+
+    def test_rsi_factor_at_boundary_70(self) -> None:
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="EDGE")
+
+        baseline = csp.score([c], available_cash=100_000.0)
+        at_70 = csp.score(
+            [c], available_cash=100_000.0,
+            rsi_map={"EDGE": 70.0},
+        )
+        assert at_70[0].score == baseline[0].score  # exactly 70 is not > 70
+
+    def test_rsi_factor_missing_no_penalty(self) -> None:
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="MISS")
+
+        baseline = csp.score([c], available_cash=100_000.0)
+        with_empty = csp.score(
+            [c], available_cash=100_000.0,
+            rsi_map={},
+        )
+        assert baseline[0].score == with_empty[0].score
+
+    def test_earnings_factor_penalizes_earnings_within_dte(self) -> None:
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="EARN")
+
+        baseline = csp.score([c], available_cash=100_000.0)
+        with_earnings = csp.score(
+            [c], available_cash=100_000.0,
+            earnings_within_dte_set={"EARN"},
+        )
+        assert with_earnings[0].score < baseline[0].score
+        ratio = with_earnings[0].score / baseline[0].score
+        assert 0.48 <= ratio <= 0.52  # 0.5x penalty
+
+    def test_earnings_factor_no_penalty_without_earnings(self) -> None:
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="SAFE")
+
+        baseline = csp.score([c], available_cash=100_000.0)
+        no_earnings = csp.score(
+            [c], available_cash=100_000.0,
+            earnings_within_dte_set=set(),
+        )
+        assert no_earnings[0].score == baseline[0].score
+
+    def test_iv_catalyst_compound_penalty(self) -> None:
+        """High IV Rank + earnings within DTE triggers compound 0.5x penalty."""
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="TRAP")
+        tuesday = date(2026, 4, 7)
+
+        no_compound = csp.score(
+            [c], available_cash=100_000.0,
+            iv_rank_map={"TRAP": 85.0},
+            earnings_within_dte_set=set(),
+            scan_date=tuesday,
+        )
+        with_compound = csp.score(
+            [c], available_cash=100_000.0,
+            iv_rank_map={"TRAP": 85.0},
+            earnings_within_dte_set={"TRAP"},
+            scan_date=tuesday,
+        )
+        # earnings_factor alone = 0.5x, compound adds another 0.5x = total 0.25x
+        ratio = with_compound[0].score / no_compound[0].score
+        assert 0.23 <= ratio <= 0.27  # 0.5 * 0.5 = 0.25
+
+    def test_iv_catalyst_no_compound_below_80(self) -> None:
+        """IV Rank <= 80 + earnings should NOT trigger compound penalty."""
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="SAFE")
+        tuesday = date(2026, 4, 7)
+
+        no_earnings = csp.score(
+            [c], available_cash=100_000.0,
+            iv_rank_map={"SAFE": 70.0},
+            earnings_within_dte_set=set(),
+            scan_date=tuesday,
+        )
+        with_earnings = csp.score(
+            [c], available_cash=100_000.0,
+            iv_rank_map={"SAFE": 70.0},
+            earnings_within_dte_set={"SAFE"},
+            scan_date=tuesday,
+        )
+        # Only earnings_factor (0.5x), no compound
+        ratio = with_earnings[0].score / no_earnings[0].score
+        assert 0.48 <= ratio <= 0.52  # just the 0.5x earnings penalty
+
+    def test_iv_catalyst_no_compound_without_earnings(self) -> None:
+        """High IV Rank alone should NOT trigger compound penalty."""
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="NOEAR")
+        tuesday = date(2026, 4, 7)
+
+        at_60 = csp.score(
+            [c], available_cash=100_000.0,
+            iv_rank_map={"NOEAR": 60.0},
+            scan_date=tuesday,
+        )
+        at_90 = csp.score(
+            [c], available_cash=100_000.0,
+            iv_rank_map={"NOEAR": 90.0},
+            scan_date=tuesday,
+        )
+        # Only the IV ceiling factor applies, no compound
+        ratio = at_90[0].score / at_60[0].score
+        # iv_rank_factor at 90: 1.0 - (90-85)*(0.2/15) ≈ 0.933
+        assert 0.90 <= ratio <= 0.96
+
+    def test_dow_factor_penalizes_monday(self) -> None:
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="DOW")
+        monday = date(2026, 4, 6)  # Monday
+        tuesday = date(2026, 4, 7)  # Tuesday
+
+        mon_scored = csp.score([c], available_cash=100_000.0, scan_date=monday)
+        tue_scored = csp.score([c], available_cash=100_000.0, scan_date=tuesday)
+        assert mon_scored[0].score < tue_scored[0].score
+        ratio = mon_scored[0].score / tue_scored[0].score
+        assert 0.83 <= ratio <= 0.87  # 0.85x
+
+    def test_dow_factor_penalizes_thursday_friday(self) -> None:
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="DOW")
+        thursday = date(2026, 4, 9)   # Thursday
+        wednesday = date(2026, 4, 8)  # Wednesday
+
+        thu_scored = csp.score([c], available_cash=100_000.0, scan_date=thursday)
+        wed_scored = csp.score([c], available_cash=100_000.0, scan_date=wednesday)
+        assert thu_scored[0].score < wed_scored[0].score
+        ratio = thu_scored[0].score / wed_scored[0].score
+        assert 0.68 <= ratio <= 0.72  # 0.70x
+
+    def test_dow_factor_tuesday_wednesday_no_penalty(self) -> None:
+        csp = CashSecuredPutStrategy()
+        c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="DOW")
+        tuesday = date(2026, 4, 7)
+        wednesday = date(2026, 4, 8)
+
+        tue_scored = csp.score([c], available_cash=100_000.0, scan_date=tuesday)
+        wed_scored = csp.score([c], available_cash=100_000.0, scan_date=wednesday)
+        assert tue_scored[0].score == wed_scored[0].score
+
     def test_all_factors_combined(self) -> None:
         """All scoring factors applied together multiply correctly."""
         csp = CashSecuredPutStrategy()
         c = self._make_filtered(bid=1.0, strike=50.0, dte=14, symbol="COMBO")
 
-        baseline = csp.score([c], available_cash=100_000.0)
+        # Use a Tuesday for baseline to get dow_factor=1.0
+        tuesday = date(2026, 4, 7)
+        baseline = csp.score([c], available_cash=100_000.0, scan_date=tuesday)
         combined = csp.score(
             [c], available_cash=100_000.0,
             vrp_map={"COMBO": 0.20},
             iv_rank_map={"COMBO": 30.0},
             trend_confirm_map={"COMBO": False},
+            rsi_map={"COMBO": 75.0},
+            earnings_within_dte_set={"COMBO"},
+            scan_date=tuesday,
         )
         # vrp=0.20 → vrp_factor=1.2
         # iv_rank=30 → iv_rank_factor=0.7+0.3*(30/60)=0.85
         # trend_confirm=False → trend_confirm_factor=0.85
-        expected_multiplier = 1.2 * 0.85 * 0.85
+        # rsi=75 → rsi_factor=0.7
+        # earnings → earnings_factor=0.5
+        # dow (tuesday) → dow_factor=1.0
+        expected_multiplier = 1.2 * 0.85 * 0.85 * 0.7 * 0.5
         ratio = combined[0].score / baseline[0].score
         assert abs(ratio - expected_multiplier) < 0.02
 
