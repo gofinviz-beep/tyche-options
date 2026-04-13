@@ -25,6 +25,7 @@ import {
 import { Card } from "@/components/Card";
 import { PLValue } from "@/components/PLValue";
 import { StatusBadge } from "@/components/StatusBadge";
+import { NewsRiskBadge } from "@/components/NewsRiskBadge";
 import {
   useLatestScan,
   useTriggerScan,
@@ -32,10 +33,14 @@ import {
   useScanById,
   useSystemConfig,
   useConvictionScan,
+  useNewsSignals,
+  useFilingSignals,
 } from "@/hooks/useApi";
 import type {
   CSPCandidate,
   ConvictionSignal,
+  FilingSignal,
+  NewsSignal,
   ScanResult,
   ScanHistoryEntry,
   PipelineStage,
@@ -440,6 +445,8 @@ function ScanProgress() {
 /* ── Full results view ──────────────────────────────────────────── */
 
 function ScanResults({ scan }: { scan: ScanResult }) {
+  const { data: newsSignals } = useNewsSignals();
+  const { data: filingSignals } = useFilingSignals();
   const hasResults =
     scan.csp_candidates.length > 0 ||
     scan.cc_candidates.length > 0 ||
@@ -517,6 +524,8 @@ function ScanResults({ scan }: { scan: ScanResult }) {
       <CspCandidatesGrouped
         candidates={scan.csp_candidates}
         convictionSignals={scan.conviction_signals}
+        newsSignals={newsSignals}
+        filingSignals={filingSignals}
       />
 
       {/* Allocation Summary — optimizer-selected trades */}
@@ -734,10 +743,26 @@ interface TickerGroup {
 function CspCandidatesGrouped({
   candidates,
   convictionSignals,
+  newsSignals,
+  filingSignals,
 }: {
   candidates: CSPCandidate[];
   convictionSignals?: Record<string, ConvictionSignal>;
+  newsSignals?: NewsSignal[];
+  filingSignals?: FilingSignal[];
 }) {
+  const newsMap = useMemo(() => {
+    const m = new Map<string, NewsSignal>();
+    for (const s of newsSignals ?? []) m.set(s.ticker, s);
+    return m;
+  }, [newsSignals]);
+
+  const filingMap = useMemo(() => {
+    const m = new Map<string, FilingSignal>();
+    for (const s of filingSignals ?? []) m.set(s.ticker, s);
+    return m;
+  }, [filingSignals]);
+
   const groups = useMemo(() => {
     const map = new Map<string, CSPCandidate[]>();
     for (const c of candidates) {
@@ -779,6 +804,8 @@ function CspCandidatesGrouped({
               key={g.symbol}
               group={g}
               convictionScore={convictionSignals?.[g.symbol]?.conviction_score}
+              newsSignal={newsMap.get(g.symbol)}
+              filingSignal={filingMap.get(g.symbol)}
             />
           ))}
         </div>
@@ -795,8 +822,12 @@ function CspCandidatesGrouped({
 function TickerGroupRow({
   group,
   convictionScore,
+  newsSignal,
+  filingSignal,
 }: {
   group: TickerGroup;
+  newsSignal?: NewsSignal;
+  filingSignal?: FilingSignal;
   convictionScore?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -835,6 +866,7 @@ function TickerGroupRow({
           {group.hasEarnings && (
             <StatusBadge label="EARNINGS" variant="warning" />
           )}
+          <NewsRiskBadge signal={newsSignal} filingSignal={filingSignal} />
           <span className="text-xs text-gray-400">
             {group.candidates.length} contract
             {group.candidates.length !== 1 ? "s" : ""}

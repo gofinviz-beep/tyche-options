@@ -114,8 +114,42 @@ class InsufficientDataError(MarketDataError):
     """Not enough historical data to compute indicators."""
 
 
+class FinnhubAPIError(MarketDataError):
+    """Error communicating with the Finnhub API."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        super().__init__(f"Finnhub API {status_code}: {message}")
+
+
+class EdgarAPIError(MarketDataError):
+    """Error communicating with the SEC EDGAR API."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        super().__init__(f"EDGAR API {status_code}: {message}")
+
+
 class DataStoreError(TycheError):
     """Error reading/writing local data cache."""
+
+
+# --- News Errors ---
+
+
+class NewsIngestionError(TycheError):
+    """Error during news article ingestion."""
+
+
+class NewsClassificationError(TycheError):
+    """Error during news article classification."""
+
+
+# --- EDGAR Errors ---
+
+
+class EdgarIngestionError(TycheError):
+    """Error during EDGAR filing ingestion."""
 
 
 # --- Persistence Errors ---

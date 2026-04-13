@@ -13,6 +13,10 @@ import { ResearchHome } from "@/pages/research/ResearchHome";
 import { StocksDashboard } from "@/pages/stocks/Dashboard";
 import { StocksConviction } from "@/pages/stocks/Conviction";
 import { ConvictionHistory } from "@/pages/stocks/History";
+import { IntelligenceDashboard } from "@/pages/intelligence/Dashboard";
+import { IntelligenceNews } from "@/pages/intelligence/News";
+import { IntelligenceFilings } from "@/pages/intelligence/Filings";
+import { IntelligenceInsider } from "@/pages/intelligence/Insider";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -43,6 +47,12 @@ export default function App() {
             <Route path="/stocks/scanner" element={<Navigate to="/stocks" replace />} />
             <Route path="/stocks/conviction" element={<StocksConviction />} />
             <Route path="/stocks/history" element={<ConvictionHistory />} />
+
+            {/* Intelligence module */}
+            <Route path="/intelligence" element={<IntelligenceDashboard />} />
+            <Route path="/intelligence/news" element={<IntelligenceNews />} />
+            <Route path="/intelligence/filings" element={<IntelligenceFilings />} />
+            <Route path="/intelligence/insider" element={<IntelligenceInsider />} />
 
             {/* Research module */}
             <Route path="/research" element={<ResearchHome />} />

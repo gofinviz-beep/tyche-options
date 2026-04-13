@@ -78,6 +78,17 @@ def init_conviction_db(db_dir: str) -> None:
     register_engine("conviction", f"sqlite+aiosqlite:///{file_path}")
 
 
+def init_news_db(db_dir: str) -> None:
+    """Register the news-domain engine (news signals).
+
+    Stores aggregate per-ticker news impact signals in a dedicated SQLite file.
+    """
+    db_path = Path(db_dir)
+    db_path.mkdir(parents=True, exist_ok=True)
+    file_path = db_path / "news.db"
+    register_engine("news", f"sqlite+aiosqlite:///{file_path}")
+
+
 def init_backtest_db(db_dir: str) -> None:
     """Register the backtest-domain engine (pullback events + profiles).
 

@@ -59,6 +59,8 @@ _ENV_ONLY_FIELDS: frozenset[str] = frozenset(
         "massive_s3_secret_key",
         "massive_s3_url",
         "massive_s3_bucket",
+        "finnhub_api_key",
+        "edgar_user_agent_email",
     }
 )
 
@@ -71,6 +73,7 @@ class _EnvSettings(BaseSettings):
         env_prefix="TYCHE_",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # --- Secrets ---
@@ -104,6 +107,12 @@ class _EnvSettings(BaseSettings):
     massive_s3_secret_key: str = ""
     massive_s3_url: str = "https://files.massive.com"
     massive_s3_bucket: str = "flatfiles"
+
+    # --- Finnhub ---
+    finnhub_api_key: str = ""
+
+    # --- EDGAR ---
+    edgar_user_agent_email: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +294,23 @@ class TycheSettings(BaseModel):
     massive_s3_secret_key: str = ""
     massive_s3_url: str = "https://files.massive.com"
     massive_s3_bucket: str = "flatfiles"
+
+    # --- Finnhub (env-only) ---
+    finnhub_api_key: str = ""
+
+    # --- News Pipeline ---
+    news_ingestion_enabled: bool = False
+    news_finnhub_enabled: bool = True
+    news_ingest_interval_minutes: int = 30
+    news_classify_concurrency: int = 5
+    news_lookback_hours: int = 48
+    news_risk_threshold: float = -0.3
+
+    # --- EDGAR Pipeline ---
+    edgar_ingestion_enabled: bool = False
+    edgar_user_agent_email: str = ""
+    edgar_ingest_interval_minutes: int = 120
+    edgar_lookback_days: int = 30
 
     # --- Database (env-only) ---
     database_url: str = ""

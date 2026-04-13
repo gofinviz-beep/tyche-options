@@ -98,6 +98,19 @@ async def get_config(
         "scan_persistence": {
             "scan_retention_count": settings.scan_retention_count,
         },
+        "news_pipeline": {
+            "news_ingestion_enabled": settings.news_ingestion_enabled,
+            "news_finnhub_enabled": settings.news_finnhub_enabled,
+            "news_ingest_interval_minutes": settings.news_ingest_interval_minutes,
+            "news_classify_concurrency": settings.news_classify_concurrency,
+            "news_lookback_hours": settings.news_lookback_hours,
+            "news_risk_threshold": settings.news_risk_threshold,
+        },
+        "edgar_pipeline": {
+            "edgar_ingestion_enabled": settings.edgar_ingestion_enabled,
+            "edgar_ingest_interval_minutes": settings.edgar_ingest_interval_minutes,
+            "edgar_lookback_days": settings.edgar_lookback_days,
+        },
         "watchlist": settings.watchlist_symbols,
     }
 
@@ -180,6 +193,19 @@ class ConfigUpdate(BaseModel):
 
     # Scan persistence
     scan_retention_count: int | None = None
+
+    # News pipeline
+    news_ingestion_enabled: bool | None = None
+    news_finnhub_enabled: bool | None = None
+    news_ingest_interval_minutes: int | None = None
+    news_classify_concurrency: int | None = None
+    news_lookback_hours: int | None = None
+    news_risk_threshold: float | None = None
+
+    # EDGAR pipeline
+    edgar_ingestion_enabled: bool | None = None
+    edgar_ingest_interval_minutes: int | None = None
+    edgar_lookback_days: int | None = None
 
 
 # Map UI field names → config.db field names (most are 1:1)

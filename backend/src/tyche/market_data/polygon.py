@@ -108,6 +108,19 @@ class OptionsContract:
     underlying_price: float = 0.0
 
 
+@dataclass(frozen=True)
+class NewsArticle:
+    """Single news article from Polygon /v2/reference/news."""
+
+    id: str
+    title: str
+    author: str
+    published_utc: str
+    article_url: str
+    tickers: list[str]
+    description: str
+
+
 class PolygonClient:
     """Async HTTP client for Polygon.io / Massive.com REST API.
 
@@ -852,3 +865,90 @@ class PolygonClient:
             failed=failed,
         )
         return result
+
+    # ── News API ───────────────────────────────────────────────────────
+
+    async def get_news(
+        self,
+        ticker: str | None = None,
+        published_after: datetime | None = None,
+        limit: int = 50,
+    ) -> list[NewsArticle]:
+        """Fetch news articles from Polygon /v2/reference/news.
+
+        Args:
+            ticker: Filter to articles mentioning this ticker.
+            published_after: Only articles published after this timestamp.
+            limit: Max articles to return (Polygon caps at 1000 per page).
+
+        Returns:
+            List of NewsArticle dataclasses.
+        """
+        params: dict[str, Any] = {
+            "limit": min(limit, 1000),
+            "order": "desc",
+            "sort": "published_utc",
+        }
+        if ticker:
+            params["ticker"] = ticker.upper()
+        if published_after:
+            params["published_utc.gte"] = published_after.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+
+        articles: list[NewsArticle] = []
+        remaining = limit
+
+        data = await self._request("GET", "/v2/reference/news", params=params)
+        results = data.get("results", [])
+
+        for item in results[:remaining]:
+            articles.append(
+                NewsArticle(
+                    id=str(item.get("id", "")),
+                    title=item.get("title", ""),
+                    author=item.get("author", ""),
+                    published_utc=item.get("published_utc", ""),
+                    article_url=item.get("article_url", ""),
+                    tickers=item.get("tickers", []),
+                    description=item.get("description", "")[:500],
+                )
+            )
+
+        remaining -= len(results)
+        next_url = data.get("next_url")
+
+        while next_url and remaining > 0:
+            next_params = {"apiKey": self._api_key}
+            await self._throttle()
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.get(next_url, params=next_params)
+                if resp.status_code >= 400:
+                    break
+                page = resp.json()
+            except Exception:
+                logger.warning("polygon_news_pagination_failed", url=next_url)
+                break
+
+            for item in page.get("results", [])[:remaining]:
+                articles.append(
+                    NewsArticle(
+                        id=str(item.get("id", "")),
+                        title=item.get("title", ""),
+                        author=item.get("author", ""),
+                        published_utc=item.get("published_utc", ""),
+                        article_url=item.get("article_url", ""),
+                        tickers=item.get("tickers", []),
+                        description=item.get("description", "")[:500],
+                    )
+                )
+            remaining -= len(page.get("results", []))
+            next_url = page.get("next_url")
+
+        logger.info(
+            "polygon_news_fetched",
+            ticker=ticker,
+            count=len(articles),
+        )
+        return articles

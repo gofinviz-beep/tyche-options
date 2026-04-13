@@ -290,4 +290,42 @@ export const api = {
       ),
     getScheduler: () => request<Record<string, unknown>>("/system/scheduler"),
   },
+
+  news: {
+    getSignals: () =>
+      request<import("@/types").NewsSignal[]>("/news/signals"),
+    getSignal: (ticker: string) =>
+      request<import("@/types").NewsSignal | null>(
+        `/news/signals/${encodeURIComponent(ticker)}`,
+      ),
+    getArticles: (ticker: string, hours = 48) =>
+      request<import("@/types").NewsArticle[]>(
+        `/news/articles/${encodeURIComponent(ticker)}?hours=${hours}`,
+      ),
+    triggerIngest: () =>
+      request<{ status: string; message: string }>("/news/ingest", {
+        method: "POST",
+      }),
+  },
+
+  filings: {
+    getSignals: () =>
+      request<import("@/types").FilingSignal[]>("/filings/signals"),
+    getSignal: (ticker: string) =>
+      request<import("@/types").FilingSignal | null>(
+        `/filings/signals/${encodeURIComponent(ticker)}`,
+      ),
+    get8KFilings: (ticker: string, days = 90) =>
+      request<import("@/types").Filing8K[]>(
+        `/filings/8k/${encodeURIComponent(ticker)}?days=${days}`,
+      ),
+    getInsiderTransactions: (ticker: string, days = 90) =>
+      request<import("@/types").InsiderTransaction[]>(
+        `/filings/insider/${encodeURIComponent(ticker)}?days=${days}`,
+      ),
+    triggerIngest: () =>
+      request<{ status: string; message: string }>("/filings/ingest", {
+        method: "POST",
+      }),
+  },
 };

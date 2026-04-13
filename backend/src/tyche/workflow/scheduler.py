@@ -176,6 +176,47 @@ class WorkflowScheduler:
         self._jobs["options_snapshot"] = job.id
         logger.info("scheduled_options_snapshot", time=f"{hour:02d}:{minute:02d} ET")
 
+    def schedule_news_ingest(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        interval_minutes: int = 30,
+    ) -> None:
+        """Schedule the news ingestion pipeline.
+
+        Runs every ``interval_minutes`` during market hours (Mon-Fri 9:30-16:00).
+        Off-hours runs are less frequent (every 2h) — handled by the pipeline
+        itself, not the scheduler.
+        """
+        job = self._scheduler.add_job(
+            func,
+            IntervalTrigger(minutes=interval_minutes),
+            id="news_ingest",
+            replace_existing=True,
+            name="News Ingest Pipeline",
+        )
+        self._jobs["news_ingest"] = job.id
+        logger.info("scheduled_news_ingest", interval_min=interval_minutes)
+
+    def schedule_edgar_ingest(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        interval_minutes: int = 120,
+    ) -> None:
+        """Schedule the EDGAR filing ingestion pipeline.
+
+        Runs every ``interval_minutes`` (default 2 hours). 8-K filings are
+        infrequent per company so a less aggressive schedule than news is appropriate.
+        """
+        job = self._scheduler.add_job(
+            func,
+            IntervalTrigger(minutes=interval_minutes),
+            id="edgar_ingest",
+            replace_existing=True,
+            name="EDGAR Ingest Pipeline",
+        )
+        self._jobs["edgar_ingest"] = job.id
+        logger.info("scheduled_edgar_ingest", interval_min=interval_minutes)
+
     def schedule_eod_journal(
         self,
         func: Callable[..., Coroutine[Any, Any, Any]],

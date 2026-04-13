@@ -20,6 +20,8 @@ from tyche.models.backtest import (
 )
 from tyche.models.conviction import ConvictionSnapshot, ConvictionTransition
 from tyche.models.scan import LLMAnalysisRecord, ScanCandidate, ScanRun
+from tyche.models.filing import FilingSignal
+from tyche.models.news import NewsSignal
 from tyche.persistence.database import (
     check_db_health,
     create_tables,
@@ -28,6 +30,7 @@ from tyche.persistence.database import (
     init_backtest_db,
     init_conviction_db,
     init_db,
+    init_news_db,
     init_scanner_dbs,
 )
 from tyche.telemetry import configure_telemetry, shutdown_telemetry
@@ -235,6 +238,39 @@ async def _scheduled_daily_digest() -> None:
         logger.error("scheduled_daily_digest_failed", exc_info=True)
 
 
+async def _scheduled_news_ingest() -> None:
+    """Wrapper for the scheduled news ingestion pipeline."""
+    from tyche.workflow.news_pipeline import run_news_pipeline
+
+    try:
+        result = await run_news_pipeline()
+        logger.info(
+            "scheduled_news_ingest_complete",
+            articles_classified=result.articles_classified,
+            signals_rebuilt=result.signals_rebuilt,
+            errors=len(result.errors),
+        )
+    except Exception:
+        logger.error("scheduled_news_ingest_failed", exc_info=True)
+
+
+async def _scheduled_edgar_ingest() -> None:
+    """Wrapper for the scheduled EDGAR filing ingestion pipeline."""
+    from tyche.workflow.edgar_pipeline import run_edgar_pipeline
+
+    try:
+        result = await run_edgar_pipeline()
+        logger.info(
+            "scheduled_edgar_ingest_complete",
+            eightk_classified=result.eightk_classified,
+            insider_tx=result.insider_tx_persisted,
+            signals_rebuilt=result.signals_rebuilt,
+            errors=len(result.errors),
+        )
+    except Exception:
+        logger.error("scheduled_edgar_ingest_failed", exc_info=True)
+
+
 async def _migrate_conviction_columns() -> None:
     """Add missing columns to existing conviction tables."""
     from tyche.persistence.database import _engines
@@ -311,6 +347,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         StockPosition, ExitSignal,
     )
 
+    init_news_db(settings.db_dir)
+    await create_tables_for_models("news", NewsSignal, FilingSignal)
+
     from tyche.api.deps import get_scheduler
 
     scheduler = get_scheduler()
@@ -332,6 +371,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         digest_m = int(parts[1]) if len(parts) >= 2 else 0
         scheduler.schedule_daily_digest(
             _scheduled_daily_digest, hour=digest_h, minute=digest_m
+        )
+
+    if settings.news_ingestion_enabled:
+        scheduler.schedule_news_ingest(
+            _scheduled_news_ingest,
+            interval_minutes=settings.news_ingest_interval_minutes,
+        )
+
+    if settings.edgar_ingestion_enabled and settings.edgar_user_agent_email:
+        scheduler.schedule_edgar_ingest(
+            _scheduled_edgar_ingest,
+            interval_minutes=settings.edgar_ingest_interval_minutes,
         )
 
     scheduler.start()
@@ -385,8 +436,10 @@ def create_app() -> FastAPI:
         account,
         conviction,
         events,
+        filings,
         intents,
         monitor,
+        news,
         orders,
         scanner,
         stocks,
@@ -406,6 +459,8 @@ def create_app() -> FastAPI:
     app.include_router(intents.router, prefix="/api/v1")
     app.include_router(monitor.router, prefix="/api/v1")
     app.include_router(telemetry.router, prefix="/api/v1")
+    app.include_router(news.router, prefix="/api/v1")
+    app.include_router(filings.router, prefix="/api/v1")
 
     @app.get("/health")
     async def health_check() -> dict[str, str]:

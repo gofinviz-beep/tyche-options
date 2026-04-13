@@ -1,14 +1,17 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card } from "@/components/Card";
 import { StatusBadge } from "@/components/StatusBadge";
+import { NewsRiskBadge } from "@/components/NewsRiskBadge";
 import { DataTable, type DataTableColumn } from "@/components/DataTable";
 import {
   useConvictionSnapshots,
   useRefreshConviction,
   useTickerGates,
   useBacktestProfile,
+  useNewsSignals,
+  useFilingSignals,
 } from "@/hooks/useApi";
-import type { ConvictionSnapshot, GateResult, BacktestProfile } from "@/types";
+import type { ConvictionSnapshot, GateResult, BacktestProfile, NewsSignal, FilingSignal } from "@/types";
 import { Check, X, Minus } from "lucide-react";
 import { convictionSortValue, formatMarketCap } from "@/lib/format";
 
@@ -35,7 +38,11 @@ const CONVICTION_VARIANT: Record<
   none: "danger",
 };
 
-const snapshotColumns: DataTableColumn<ConvictionSnapshot>[] = [
+function buildSnapshotColumns(
+  newsMap: Map<string, NewsSignal>,
+  filingMap: Map<string, FilingSignal>,
+): DataTableColumn<ConvictionSnapshot>[] {
+  return [
   {
     key: "ticker",
     header: "Ticker",
@@ -43,7 +50,10 @@ const snapshotColumns: DataTableColumn<ConvictionSnapshot>[] = [
     sortable: true,
     width: "90px",
     render: (r) => (
-      <span className="font-mono font-bold text-gray-900">{r.ticker}</span>
+      <span className="flex items-center gap-1 font-mono font-bold text-gray-900">
+        {r.ticker}
+        <NewsRiskBadge signal={newsMap.get(r.ticker)} filingSignal={filingMap.get(r.ticker)} />
+      </span>
     ),
   },
   {
@@ -376,12 +386,32 @@ const snapshotColumns: DataTableColumn<ConvictionSnapshot>[] = [
       );
     },
   },
-];
+  ];
+}
 
 export function StocksConviction() {
   const { data: snapshots, isLoading, error } = useConvictionSnapshots();
+  const { data: newsSignals } = useNewsSignals();
+  const { data: filingSignals } = useFilingSignals();
   const refreshMutation = useRefreshConviction();
   const [refreshResult, setRefreshResult] = useState<string | null>(null);
+
+  const newsMap = useMemo(() => {
+    const m = new Map<string, NewsSignal>();
+    for (const s of newsSignals ?? []) m.set(s.ticker, s);
+    return m;
+  }, [newsSignals]);
+
+  const filingMap = useMemo(() => {
+    const m = new Map<string, FilingSignal>();
+    for (const s of filingSignals ?? []) m.set(s.ticker, s);
+    return m;
+  }, [filingSignals]);
+
+  const snapshotColumns = useMemo(
+    () => buildSnapshotColumns(newsMap, filingMap),
+    [newsMap, filingMap],
+  );
 
   const handleRefresh = () => {
     setRefreshResult(null);

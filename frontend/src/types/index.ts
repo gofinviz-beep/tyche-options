@@ -333,6 +333,8 @@ export interface SystemConfig {
   notifications: Record<string, boolean | string>;
   llm: Record<string, string>;
   scan_persistence: Record<string, number>;
+  news_pipeline: Record<string, number | boolean>;
+  edgar_pipeline: Record<string, number | boolean>;
   watchlist: string[];
 }
 
@@ -750,4 +752,101 @@ export interface ExploreResult {
   broker_cache: Record<string, number>;
   errors: string[];
   candidates: ExploreCandidate[];
+}
+
+// --- News ---
+
+export interface NewsSignal {
+  ticker: string;
+  news_impact_score: number;
+  negative_count_24h: number;
+  positive_count_24h: number;
+  total_count_24h: number;
+  dominant_event_type: string | null;
+  last_negative_at: string | null;
+  last_positive_at: string | null;
+  has_risk: boolean;
+  updated_at: string | null;
+}
+
+export interface NewsArticle {
+  article_id: string;
+  source: string;
+  title: string;
+  published_at: string;
+  url: string;
+  author: string | null;
+  summary: string | null;
+  event_type: string | null;
+  sentiment: string | null;
+  impact_score: number | null;
+  relevance: string | null;
+}
+
+export interface NewsIngestResult {
+  polygon_fetched: number;
+  finnhub_fetched: number;
+  total_persisted: number;
+  tickers_updated: number;
+  articles_classified: number;
+  signals_rebuilt: number;
+  errors: string[];
+}
+
+// --- Filings (EDGAR) ---
+
+export interface FilingSignal {
+  ticker: string;
+  last_8k_at: string | null;
+  last_8k_sentiment: string | null;
+  last_8k_impact: number | null;
+  eightk_count_30d: number;
+  insider_net_shares_30d: number;
+  insider_buy_count_30d: number;
+  insider_sell_count_30d: number;
+  insider_cluster_sell: boolean;
+  last_insider_tx_at: string | null;
+  has_risk: boolean;
+  updated_at: string | null;
+}
+
+export interface EdgarIngestResult {
+  tickers_resolved: number;
+  tickers_failed_cik: number;
+  eightk_fetched: number;
+  eightk_persisted: number;
+  form4_fetched: number;
+  insider_tx_persisted: number;
+  errors: string[];
+  duration_ms: number;
+}
+
+export interface Filing8K {
+  accession_no: string;
+  form_type: string;
+  filed_at: string | null;
+  description: string | null;
+  filing_url: string | null;
+  items_reported: string | null;
+  content_summary: string | null;
+  event_type: string | null;
+  sentiment: string | null;
+  impact_score: number | null;
+}
+
+export interface InsiderTransaction {
+  accession_no: string;
+  filed_at: string | null;
+  period_of_report: string | null;
+  insider_name: string;
+  insider_title: string | null;
+  is_officer: boolean;
+  is_director: boolean;
+  is_ten_pct_owner: boolean;
+  transaction_type: string;
+  shares: number;
+  price_per_share: number;
+  total_value: number;
+  shares_owned_after: number;
+  acquisition_or_disposition: string;
 }

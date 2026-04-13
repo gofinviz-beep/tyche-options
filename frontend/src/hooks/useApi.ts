@@ -489,3 +489,70 @@ export function useRecentSignals() {
     staleTime: 30_000,
   });
 }
+
+// --- News ---
+
+export function useNewsSignals() {
+  return useQuery({
+    queryKey: ["news", "signals"],
+    queryFn: () => api.news.getSignals(),
+    staleTime: 2 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
+  });
+}
+
+export function useNewsArticles(ticker: string | null) {
+  return useQuery({
+    queryKey: ["news", "articles", ticker],
+    queryFn: () => api.news.getArticles(ticker!),
+    enabled: !!ticker,
+    staleTime: 2 * 60 * 1000,
+  });
+}
+
+export function useTriggerNewsIngest() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.news.triggerIngest(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["news"] });
+    },
+  });
+}
+
+export function useFilingSignals() {
+  return useQuery({
+    queryKey: ["filings", "signals"],
+    queryFn: () => api.filings.getSignals(),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+  });
+}
+
+export function useFiling8K(ticker: string | null, days = 90) {
+  return useQuery({
+    queryKey: ["filings", "8k", ticker, days],
+    queryFn: () => api.filings.get8KFilings(ticker!, days),
+    enabled: !!ticker,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useInsiderTransactions(ticker: string | null, days = 90) {
+  return useQuery({
+    queryKey: ["filings", "insider", ticker, days],
+    queryFn: () => api.filings.getInsiderTransactions(ticker!, days),
+    enabled: !!ticker,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useTriggerEdgarIngest() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.filings.triggerIngest(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["filings"] });
+    },
+  });
+}

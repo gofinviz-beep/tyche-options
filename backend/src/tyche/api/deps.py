@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from fastapi import Depends
 
 from tyche.analysis.agent import AnalysisAgent
 from tyche.analysis.client import GeminiClient
+
+if TYPE_CHECKING:
+    from tyche.analysis.news_classifier import NewsClassifier
+    from tyche.market_data.edgar import EdgarClient
+    from tyche.market_data.filing_store import Filing8KStore, InsiderTxStore
+    from tyche.market_data.finnhub import FinnhubClient
+    from tyche.market_data.news_store import NewsArticleStore
 from tyche.broker.base import BrokerClient
 from tyche.broker.mock import MockBroker
 from tyche.config import TycheSettings, get_settings
@@ -383,6 +390,98 @@ def get_portfolio_allocator(
     return _portfolio_allocator
 
 
+_news_article_store: "NewsArticleStore | None" = None
+_finnhub_client: "FinnhubClient | None" = None
+_news_classifier: "NewsClassifier | None" = None
+_edgar_client: "EdgarClient | None" = None
+_filing_8k_store: "Filing8KStore | None" = None
+_insider_tx_store: "InsiderTxStore | None" = None
+
+
+def get_news_article_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> "NewsArticleStore":
+    """Provide the news article Parquet store."""
+    global _news_article_store
+    if _news_article_store is None:
+        from tyche.market_data.news_store import NewsArticleStore
+
+        _news_article_store = NewsArticleStore(data_dir=settings.data_dir)
+        logger.info("news_article_store_initialized")
+    return _news_article_store
+
+
+def get_finnhub(
+    settings: TycheSettings = Depends(get_settings),
+) -> "FinnhubClient | None":
+    """Provide the Finnhub client (None if no API key or disabled)."""
+    global _finnhub_client
+    if _finnhub_client is None and settings.finnhub_api_key and settings.news_finnhub_enabled:
+        from tyche.market_data.finnhub import FinnhubClient
+
+        _finnhub_client = FinnhubClient(api_key=settings.finnhub_api_key)
+        logger.info("finnhub_client_initialized")
+    return _finnhub_client
+
+
+def get_news_classifier(
+    gemini: GeminiClient | None = Depends(get_gemini),
+    settings: TycheSettings = Depends(get_settings),
+) -> "NewsClassifier | None":
+    """Provide the news classifier (None if no Gemini configured)."""
+    global _news_classifier
+    if _news_classifier is None and gemini is not None:
+        from tyche.analysis.news_classifier import NewsClassifier
+
+        _news_classifier = NewsClassifier(
+            gemini=gemini,
+            concurrency=settings.news_classify_concurrency,
+        )
+        logger.info("news_classifier_initialized")
+    return _news_classifier
+
+
+def get_edgar_client(
+    settings: TycheSettings = Depends(get_settings),
+) -> "EdgarClient | None":
+    """Provide the EDGAR client (None if no user-agent email configured)."""
+    global _edgar_client
+    if _edgar_client is None and settings.edgar_user_agent_email:
+        from tyche.market_data.edgar import EdgarClient
+
+        _edgar_client = EdgarClient(
+            user_agent_email=settings.edgar_user_agent_email,
+        )
+        logger.info("edgar_client_initialized")
+    return _edgar_client
+
+
+def get_filing_8k_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> "Filing8KStore":
+    """Provide the 8-K filing Parquet store."""
+    global _filing_8k_store
+    if _filing_8k_store is None:
+        from tyche.market_data.filing_store import Filing8KStore
+
+        _filing_8k_store = Filing8KStore(data_dir=settings.data_dir)
+        logger.info("filing_8k_store_initialized")
+    return _filing_8k_store
+
+
+def get_insider_tx_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> "InsiderTxStore":
+    """Provide the insider transaction Parquet store."""
+    global _insider_tx_store
+    if _insider_tx_store is None:
+        from tyche.market_data.filing_store import InsiderTxStore
+
+        _insider_tx_store = InsiderTxStore(data_dir=settings.data_dir)
+        logger.info("insider_tx_store_initialized")
+    return _insider_tx_store
+
+
 def reset_all() -> None:
     """Reset all singleton instances and flush stale caches.
 
@@ -397,6 +496,8 @@ def reset_all() -> None:
     global _active_monitor, _ticker_meta_store, _portfolio_allocator
     global _conviction_signal_store, _feature_engine, _csp_policy
     global _derived_store, _economic_calendar
+    global _news_article_store, _finnhub_client, _news_classifier
+    global _edgar_client, _filing_8k_store, _insider_tx_store
 
     if _conviction_engine is not None:
         _conviction_engine.invalidate_cache()
@@ -425,3 +526,9 @@ def reset_all() -> None:
     _derived_store = None
     _portfolio_allocator = None
     _economic_calendar = None
+    _news_article_store = None
+    _finnhub_client = None
+    _news_classifier = None
+    _edgar_client = None
+    _filing_8k_store = None
+    _insider_tx_store = None

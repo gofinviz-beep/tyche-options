@@ -97,6 +97,24 @@ export function Settings() {
                 />
               }
             />
+            <StatusRow
+              label="News Pipeline"
+              badge={
+                <StatusBadge
+                  label={config?.news_pipeline?.news_ingestion_enabled ? "Active" : "Disabled"}
+                  variant={config?.news_pipeline?.news_ingestion_enabled ? "success" : "neutral"}
+                />
+              }
+            />
+            <StatusRow
+              label="EDGAR Pipeline"
+              badge={
+                <StatusBadge
+                  label={config?.edgar_pipeline?.edgar_ingestion_enabled ? "Active" : "Disabled"}
+                  variant={config?.edgar_pipeline?.edgar_ingestion_enabled ? "success" : "neutral"}
+                />
+              }
+            />
           </div>
         </Card>
 
@@ -286,6 +304,39 @@ export function Settings() {
             subtitle="How many past scans to retain"
             fields={[
               { key: "scan_retention_count", label: "Scans to keep", value: config.scan_persistence.scan_retention_count },
+            ]}
+            onSave={(updates) => updateConfig.mutate(updates)}
+            isPending={updateConfig.isPending}
+          />
+        )}
+
+        {/* News Pipeline */}
+        {config && config.news_pipeline && (
+          <EditableMixedCard
+            title="News Pipeline"
+            subtitle="Polygon + Finnhub news ingestion and classification"
+            fields={[
+              { key: "news_ingestion_enabled", label: "News ingestion enabled", type: "bool", value: config.news_pipeline.news_ingestion_enabled },
+              { key: "news_finnhub_enabled", label: "Finnhub source enabled", type: "bool", value: config.news_pipeline.news_finnhub_enabled },
+              { key: "news_ingest_interval_minutes", label: "Ingest interval (min)", type: "number", value: config.news_pipeline.news_ingest_interval_minutes },
+              { key: "news_classify_concurrency", label: "Classify concurrency", type: "number", value: config.news_pipeline.news_classify_concurrency },
+              { key: "news_lookback_hours", label: "Lookback (hours)", type: "number", value: config.news_pipeline.news_lookback_hours },
+              { key: "news_risk_threshold", label: "Risk threshold", type: "number", value: config.news_pipeline.news_risk_threshold },
+            ]}
+            onSave={(updates) => updateConfig.mutate(updates)}
+            isPending={updateConfig.isPending}
+          />
+        )}
+
+        {/* EDGAR Pipeline */}
+        {config && config.edgar_pipeline && (
+          <EditableMixedCard
+            title="EDGAR Pipeline"
+            subtitle="SEC 8-K filings and Form 4 insider transactions"
+            fields={[
+              { key: "edgar_ingestion_enabled", label: "EDGAR ingestion enabled", type: "bool", value: config.edgar_pipeline.edgar_ingestion_enabled },
+              { key: "edgar_ingest_interval_minutes", label: "Ingest interval (min)", type: "number", value: config.edgar_pipeline.edgar_ingest_interval_minutes },
+              { key: "edgar_lookback_days", label: "Lookback (days)", type: "number", value: config.edgar_pipeline.edgar_lookback_days },
             ]}
             onSave={(updates) => updateConfig.mutate(updates)}
             isPending={updateConfig.isPending}

@@ -12,6 +12,10 @@ import {
   LineChart,
   Clock,
   Compass,
+  Brain,
+  Newspaper,
+  FileText,
+  Users,
 } from "lucide-react";
 
 export interface ModulePage {
@@ -53,6 +57,18 @@ export const modules: AppModule[] = [
       { path: "", label: "Dashboard", icon: LayoutDashboard },
       { path: "/conviction", label: "Conviction", icon: BarChart3 },
       { path: "/history", label: "History", icon: Clock },
+    ],
+  },
+  {
+    id: "intelligence",
+    label: "Intelligence",
+    icon: Brain,
+    basePath: "/intelligence",
+    pages: [
+      { path: "", label: "Dashboard", icon: LayoutDashboard },
+      { path: "/news", label: "News", icon: Newspaper },
+      { path: "/filings", label: "SEC Filings", icon: FileText },
+      { path: "/insider", label: "Insider Activity", icon: Users },
     ],
   },
   {

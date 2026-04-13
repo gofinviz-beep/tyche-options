@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card } from "@/components/Card";
 import { StatusBadge } from "@/components/StatusBadge";
+import { NewsRiskBadge } from "@/components/NewsRiskBadge";
 import { DataTable, type DataTableColumn } from "@/components/DataTable";
 import {
   useActivePullbacks,
@@ -16,6 +17,8 @@ import {
   useDeletePosition,
   useCheckExits,
   useRecentSignals,
+  useNewsSignals,
+  useFilingSignals,
 } from "@/hooks/useApi";
 import type {
   PullbackAlert,
@@ -24,6 +27,8 @@ import type {
   GateResult,
   StockPosition,
   ExitSignal,
+  NewsSignal,
+  FilingSignal,
 } from "@/types";
 import { formatMarketCap, convictionSortValue } from "@/lib/format";
 
@@ -349,7 +354,11 @@ function ExpandedPullbackRow({
   );
 }
 
-const pullbackColumns: DataTableColumn<PullbackAlert>[] = [
+function buildPullbackColumns(
+  newsMap: Map<string, NewsSignal>,
+  filingMap: Map<string, FilingSignal>,
+): DataTableColumn<PullbackAlert>[] {
+  return [
   {
     key: "ticker",
     header: "Ticker",
@@ -358,7 +367,10 @@ const pullbackColumns: DataTableColumn<PullbackAlert>[] = [
     width: "120px",
     render: (r) => (
       <div>
-        <span className="font-mono font-bold text-gray-900">{r.ticker}</span>
+        <span className="flex items-center gap-1 font-mono font-bold text-gray-900">
+          {r.ticker}
+          <NewsRiskBadge signal={newsMap.get(r.ticker)} filingSignal={filingMap.get(r.ticker)} />
+        </span>
         {r.name && (
           <div className="text-[11px] text-gray-400 truncate max-w-[100px]">
             {r.name}
@@ -658,18 +670,21 @@ const pullbackColumns: DataTableColumn<PullbackAlert>[] = [
       );
     },
   },
-];
+  ];
+}
 
 function PullbackSection({
   title,
   alerts,
   emptyMessage,
   recMap,
+  pullbackColumns,
 }: {
   title: string;
   alerts: PullbackAlert[];
   emptyMessage: string;
   recMap: Map<string, StockBuyRecommendation>;
+  pullbackColumns: DataTableColumn<PullbackAlert>[];
 }) {
   return (
     <Card title={title} subtitle={`${alerts.length} pullback(s)`}>
@@ -1247,8 +1262,27 @@ function CspExpiryTracker() {
 export function StocksDashboard() {
   const { data, isLoading, error } = useActivePullbacks();
   const { data: recsData } = useStockRecommendations();
+  const { data: newsSignals } = useNewsSignals();
+  const { data: filingSignals } = useFilingSignals();
   const refreshMutation = useRefreshConviction();
   const [refreshResult, setRefreshResult] = useState<string | null>(null);
+
+  const newsMap = useMemo(() => {
+    const m = new Map<string, NewsSignal>();
+    for (const s of newsSignals ?? []) m.set(s.ticker, s);
+    return m;
+  }, [newsSignals]);
+
+  const filingMap = useMemo(() => {
+    const m = new Map<string, FilingSignal>();
+    for (const s of filingSignals ?? []) m.set(s.ticker, s);
+    return m;
+  }, [filingSignals]);
+
+  const pullbackColumns = useMemo(
+    () => buildPullbackColumns(newsMap, filingMap),
+    [newsMap, filingMap],
+  );
 
   const handleRefresh = () => {
     setRefreshResult(null);
@@ -1333,6 +1367,7 @@ export function StocksDashboard() {
         alerts={watchlist}
         emptyMessage="No watchlist tickers are currently in a pullback state."
         recMap={recMap}
+        pullbackColumns={pullbackColumns}
       />
 
       <PullbackSection
@@ -1340,6 +1375,7 @@ export function StocksDashboard() {
         alerts={universe}
         emptyMessage="No universe tickers are currently in a pullback state. Run 'Refresh Conviction' to scan the full universe."
         recMap={recMap}
+        pullbackColumns={pullbackColumns}
       />
 
       <PositionsPanel />

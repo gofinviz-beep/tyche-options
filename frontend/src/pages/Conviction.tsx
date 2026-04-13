@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Card } from "@/components/Card";
 import { StatusBadge } from "@/components/StatusBadge";
+import { NewsRiskBadge } from "@/components/NewsRiskBadge";
 import { DataTable, type DataTableColumn } from "@/components/DataTable";
 import {
   useDataStoreStatus,
@@ -8,8 +9,10 @@ import {
   useUpdateDailyData,
   useConvictionScan,
   useTriggerConvictionScan,
+  useNewsSignals,
+  useFilingSignals,
 } from "@/hooks/useApi";
-import type { ConvictionSignal } from "@/types";
+import type { ConvictionSignal, FilingSignal, NewsSignal } from "@/types";
 import { ChevronDown, ChevronRight, Check, X, Minus, Database, Star } from "lucide-react";
 import { convictionSortValue } from "@/lib/format";
 
@@ -36,7 +39,11 @@ function formatInstPct(pct: number | null): string {
   return `${(pct * 100).toFixed(0)}%`;
 }
 
-const signalColumns: DataTableColumn<ConvictionSignal>[] = [
+function buildSignalColumns(
+  newsMap: Map<string, NewsSignal>,
+  filingMap: Map<string, FilingSignal>,
+): DataTableColumn<ConvictionSignal>[] {
+  return [
   {
     key: "ticker",
     header: "Ticker",
@@ -47,6 +54,7 @@ const signalColumns: DataTableColumn<ConvictionSignal>[] = [
       <span className="flex items-center gap-1 font-mono font-bold text-gray-900">
         {r.ticker}
         {r.is_watchlist && <Star className="h-3 w-3 fill-amber-400 text-amber-400" />}
+        <NewsRiskBadge signal={newsMap.get(r.ticker)} filingSignal={filingMap.get(r.ticker)} />
       </span>
     ),
   },
@@ -354,7 +362,8 @@ const signalColumns: DataTableColumn<ConvictionSignal>[] = [
       return <span className="text-xs text-gray-300">—</span>;
     },
   },
-];
+  ];
+}
 
 export function Conviction() {
   const { data: status, isLoading: statusLoading } = useDataStoreStatus();
@@ -363,6 +372,22 @@ export function Conviction() {
   const manualScan = useTriggerConvictionScan();
   const [symbols, setSymbols] = useState("");
   const [showDataStore, setShowDataStore] = useState(false);
+  const { data: newsSignals } = useNewsSignals();
+  const { data: filingSignals } = useFilingSignals();
+
+  const newsMap = useMemo(() => {
+    const m = new Map<string, NewsSignal>();
+    for (const s of newsSignals ?? []) m.set(s.ticker, s);
+    return m;
+  }, [newsSignals]);
+
+  const filingMap = useMemo(() => {
+    const m = new Map<string, FilingSignal>();
+    for (const s of filingSignals ?? []) m.set(s.ticker, s);
+    return m;
+  }, [filingSignals]);
+
+  const signalColumns = useMemo(() => buildSignalColumns(newsMap, filingMap), [newsMap, filingMap]);
 
   const autoScan = useConvictionScan(undefined, !!status?.exists);
 
