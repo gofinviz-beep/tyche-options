@@ -58,8 +58,27 @@ TICKER_META_SCHEMA = pa.schema(
         ("type", pa.string()),
         ("last_updated", pa.date32()),
         ("institutional_pct", pa.float64()),
+        ("sic_code", pa.string()),
+        ("sic_description", pa.string()),
+        ("sector", pa.string()),
     ]
 )
+
+_META_MIGRATE_COLS = {
+    "institutional_pct": pd.NA,
+    "sic_code": pd.NA,
+    "sic_description": pd.NA,
+    "sector": pd.NA,
+}
+
+
+def _auto_migrate_meta_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Add missing columns to a ticker-meta DataFrame (backward compat)."""
+    for col, default in _META_MIGRATE_COLS.items():
+        if col not in df.columns:
+            df[col] = default
+    return df
+
 
 CONVICTION_SIGNAL_SCHEMA = pa.schema(
     [
@@ -522,6 +541,9 @@ class TickerMetaStore:
                     "type": t.type,
                     "last_updated": today,
                     "institutional_pct": None,
+                    "sic_code": None,
+                    "sic_description": None,
+                    "sector": None,
                 }
                 for t in tickers
             ]
@@ -529,8 +551,7 @@ class TickerMetaStore:
 
         if self.exists:
             existing_df = pd.read_parquet(self._parquet_path)
-            if "institutional_pct" not in existing_df.columns:
-                existing_df["institutional_pct"] = pd.NA
+            existing_df = _auto_migrate_meta_columns(existing_df)
 
             # Build preservation maps before overwrite: keep existing positive
             # market_cap and non-null institutional_pct when incoming row has
@@ -545,6 +566,21 @@ class TickerMetaStore:
                     ["ticker", "institutional_pct"]
                 ].values
             )
+            sic_map = dict(
+                existing_df.dropna(subset=["sic_code"])[
+                    ["ticker", "sic_code"]
+                ].values
+            )
+            sic_desc_map = dict(
+                existing_df.dropna(subset=["sic_description"])[
+                    ["ticker", "sic_description"]
+                ].values
+            )
+            sector_map = dict(
+                existing_df.dropna(subset=["sector"])[
+                    ["ticker", "sector"]
+                ].values
+            )
 
             combined = pd.concat([existing_df, new_df], ignore_index=True)
             combined = combined.drop_duplicates(subset=["ticker"], keep="last")
@@ -555,6 +591,15 @@ class TickerMetaStore:
             for ticker, pct in inst_map.items():
                 mask = (combined["ticker"] == ticker) & combined["institutional_pct"].isna()
                 combined.loc[mask, "institutional_pct"] = pct
+            for ticker, sic in sic_map.items():
+                mask = (combined["ticker"] == ticker) & combined["sic_code"].isna()
+                combined.loc[mask, "sic_code"] = sic
+            for ticker, desc in sic_desc_map.items():
+                mask = (combined["ticker"] == ticker) & combined["sic_description"].isna()
+                combined.loc[mask, "sic_description"] = desc
+            for ticker, sec in sector_map.items():
+                mask = (combined["ticker"] == ticker) & combined["sector"].isna()
+                combined.loc[mask, "sector"] = sec
         else:
             combined = new_df.drop_duplicates(subset=["ticker"], keep="last")
 
@@ -579,12 +624,14 @@ class TickerMetaStore:
         """Read all ticker metadata."""
         if not self.exists:
             return pd.DataFrame(
-                columns=["ticker", "name", "market_cap", "exchange", "type", "last_updated", "institutional_pct"]
+                columns=[
+                    "ticker", "name", "market_cap", "exchange", "type",
+                    "last_updated", "institutional_pct",
+                    "sic_code", "sic_description", "sector",
+                ]
             )
         df = pd.read_parquet(self._parquet_path)
-        if "institutional_pct" not in df.columns:
-            df["institutional_pct"] = pd.NA
-        return df
+        return _auto_migrate_meta_columns(df)
 
     def get_market_caps(self, tickers: list[str] | None = None) -> dict[str, float]:
         """Return a ticker -> market_cap mapping.
@@ -619,6 +666,7 @@ class TickerMetaStore:
             return 0
 
         df = pd.read_parquet(self._parquet_path)
+        df = _auto_migrate_meta_columns(df)
         updated = 0
         for ticker, cap in caps.items():
             mask = df["ticker"] == ticker
@@ -678,8 +726,7 @@ class TickerMetaStore:
             return 0
 
         df = pd.read_parquet(self._parquet_path)
-        if "institutional_pct" not in df.columns:
-            df["institutional_pct"] = pd.NA
+        df = _auto_migrate_meta_columns(df)
 
         updated = 0
         for ticker, pct in pcts.items():
@@ -695,6 +742,53 @@ class TickerMetaStore:
         pq.write_table(table, self._parquet_path, compression="snappy")
 
         logger.info("ticker_meta_institutional_updated", updated=updated, total=len(pcts))
+        return updated
+
+    def get_sectors(self, tickers: list[str] | None = None) -> dict[str, str]:
+        """Return a ticker -> sector mapping from persisted data."""
+        if not self.exists:
+            return {}
+
+        try:
+            df = pd.read_parquet(self._parquet_path, columns=["ticker", "sector"])
+        except Exception:
+            return {}
+        if tickers:
+            df = df[df["ticker"].isin(tickers)]
+        df = df.dropna(subset=["sector"])
+        return dict(zip(df["ticker"], df["sector"]))
+
+    def update_sic_data(
+        self, sic_data: dict[str, tuple[str, str, str | None]]
+    ) -> int:
+        """Bulk-update SIC code, description, and derived sector.
+
+        Args:
+            sic_data: Mapping of ticker -> (sic_code, sic_description, sector).
+
+        Returns the number of tickers updated.
+        """
+        if not self.exists or not sic_data:
+            return 0
+
+        df = pd.read_parquet(self._parquet_path)
+        df = _auto_migrate_meta_columns(df)
+
+        updated = 0
+        for ticker, (sic_code, sic_desc, sector) in sic_data.items():
+            mask = df["ticker"] == ticker
+            if mask.any():
+                df.loc[mask, "sic_code"] = sic_code
+                df.loc[mask, "sic_description"] = sic_desc
+                if sector:
+                    df.loc[mask, "sector"] = sector
+                updated += 1
+
+        df["last_updated"] = pd.to_datetime(df["last_updated"]).dt.date
+        table = pa.Table.from_pandas(df, schema=TICKER_META_SCHEMA)
+        pq.write_table(table, self._parquet_path, compression="snappy")
+
+        logger.info("ticker_meta_sic_updated", updated=updated, total=len(sic_data))
         return updated
 
     def get_ticker_count(self) -> int:
@@ -1429,6 +1523,72 @@ async def _backfill_market_caps(
         fetched=len(fetched),
         updated=updated,
         still_missing=len(missing) - len(fetched),
+    )
+    return updated
+
+
+async def _backfill_sic_data(
+    polygon: PolygonClient,
+    meta_store: TickerMetaStore,
+    concurrency: int = 20,
+    rate_limit_rpm: int = 500,
+) -> int:
+    """Backfill SIC code, description, and sector for tickers missing sector data.
+
+    Uses the same `/v3/reference/tickers/{ticker}` endpoint as market cap backfill
+    but extracts `sic_code` and `sic_description`. Also updates market caps if missing.
+
+    Returns the number of tickers updated.
+    """
+    from tyche.market_data.sic_sectors import sic_to_sector
+
+    sectors = meta_store.get_sectors()
+    caps = meta_store.get_market_caps()
+    all_tickers = list(caps.keys()) if caps else []
+    missing = [t for t in all_tickers if t not in sectors]
+
+    if not missing:
+        logger.info("sic_backfill_skipped", reason="all_sectors_present")
+        return 0
+
+    logger.info(
+        "sic_backfill_start",
+        total_tickers=len(all_tickers),
+        missing=len(missing),
+        concurrency=concurrency,
+        rate_limit_rpm=rate_limit_rpm,
+    )
+
+    details = await polygon.get_batch_ticker_details_concurrent(
+        missing,
+        concurrency=concurrency,
+        rate_limit_rpm=rate_limit_rpm,
+    )
+
+    sic_data: dict[str, tuple[str, str, str | None]] = {}
+    cap_updates: dict[str, float] = {}
+    for ticker, info in details.items():
+        sic_code = info.get("sic_code")
+        sic_desc = info.get("sic_description")
+        if sic_code:
+            sector = sic_to_sector(sic_code)
+            sic_data[ticker] = (sic_code, sic_desc or "", sector)
+        cap = info.get("market_cap", 0)
+        if cap and cap > 0 and caps.get(ticker, 0) <= 0:
+            cap_updates[ticker] = cap
+
+    updated = 0
+    if sic_data:
+        updated = meta_store.update_sic_data(sic_data)
+    if cap_updates:
+        meta_store.update_market_caps(cap_updates)
+
+    logger.info(
+        "sic_backfill_complete",
+        fetched=len(details),
+        sic_updated=updated,
+        caps_updated=len(cap_updates),
+        still_missing=len(missing) - len(sic_data),
     )
     return updated
 

@@ -10,6 +10,7 @@ Usage:
     python scripts/ingest_data.py --intraday               # Also fetch 5-min intraday bars for eligible tickers
     python scripts/ingest_data.py --intraday --intraday-tickers AAPL,MSFT  # Specific tickers only
     python scripts/ingest_data.py --institutional          # Backfill institutional ownership for all CS tickers
+    python scripts/ingest_data.py --sector                # Backfill SIC codes and sector classification
 """
 
 from __future__ import annotations
@@ -376,6 +377,7 @@ async def _run(
     no_conviction: bool = False,
     institutional: bool = False,
     skip_market_cap_backfill: bool = False,
+    sector: bool = False,
 ) -> None:
     settings = get_settings()
     store = OHLCVStore(data_dir=settings.data_dir)
@@ -488,6 +490,17 @@ async def _run(
         else:
             click.echo("Intraday store already up to date.")
 
+    if sector:
+        click.echo("\nBackfilling SIC codes and sector classification...")
+        from tyche.market_data.data_store import _backfill_sic_data
+
+        sic_updated = await _backfill_sic_data(
+            polygon, meta_store,
+            concurrency=cap_concurrency,
+            rate_limit_rpm=cap_rpm,
+        )
+        click.echo(f"  SIC/sector updated for {sic_updated:,} tickers")
+
     if institutional:
         click.echo("\nBackfilling institutional ownership...")
         await _backfill_institutional(meta_store)
@@ -569,6 +582,8 @@ async def _run_conviction_batch(
               help="Backfill institutional ownership (yfinance) for all CS tickers in meta store.")
 @click.option("--skip-market-cap-backfill", is_flag=True, default=False,
               help="Skip automatic market-cap backfill from per-ticker detail endpoint.")
+@click.option("--sector", is_flag=True, default=False,
+              help="Backfill SIC codes and sector classification from Polygon ticker details.")
 def main(
     from_date: click.DateTime | None,
     to_date: click.DateTime | None,
@@ -580,13 +595,14 @@ def main(
     no_conviction: bool,
     institutional: bool,
     skip_market_cap_backfill: bool,
+    sector: bool,
 ) -> None:
     """Ingest OHLCV daily bars, intraday bars, and ticker metadata from Polygon.io."""
     fd = from_date.date() if from_date else None
     td = to_date.date() if to_date else None
     asyncio.run(_run(
         fd, td, days, meta, status, intraday, intraday_tickers,
-        no_conviction, institutional, skip_market_cap_backfill,
+        no_conviction, institutional, skip_market_cap_backfill, sector,
     ))
 
 

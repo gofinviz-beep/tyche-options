@@ -224,6 +224,7 @@ async def scan_conviction(
     inst_persisted = meta_store.get_institutional_pcts(display_tickers) if meta_store.exists else {}
     inst_cached = get_cached_ownership_batch(display_tickers)
     inst_ownership = {**inst_persisted, **inst_cached}
+    sectors = meta_store.get_sectors(display_tickers) if meta_store.exists else {}
 
     response = ConvictionScanResponse(
         scan_id=str(uuid.uuid4()),
@@ -242,6 +243,7 @@ async def scan_conviction(
                 is_watchlist=s.ticker in watchlist_set,
                 market_cap=market_caps.get(s.ticker),
                 institutional_pct=inst_ownership.get(s.ticker),
+                sector=sectors.get(s.ticker),
             )
             for s in display_signals
         ],
@@ -289,8 +291,9 @@ async def get_ticker_conviction(
     inst_pct = (meta_store.get_institutional_pcts([t]) if meta_store.exists else {})
     inst_cached = get_cached_ownership_batch([t])
     inst = {**inst_pct, **inst_cached}.get(t)
+    sec = meta_store.get_sectors([t]).get(t) if meta_store.exists else None
 
-    return _signal_to_response(signal, market_cap=cap, institutional_pct=inst)
+    return _signal_to_response(signal, market_cap=cap, institutional_pct=inst, sector=sec)
 
 
 def _signal_to_response(
@@ -299,6 +302,7 @@ def _signal_to_response(
     is_watchlist: bool = False,
     market_cap: float | None = None,
     institutional_pct: float | None = None,
+    sector: str | None = None,
 ) -> ConvictionSignalResponse:
     return ConvictionSignalResponse(
         ticker=s.ticker,
@@ -329,6 +333,7 @@ def _signal_to_response(
         conviction_score=round(s.conviction_score, 3),
         market_cap=market_cap if market_cap and market_cap > 0 else None,
         institutional_pct=round(institutional_pct, 4) if institutional_pct is not None else None,
+        sector=sector,
         gate_results=[
             GateResultResponse(
                 gate=g.gate,

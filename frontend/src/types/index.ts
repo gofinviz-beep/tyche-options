@@ -95,6 +95,7 @@ export interface ConvictionSignal {
   vrp: number | null;
   market_cap: number | null;
   institutional_pct: number | null;
+  sector: string | null;
   gate_results: GateResult[];
 }
 
@@ -527,6 +528,7 @@ export interface PullbackAlert {
   market_cap_label: string;
   exchange: string;
   name: string;
+  sector: string | null;
   days_above_both_emas: number;
   avg_volume_20d: number;
   price_to_8ema_pct: number;
@@ -618,6 +620,7 @@ export interface ConvictionSnapshot {
   computed_at: string | null;
   market_cap: number | null;
   institutional_pct: number | null;
+  sector: string | null;
 }
 
 export interface ConvictionTransition {

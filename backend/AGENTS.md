@@ -19,7 +19,7 @@
 
 ## Data Sources
 
-- **Polygon.io** — historical OHLCV data, ticker metadata (bootstrap/backtest only)
+- **Polygon.io** — historical OHLCV data, ticker metadata including SIC codes/sector classification (bootstrap/backtest only)
 - **Tradier** — live quotes, options chains, account operations, order execution
 - **Gemini LLM** — qualitative analysis only; all numbers come from broker data via `_resolve_numeric()`
 
@@ -34,7 +34,7 @@
 
 ## Testing
 
-- 961 unit tests in `tests/unit/`, run with `pytest`
+- 1117 unit tests in `tests/unit/`, run with `pytest`
 - External APIs are always mocked — no network calls in tests
 - Use `AsyncMock` for async broker/LLM calls, `MagicMock` for data stores
 - `morning_scan.py`, `analysis/client.py` have 100% coverage; `exit_monitor.py` at 95%

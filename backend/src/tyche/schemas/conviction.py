@@ -52,6 +52,7 @@ class ConvictionSignalResponse(BaseModel):
     conviction_score: float = 0.0
     market_cap: float | None = None
     institutional_pct: float | None = None
+    sector: str | None = None
     gate_results: list[GateResultResponse] = []
 
 

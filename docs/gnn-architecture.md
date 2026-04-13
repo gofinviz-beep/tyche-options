@@ -630,13 +630,13 @@ Tyche already has substantial data infrastructure the GNN consumes (not rebuilds
 - **Gemini LLM client** — retry, fallback, structured output parsing (reusable for news entity extraction)
 - **Ticker metadata** — market cap, exchange, type, institutional ownership
 
-### Prerequisite: Sector/Industry Data
+### Prerequisite: Sector/Industry Data — ✅ PARTIALLY COMPLETE
 
-The ticker metadata currently lacks sector/industry classification. This must be populated before the graph can be built:
+Sector/industry classification is now populated in `ticker_meta.parquet`:
 
-- Polygon's ticker reference API provides SIC codes and sector classification
-- ETF constituent lists (SPY, QQQ, SMH, SOXX, XLK, XLF, etc.) need ingestion
-- ETF weight data available from ETF providers
+- ✅ Polygon's ticker reference API provides SIC codes and sector classification — implemented via `sic_sectors.py` (SIC-to-GICS mapping) + `get_batch_ticker_details_concurrent()` + `_backfill_sic_data()`. Run `python scripts/ingest_data.py --sector` to backfill. Sector is displayed as a filterable column on all conviction/dashboard pages.
+- ETF constituent lists (SPY, QQQ, SMH, SOXX, XLK, XLF, etc.) need ingestion — PENDING
+- ETF weight data available from ETF providers — PENDING
 
 ---
 
@@ -699,12 +699,12 @@ This gives you a fresh candidate every week without the risk of silent degradati
 
 ## Build Sequence
 
-### Pre-work (Week 0): Data Foundation
+### Pre-work (Week 0): Data Foundation — ✅ COMPLETE
 
-- Ingest sector/industry classification from Polygon into ticker metadata
-- Ingest ETF constituent lists (SPY, QQQ, SMH, SOXX, XLK, XLF, etc.)
-- Build stock-to-stock rolling correlation matrix from existing OHLCV
-- Add ML package to the backend codebase
+- ✅ Ingest sector/industry classification from Polygon into ticker metadata — SIC code mapping via `sic_sectors.py`, backfill via `ingest_data.py --sector`, sector column on all conviction/dashboard pages with filterable dropdown
+- Ingest ETF constituent lists (SPY, QQQ, SMH, SOXX, XLK, XLF, etc.) — PENDING
+- Build stock-to-stock rolling correlation matrix from existing OHLCV — PENDING
+- ✅ Add ML package to the backend codebase — `xgboost>=2.1` + `scikit-learn>=1.5` as optional `[ml]` dependency group
 
 ### Phase 1 (Weeks 1-3): News Pipeline + EDGAR Pipeline + Intelligence Dashboard — ✅ COMPLETE
 

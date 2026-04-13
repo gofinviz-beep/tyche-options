@@ -866,6 +866,105 @@ class PolygonClient:
         )
         return result
 
+    async def get_batch_ticker_details_concurrent(
+        self,
+        tickers: list[str],
+        concurrency: int = 20,
+        rate_limit_rpm: int = 500,
+    ) -> dict[str, dict]:
+        """Fetch full ticker details concurrently, extracting market cap + SIC data.
+
+        Returns a mapping of ticker -> dict with keys:
+          market_cap, sic_code, sic_description
+
+        Only tickers where at least one field is non-empty are included.
+        """
+        if not tickers:
+            return {}
+
+        result: dict[str, dict] = {}
+        failed: int = 0
+        total = len(tickers)
+        semaphore = asyncio.Semaphore(concurrency)
+
+        min_interval = 60.0 / max(rate_limit_rpm, 1)
+        token_lock = asyncio.Lock()
+        last_request_time = 0.0
+
+        async def _acquire_rate_slot() -> None:
+            nonlocal last_request_time
+            async with token_lock:
+                now = time.monotonic()
+                elapsed = now - last_request_time
+                if elapsed < min_interval:
+                    await asyncio.sleep(min_interval - elapsed)
+                last_request_time = time.monotonic()
+
+        async def _fetch_one(ticker: str) -> None:
+            nonlocal failed
+            async with semaphore:
+                await _acquire_rate_slot()
+                try:
+                    url = f"{self._base_url}/v3/reference/tickers/{ticker}"
+                    params = {"apiKey": self._api_key}
+                    async with httpx.AsyncClient(timeout=self._timeout) as client:
+                        resp = await client.get(url, params=params)
+
+                    if resp.status_code == 429:
+                        await asyncio.sleep(2.0)
+                        await _acquire_rate_slot()
+                        async with httpx.AsyncClient(timeout=self._timeout) as client:
+                            resp = await client.get(url, params=params)
+
+                    if resp.status_code >= 400:
+                        failed += 1
+                        return
+
+                    data = resp.json().get("results", {})
+                    cap = float(data.get("market_cap", 0) or 0)
+                    sic_code = str(data.get("sic_code", "") or "").strip()
+                    sic_desc = str(data.get("sic_description", "") or "").strip()
+
+                    if cap > 0 or sic_code:
+                        result[ticker] = {
+                            "market_cap": cap if cap > 0 else 0,
+                            "sic_code": sic_code or None,
+                            "sic_description": sic_desc or None,
+                        }
+                except Exception:
+                    failed += 1
+                    logger.debug("ticker_details_fetch_failed", ticker=ticker)
+
+        logger.info(
+            "batch_ticker_details_start",
+            total=total,
+            concurrency=concurrency,
+            rate_limit_rpm=rate_limit_rpm,
+        )
+
+        tasks = [asyncio.create_task(_fetch_one(t)) for t in tickers]
+
+        done_count = 0
+        for coro in asyncio.as_completed(tasks):
+            await coro
+            done_count += 1
+            if done_count % 200 == 0:
+                logger.info(
+                    "batch_ticker_details_progress",
+                    done=done_count,
+                    total=total,
+                    found=len(result),
+                    failed=failed,
+                )
+
+        logger.info(
+            "batch_ticker_details_complete",
+            total=total,
+            found=len(result),
+            failed=failed,
+        )
+        return result
+
     # ── News API ───────────────────────────────────────────────────────
 
     async def get_news(

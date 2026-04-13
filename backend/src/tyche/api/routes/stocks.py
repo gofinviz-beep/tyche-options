@@ -212,6 +212,7 @@ def _snapshot_to_pullback_alert(
         market_cap_label=_market_cap_label(raw_cap),
         exchange=meta.get("exchange", ""),
         name=meta.get("name", ""),
+        sector=meta.get("sector"),
         days_above_both_emas=snap.days_above_both_emas or 0,
         avg_volume_20d=snap.avg_volume_20d or 0,
         price_to_8ema_pct=round(snap.price_to_8ema_pct or 0, 4),
@@ -263,6 +264,7 @@ async def get_active_pullbacks_endpoint(
                     "market_cap": row.get("market_cap"),
                     "exchange": row.get("exchange", ""),
                     "name": row.get("name", ""),
+                    "sector": row.get("sector"),
                 }
         except Exception:
             logger.warning("pullbacks_meta_load_failed", exc_info=True)
@@ -383,12 +385,14 @@ async def get_conviction_snapshots_endpoint(
     inst_persisted = meta_store.get_institutional_pcts(tickers) if meta_store.exists else {}
     inst_cached = get_cached_ownership_batch(tickers)
     inst_ownership = {**inst_persisted, **inst_cached}
+    sectors = meta_store.get_sectors(tickers) if meta_store.exists else {}
 
     results = []
     for s in snaps:
         resp = _snapshot_to_response(s)
         resp.market_cap = market_caps.get(s.ticker)
         resp.institutional_pct = inst_ownership.get(s.ticker)
+        resp.sector = sectors.get(s.ticker)
         results.append(resp)
 
     return results

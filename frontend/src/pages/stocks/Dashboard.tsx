@@ -487,6 +487,35 @@ function buildPullbackColumns(
     ),
   },
   {
+    key: "sector",
+    header: "Sector",
+    accessor: (r) => r.sector ?? "",
+    sortable: true,
+    render: (r) =>
+      r.sector ? (
+        <span className="text-xs text-gray-500 truncate max-w-[100px]" title={r.sector}>{r.sector}</span>
+      ) : (
+        <span className="text-xs text-gray-300">—</span>
+      ),
+    filter: {
+      type: "select",
+      placeholder: "All",
+      options: [
+        { value: "Communication Services", label: "Comm Svc" },
+        { value: "Consumer Discretionary", label: "Cons Disc" },
+        { value: "Consumer Staples", label: "Cons Stpl" },
+        { value: "Energy", label: "Energy" },
+        { value: "Financials", label: "Financials" },
+        { value: "Health Care", label: "Health Care" },
+        { value: "Industrials", label: "Industrials" },
+        { value: "Information Technology", label: "Info Tech" },
+        { value: "Materials", label: "Materials" },
+        { value: "Real Estate", label: "Real Est" },
+        { value: "Utilities", label: "Utilities" },
+      ],
+    },
+  },
+  {
     key: "rsi_14",
     header: "RSI",
     accessor: (r) => r.rsi_14,

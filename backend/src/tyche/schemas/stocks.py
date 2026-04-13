@@ -38,6 +38,7 @@ class ConvictionSnapshotResponse(BaseModel):
     computed_at: str | None = None
     market_cap: float | None = None
     institutional_pct: float | None = None
+    sector: str | None = None
 
 
 class ConvictionTransitionResponse(BaseModel):

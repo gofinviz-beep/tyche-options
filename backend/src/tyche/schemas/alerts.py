@@ -56,6 +56,7 @@ class PullbackAlertResponse(BaseModel):
     market_cap_label: str = ""
     exchange: str = ""
     name: str = ""
+    sector: str | None = None
     days_above_both_emas: int = 0
     avg_volume_20d: float = 0
     price_to_8ema_pct: float = 0
