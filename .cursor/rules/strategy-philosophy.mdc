@@ -162,6 +162,6 @@ The MILP allocator adds a mega-cap preference: `cap_w = 1.0 + 0.1 × min(1.0, ma
 | `csp_min_premium_pct` | `0.5` | Min premium as % of collateral |
 | `csp_min_volume` | `10` | Min daily volume for CSP contracts |
 | `csp_min_oi` | `50` | Min open interest for CSP contracts |
-| `ml_retrain_enabled` | `false` | Enable monthly XGBoost model retraining |
+| `ml_retrain_enabled` | `true` | Enable monthly XGBoost model retraining |
 | `ml_retrain_day_of_month` | `1` | Day of month for scheduled retrain |
 | `ml_retrain_time` | `"02:00"` | Time (ET) for scheduled retrain |

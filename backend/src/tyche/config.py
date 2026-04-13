@@ -309,7 +309,7 @@ class TycheSettings(BaseModel):
     news_risk_threshold: float = -0.3
 
     # --- ML Retrain ---
-    ml_retrain_enabled: bool = False
+    ml_retrain_enabled: bool = True
     ml_retrain_day_of_month: int = 1
     ml_retrain_time: str = "02:00"
 

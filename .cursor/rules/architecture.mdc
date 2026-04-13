@@ -136,7 +136,7 @@ The Scanner calls Conviction Engine internally — no need to run conviction fir
 | 4:02 PM | OHLCV Refresh | Fetch today's grouped daily bars from Polygon |
 | 4:05 PM | Exit Monitor | Refresh OHLCV (safety net), check active stock positions against profit targets + 8-EMA stop loss |
 | 4:10 PM | Options Snapshot | Capture live options chains from Tradier for large-cap tickers; persist to per-ticker Parquet |
-| 1st of month, 2 AM | ML Retrain | Rebuild XGBoost dataset + train production model + reload predictor (if `ml_retrain_enabled`) |
+| 1st of month, 2 AM | ML Retrain | Rebuild XGBoost dataset + train production model + reload predictor (`ml_retrain_enabled` default on) |
 
 ## Stock Position Exit Monitor
 
