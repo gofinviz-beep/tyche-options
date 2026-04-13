@@ -152,6 +152,7 @@ class CashSecuredPutStrategy:
         rsi_map: dict[str, float] | None = None,
         earnings_within_dte_set: set[str] | None = None,
         scan_date: date | None = None,
+        csp_safety_map: dict[str, float] | None = None,
     ) -> list[ScoredCandidate]:
         """Score and rank CSP candidates by risk-adjusted premium quality.
 
@@ -165,6 +166,7 @@ class CashSecuredPutStrategy:
         - **earnings_factor**: 0.5 penalty when earnings fall within DTE
         - **dow_factor**: day-of-week penalty (Mon 0.85x, Thu/Fri 0.70x, Tue/Wed 1.0x)
         - **iv_catalyst_factor**: 0.5 penalty when IV Rank > 80 AND earnings within DTE
+        - **ml_factor**: 0.5 + 0.5 * csp_safety_prob when ML model available, 1.0 otherwise
         """
         scored: list[ScoredCandidate] = []
         vrp_map = vrp_map or {}
@@ -172,6 +174,7 @@ class CashSecuredPutStrategy:
         trend_confirm_map = trend_confirm_map or {}
         rsi_map = rsi_map or {}
         earnings_within_dte_set = earnings_within_dte_set or set()
+        csp_safety_map = csp_safety_map or {}
 
         effective_date = scan_date or date.today()
         dow_factor = self._DOW_FACTORS.get(effective_date.weekday(), 1.0)
@@ -225,7 +228,10 @@ class CashSecuredPutStrategy:
             if has_earnings and iv_rank is not None and iv_rank > 80:
                 iv_catalyst_factor = 0.5
 
-            score = annualized * liquidity_factor * dte_factor * vrp_factor * iv_rank_factor * trend_confirm_factor * rsi_factor * earnings_factor * dow_factor * iv_catalyst_factor
+            csp_prob = csp_safety_map.get(c.symbol)
+            ml_factor = (0.5 + 0.5 * csp_prob) if csp_prob is not None else 1.0
+
+            score = annualized * liquidity_factor * dte_factor * vrp_factor * iv_rank_factor * trend_confirm_factor * rsi_factor * earnings_factor * dow_factor * iv_catalyst_factor * ml_factor
 
             sc = ScoredCandidate(
                 **{k: getattr(c, k) for k in FilteredCandidate.__dataclass_fields__},

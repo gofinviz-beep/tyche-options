@@ -1,7 +1,8 @@
-"""News article classifier using Gemini Flash for entity extraction + event classification.
+"""News article classifier using Gemini for entity extraction + event classification.
 
-Each article is classified individually (cheap with Flash, ~$0.001/article) to
-avoid token overflow and produce clean per-article structured output.
+Uses gemini-2.5-flash-lite by default (cheap structured extraction). Articles are
+batched (10 per API call) and processed through a rate-paced asyncio.Queue to stay
+within RPM limits and avoid 429 errors.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ import structlog
 from pydantic import BaseModel, Field
 
 from tyche.analysis.client import GeminiClient
-from tyche.exceptions import NewsClassificationError
 
 logger = structlog.get_logger()
 
@@ -58,6 +58,23 @@ Published: {published_at}
 Summary: {summary}
 
 Respond with the structured classification."""
+
+_BATCH_SYSTEM_PROMPT = """You are a financial news classifier for an options trading system.
+Your job is to analyze MULTIPLE news articles and return one classification per article.
+
+Rules:
+- For EACH article, extract tickers mentioned with relevance (primary/secondary/passing)
+- Classify event type from: {event_types}
+- Score impact from -1.0 to +1.0. Be conservative: most news is neutral (0.0 to +/-0.2)
+- Reserve extreme scores (beyond +/-0.5) for truly material events
+- Sentiment must be one of: positive, negative, neutral
+- Return exactly one classification per article, preserving the article_id"""
+
+_BATCH_ARTICLE_PROMPT = """Classify each of these {count} news articles:
+
+{articles}
+
+Return one classification per article with matching article_id."""
 
 # 8-K item numbers mapped to event categories
 _8K_ITEM_MAP = {
@@ -117,6 +134,25 @@ Content excerpt:
 
 Respond with the structured classification."""
 
+_8K_BATCH_SYSTEM_PROMPT = """You are a financial filing classifier for an options trading system.
+Your job is to analyze MULTIPLE SEC 8-K filings and return one classification per filing.
+
+Rules:
+- For EACH filing, classify the event type from: {event_types}
+- Score impact from -1.0 to +1.0
+- 8-K filings are often material events — don't default to neutral unless truly routine
+- Sentiment must be one of: positive, negative, neutral
+- Return exactly one classification per filing, preserving the accession_no"""
+
+_8K_BATCH_PROMPT = """Classify each of these {count} SEC 8-K filings:
+
+{filings}
+
+Return one classification per filing with matching accession_no."""
+
+_ARTICLES_BATCH_SIZE = 10
+_FILINGS_BATCH_SIZE = 5
+
 
 class TickerMention(BaseModel):
     """A ticker mentioned in the article with relevance level."""
@@ -137,6 +173,32 @@ class ArticleClassification(BaseModel):
     reasoning: str = Field(description="1-sentence explanation")
 
 
+class BatchArticleClassification(BaseModel):
+    """Single entry in a batch classification response."""
+
+    article_id: str = Field(description="ID of the classified article")
+    tickers_mentioned: list[TickerMention] = Field(default_factory=list)
+    event_type: str = Field(description="Event type from the fixed taxonomy")
+    sentiment: str = Field(description="positive, negative, or neutral")
+    impact_score: float = Field(
+        description="Impact score from -1.0 to +1.0", ge=-1.0, le=1.0
+    )
+    reasoning: str = Field(description="1-sentence explanation")
+
+
+class Batch8KClassification(BaseModel):
+    """Single entry in a batch 8-K classification response."""
+
+    accession_no: str = Field(description="Accession number of the filing")
+    tickers_mentioned: list[TickerMention] = Field(default_factory=list)
+    event_type: str = Field(description="Event type from the fixed taxonomy")
+    sentiment: str = Field(description="positive, negative, or neutral")
+    impact_score: float = Field(
+        description="Impact score from -1.0 to +1.0", ge=-1.0, le=1.0
+    )
+    reasoning: str = Field(description="1-sentence explanation")
+
+
 @dataclass
 class ClassificationResult:
     """Result of classifying a batch of articles."""
@@ -146,24 +208,58 @@ class ClassificationResult:
     errors: list[str] | None = None
 
 
+def _sanitize(cls: ArticleClassification | BatchArticleClassification | Batch8KClassification) -> None:
+    """Clamp impact score and normalize sentiment in-place."""
+    if cls.impact_score < -1.0:
+        cls.impact_score = -1.0
+    elif cls.impact_score > 1.0:
+        cls.impact_score = 1.0
+    if cls.sentiment not in {"positive", "negative", "neutral"}:
+        cls.sentiment = "neutral"
+
+
+def _to_article_classification(
+    batch_item: BatchArticleClassification | Batch8KClassification,
+) -> ArticleClassification:
+    """Convert a batch item to the canonical ArticleClassification."""
+    return ArticleClassification(
+        tickers_mentioned=batch_item.tickers_mentioned,
+        event_type=batch_item.event_type,
+        sentiment=batch_item.sentiment,
+        impact_score=batch_item.impact_score,
+        reasoning=batch_item.reasoning,
+    )
+
+
+def _chunked(items: list, size: int) -> list[list]:
+    """Split a list into chunks of at most *size* items."""
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
 class NewsClassifier:
-    """Classifies news articles using Gemini Flash with structured output."""
+    """Classifies news articles and 8-K filings using Gemini with structured output.
+
+    Uses a queue + rate-paced workers to stay within RPM limits. Articles are
+    batched (default 10 per API call) to reduce request count.
+    """
 
     def __init__(
         self,
         gemini: GeminiClient,
-        concurrency: int = 5,
+        classify_model: str = "gemini-2.5-flash-lite",
+        workers: int = 2,
+        rpm: int = 25,
     ) -> None:
         self._gemini = gemini
-        self._concurrency = concurrency
+        self._classify_model = classify_model
+        self._workers = workers
+        self._rpm = rpm
 
     async def classify_article(
         self, title: str, summary: str, published_at: str
     ) -> ArticleClassification:
-        """Classify a single article."""
-        system = _SYSTEM_PROMPT.format(
-            event_types=", ".join(_EVENT_TYPES)
-        )
+        """Classify a single article (used by tests and one-off calls)."""
+        system = _SYSTEM_PROMPT.format(event_types=", ".join(_EVENT_TYPES))
         prompt = _ARTICLE_PROMPT.format(
             title=title,
             published_at=published_at,
@@ -176,17 +272,9 @@ class NewsClassifier:
             system_prompt=system,
             use_deep=False,
             temperature=0.1,
+            model_override=self._classify_model,
         )
-
-        if result.impact_score < -1.0:
-            result.impact_score = -1.0
-        elif result.impact_score > 1.0:
-            result.impact_score = 1.0
-
-        valid_sentiments = {"positive", "negative", "neutral"}
-        if result.sentiment not in valid_sentiments:
-            result.sentiment = "neutral"
-
+        _sanitize(result)
         return result
 
     async def classify_8k_filing(
@@ -198,11 +286,7 @@ class NewsClassifier:
         items_reported: str,
         content: str,
     ) -> ArticleClassification:
-        """Classify a single 8-K filing.
-
-        Reuses the same ArticleClassification schema — 8-K filings produce
-        the same output structure (event_type, sentiment, impact_score).
-        """
+        """Classify a single 8-K filing."""
         system = _8K_SYSTEM_PROMPT.format(
             ticker=ticker,
             event_types=", ".join(_EVENT_TYPES),
@@ -222,118 +306,192 @@ class NewsClassifier:
             system_prompt=system,
             use_deep=False,
             temperature=0.1,
+            model_override=self._classify_model,
         )
-
-        if result.impact_score < -1.0:
-            result.impact_score = -1.0
-        elif result.impact_score > 1.0:
-            result.impact_score = 1.0
-
-        valid_sentiments = {"positive", "negative", "neutral"}
-        if result.sentiment not in valid_sentiments:
-            result.sentiment = "neutral"
-
+        _sanitize(result)
         return result
 
-    async def classify_8k_batch(
-        self,
-        filings: list[dict],
+    async def _classify_article_chunk(
+        self, articles: list[dict]
     ) -> dict[str, ArticleClassification]:
-        """Classify a batch of 8-K filings with concurrency control.
+        """Classify a chunk of articles in a single API call."""
+        if len(articles) == 1:
+            a = articles[0]
+            cls = await self.classify_article(
+                title=a.get("title", ""),
+                summary=a.get("summary", ""),
+                published_at=str(a.get("published_at", "")),
+            )
+            return {a["article_id"]: cls}
 
-        Args:
-            filings: List of dicts with 'accession_no', 'ticker', 'form_type',
-                     'filed_at', 'description', 'items_reported', 'content_summary'.
-
-        Returns:
-            Mapping of accession_no -> ArticleClassification.
-        """
-        semaphore = asyncio.Semaphore(self._concurrency)
-        results: dict[str, ArticleClassification] = {}
-        lock = asyncio.Lock()
-        errors: list[str] = []
-
-        async def _classify_one(filing: dict) -> None:
-            acc_no = filing["accession_no"]
-            async with semaphore:
-                try:
-                    classification = await self.classify_8k_filing(
-                        ticker=filing.get("ticker", ""),
-                        form_type=filing.get("form_type", "8-K"),
-                        filed_at=str(filing.get("filed_at", "")),
-                        description=filing.get("description", ""),
-                        items_reported=filing.get("items_reported", ""),
-                        content=filing.get("content_summary", ""),
-                    )
-                    async with lock:
-                        results[acc_no] = classification
-                except Exception as exc:
-                    msg = f"8-K classification failed for {acc_no}: {exc}"
-                    logger.warning(
-                        "eightk_classification_failed",
-                        accession_no=acc_no,
-                        error=str(exc),
-                    )
-                    async with lock:
-                        errors.append(msg)
-
-        tasks = [asyncio.create_task(_classify_one(f)) for f in filings]
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-        logger.info(
-            "eightk_classification_batch_complete",
-            classified=len(results),
-            failed=len(errors),
-            total=len(filings),
+        system = _BATCH_SYSTEM_PROMPT.format(
+            event_types=", ".join(_EVENT_TYPES)
         )
+        formatted = "\n\n".join(
+            f"--- Article {i+1} ---\n"
+            f"article_id: {a['article_id']}\n"
+            f"Title: {a.get('title', '')}\n"
+            f"Published: {a.get('published_at', '')}\n"
+            f"Summary: {str(a.get('summary', ''))[:500]}"
+            for i, a in enumerate(articles)
+        )
+        prompt = _BATCH_ARTICLE_PROMPT.format(
+            count=len(articles), articles=formatted
+        )
+
+        items = await self._gemini.analyze_batch(
+            prompt=prompt,
+            response_model=BatchArticleClassification,
+            system_prompt=system,
+            temperature=0.1,
+            model_override=self._classify_model,
+        )
+
+        results: dict[str, ArticleClassification] = {}
+        for item in items:
+            _sanitize(item)
+            results[item.article_id] = _to_article_classification(item)
+        return results
+
+    async def _classify_8k_chunk(
+        self, filings: list[dict]
+    ) -> dict[str, ArticleClassification]:
+        """Classify a chunk of 8-K filings in a single API call."""
+        if len(filings) == 1:
+            f = filings[0]
+            cls = await self.classify_8k_filing(
+                ticker=f.get("ticker", ""),
+                form_type=f.get("form_type", "8-K"),
+                filed_at=str(f.get("filed_at", "")),
+                description=f.get("description", ""),
+                items_reported=f.get("items_reported", ""),
+                content=f.get("content_summary", ""),
+            )
+            return {f["accession_no"]: cls}
+
+        system = _8K_BATCH_SYSTEM_PROMPT.format(
+            event_types=", ".join(_EVENT_TYPES)
+        )
+        formatted = "\n\n".join(
+            f"--- Filing {i+1} ---\n"
+            f"accession_no: {f['accession_no']}\n"
+            f"Ticker: {f.get('ticker', '')}\n"
+            f"Form Type: {f.get('form_type', '8-K')}\n"
+            f"Filed: {f.get('filed_at', '')}\n"
+            f"Description: {f.get('description', '')}\n"
+            f"Items Reported: {f.get('items_reported', 'N/A')}\n"
+            f"Content excerpt: {str(f.get('content_summary', ''))[:1500]}"
+            for i, f in enumerate(filings)
+        )
+        prompt = _8K_BATCH_PROMPT.format(
+            count=len(filings), filings=formatted
+        )
+
+        items = await self._gemini.analyze_batch(
+            prompt=prompt,
+            response_model=Batch8KClassification,
+            system_prompt=system,
+            temperature=0.1,
+            model_override=self._classify_model,
+        )
+
+        results: dict[str, ArticleClassification] = {}
+        for item in items:
+            _sanitize(item)
+            results[item.accession_no] = _to_article_classification(item)
         return results
 
     async def classify_batch(
         self,
         articles: list[dict],
     ) -> dict[str, ArticleClassification]:
-        """Classify a batch of articles with concurrency control.
+        """Classify articles using batched API calls and rate-paced workers.
 
-        Args:
-            articles: List of dicts with at least 'article_id', 'title',
-                      'summary', 'published_at' keys.
-
-        Returns:
-            Mapping of article_id -> ArticleClassification.
+        Articles are chunked (10 per call) and fed through an asyncio.Queue
+        with N workers that pace requests to stay within RPM limits.
         """
-        semaphore = asyncio.Semaphore(self._concurrency)
-        results: dict[str, ArticleClassification] = {}
-        lock = asyncio.Lock()
-        errors: list[str] = []
+        if not articles:
+            return {}
 
-        async def _classify_one(article: dict) -> None:
-            article_id = article["article_id"]
-            async with semaphore:
+        chunks = _chunked(articles, _ARTICLES_BATCH_SIZE)
+        return await self._run_queue(
+            chunks=chunks,
+            classify_fn=self._classify_article_chunk,
+            label="news",
+        )
+
+    async def classify_8k_batch(
+        self,
+        filings: list[dict],
+    ) -> dict[str, ArticleClassification]:
+        """Classify 8-K filings using batched API calls and rate-paced workers."""
+        if not filings:
+            return {}
+
+        chunks = _chunked(filings, _FILINGS_BATCH_SIZE)
+        return await self._run_queue(
+            chunks=chunks,
+            classify_fn=self._classify_8k_chunk,
+            label="8k",
+        )
+
+    async def _run_queue(
+        self,
+        chunks: list[list[dict]],
+        classify_fn,
+        label: str,
+    ) -> dict[str, ArticleClassification]:
+        """Process chunks through a queue with rate-paced workers."""
+        queue: asyncio.Queue[list[dict]] = asyncio.Queue()
+        for chunk in chunks:
+            queue.put_nowait(chunk)
+
+        results: dict[str, ArticleClassification] = {}
+        errors: list[str] = []
+        lock = asyncio.Lock()
+        interval = 60.0 / max(self._rpm, 1)
+
+        async def _worker(worker_id: int) -> None:
+            while True:
                 try:
-                    classification = await self.classify_article(
-                        title=article.get("title", ""),
-                        summary=article.get("summary", ""),
-                        published_at=str(article.get("published_at", "")),
-                    )
+                    chunk = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                try:
+                    chunk_results = await classify_fn(chunk)
                     async with lock:
-                        results[article_id] = classification
+                        results.update(chunk_results)
                 except Exception as exc:
-                    msg = f"Classification failed for {article_id}: {exc}"
+                    ids = [
+                        c.get("article_id") or c.get("accession_no", "?")
+                        for c in chunk
+                    ]
+                    msg = f"Batch classification failed for {ids}: {exc}"
                     logger.warning(
-                        "news_classification_failed",
-                        article_id=article_id,
+                        f"{label}_batch_classification_failed",
+                        ids=ids,
                         error=str(exc),
                     )
                     async with lock:
                         errors.append(msg)
+                finally:
+                    queue.task_done()
+                    await asyncio.sleep(interval)
 
-        tasks = [asyncio.create_task(_classify_one(a)) for a in articles]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        num_workers = min(self._workers, len(chunks))
+        worker_tasks = [
+            asyncio.create_task(_worker(i)) for i in range(num_workers)
+        ]
+        await queue.join()
+        for t in worker_tasks:
+            t.cancel()
 
+        total_items = sum(len(c) for c in chunks)
         logger.info(
-            "news_classification_batch_complete",
+            f"{label}_classification_batch_complete",
             classified=len(results),
             failed=len(errors),
-            total=len(articles),
+            total=total_items,
+            api_calls=len(chunks),
         )
         return results

@@ -271,6 +271,40 @@ async def _scheduled_edgar_ingest() -> None:
         logger.error("scheduled_edgar_ingest_failed", exc_info=True)
 
 
+async def _scheduled_ml_retrain() -> None:
+    """Monthly retrain of the XGBoost CSP safety model."""
+    import asyncio
+
+    from tyche.config import get_settings
+    from tyche.api.deps import reset_all
+
+    settings = get_settings()
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _run_ml_retrain_sync, settings.data_dir)
+        reset_all()
+        logger.info("scheduled_ml_retrain_complete")
+    except Exception:
+        logger.error("scheduled_ml_retrain_failed", exc_info=True)
+
+
+def _run_ml_retrain_sync(data_dir: str) -> None:
+    """Run ML retrain in a thread (XGBoost training is CPU-bound)."""
+    from tyche.ml.dataset import build_dataset
+    from tyche.ml.xgb_baseline import train_production_model
+
+    dataset = build_dataset(data_dir=data_dir, include_neighbors=False)
+    if dataset.empty:
+        logger.error("ml_retrain_empty_dataset")
+        return
+
+    train_production_model(
+        dataset=dataset,
+        target="csp_win_5d",
+        data_dir=data_dir,
+    )
+
+
 async def _migrate_conviction_columns() -> None:
     """Add missing columns to existing conviction tables."""
     from tyche.persistence.database import _engines
@@ -293,6 +327,7 @@ async def _migrate_conviction_columns() -> None:
         ("conviction_snapshots", "atm_iv", "REAL DEFAULT NULL"),
         ("conviction_snapshots", "vrp", "REAL DEFAULT NULL"),
         ("conviction_snapshots", "conviction_score", "REAL DEFAULT 0.0"),
+        ("conviction_snapshots", "csp_safety_prob", "REAL DEFAULT NULL"),
     ]
 
     async with engine.begin() as conn:
@@ -383,6 +418,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         scheduler.schedule_edgar_ingest(
             _scheduled_edgar_ingest,
             interval_minutes=settings.edgar_ingest_interval_minutes,
+        )
+
+    if settings.ml_retrain_enabled:
+        parts = settings.ml_retrain_time.split(":")
+        retrain_h = int(parts[0]) if len(parts) >= 1 else 2
+        retrain_m = int(parts[1]) if len(parts) >= 2 else 0
+        scheduler.schedule_ml_retrain(
+            _scheduled_ml_retrain,
+            day=settings.ml_retrain_day_of_month,
+            hour=retrain_h,
+            minute=retrain_m,
         )
 
     scheduler.start()

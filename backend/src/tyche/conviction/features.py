@@ -97,12 +97,15 @@ class FeatureSignal:
 
     conviction_score: float = 0.0
 
+    csp_safety_prob: float | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "ticker": self.ticker,
             "trend_state": self.trend_state.value,
             "raw_conviction": self.raw_conviction,
             "conviction_score": round(self.conviction_score, 3),
+            "csp_safety_prob": round(self.csp_safety_prob, 4) if self.csp_safety_prob is not None else None,
             "last_close": round(self.last_close, 2),
             "ema_8": round(self.ema_8, 4),
             "ema_21": round(self.ema_21, 4),
@@ -527,6 +530,7 @@ class ConvictionFeatureEngine:
                 iv_percentile=_opt_float(row.get("iv_percentile")),
                 atm_iv=_opt_float(row.get("atm_iv")),
                 vrp=_opt_float(row.get("vrp")),
+                csp_safety_prob=_opt_float(row.get("csp_safety_prob")),
             )
             signal.conviction_score = compute_conviction_score(signal)
             self._cache[signal.ticker.upper()] = signal

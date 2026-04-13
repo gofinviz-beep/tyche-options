@@ -7,7 +7,7 @@ export interface ColumnFilterOption {
 }
 
 export interface ColumnFilterConfig {
-  type: "select" | "min" | "max" | "range" | "boolean";
+  type: "select" | "multiselect" | "min" | "max" | "range" | "boolean";
   options?: ColumnFilterOption[];
   minOptions?: ColumnFilterOption[];
   maxOptions?: ColumnFilterOption[];
@@ -73,7 +73,7 @@ export function DataTable<T>({
   const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
 
   const hasAnyFilter = columns.some((c) => c.filter);
-  const activeFilterCount = Object.values(columnFilters).filter((v) => v && v !== ":").length;
+  const activeFilterCount = Object.values(columnFilters).filter((v) => v && v !== ":" && v !== ",").length;
 
   const setColumnFilter = (key: string, value: string) => {
     setColumnFilters((prev) => {
@@ -113,6 +113,9 @@ export function DataTable<T>({
 
         if (cfg.type === "select") {
           if (String(cellValue ?? "") !== filterValue) return false;
+        } else if (cfg.type === "multiselect") {
+          const selected = filterValue.split(",").filter(Boolean);
+          if (selected.length > 0 && !selected.includes(String(cellValue ?? ""))) return false;
         } else if (cfg.type === "min") {
           const threshold = Number(filterValue);
           if (cellValue == null || Number(cellValue) < threshold) return false;
@@ -121,7 +124,8 @@ export function DataTable<T>({
           if (cellValue == null || Number(cellValue) > threshold) return false;
         } else if (cfg.type === "range") {
           const [minStr, maxStr] = filterValue.split(":");
-          const num = Number(cellValue ?? NaN);
+          if (cellValue == null) return false;
+          const num = Number(cellValue);
           if (isNaN(num)) return false;
           if (minStr && num < Number(minStr)) return false;
           if (maxStr && num > Number(maxStr)) return false;
@@ -439,6 +443,37 @@ function ColumnFilterCell({
           </option>
         ))}
       </select>
+    );
+  }
+
+  if (config.type === "multiselect") {
+    const selected = new Set(value ? value.split(",") : []);
+    const toggle = (val: string) => {
+      const next = new Set(selected);
+      if (next.has(val)) next.delete(val);
+      else next.add(val);
+      onChange(Array.from(next).join(","));
+    };
+    return (
+      <div className="flex flex-wrap gap-0.5">
+        {options.map((o) => {
+          const active = selected.has(o.value);
+          return (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => toggle(o.value)}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium border transition-colors ${
+                active
+                  ? "bg-blue-100 text-blue-700 border-blue-300"
+                  : "bg-white text-gray-400 border-gray-200 hover:border-gray-300 hover:text-gray-500"
+              }`}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
     );
   }
 

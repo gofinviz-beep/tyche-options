@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 from tyche.api.deps import get_scheduler, get_settings, reset_all
@@ -94,6 +94,7 @@ async def get_config(
         "llm": {
             "gemini_model_fast": settings.gemini_model_fast,
             "gemini_model_deep": settings.gemini_model_deep,
+            "gemini_model_classify": settings.gemini_model_classify,
         },
         "scan_persistence": {
             "scan_retention_count": settings.scan_retention_count,
@@ -102,7 +103,8 @@ async def get_config(
             "news_ingestion_enabled": settings.news_ingestion_enabled,
             "news_finnhub_enabled": settings.news_finnhub_enabled,
             "news_ingest_interval_minutes": settings.news_ingest_interval_minutes,
-            "news_classify_concurrency": settings.news_classify_concurrency,
+            "news_classify_workers": settings.news_classify_workers,
+            "news_classify_rpm": settings.news_classify_rpm,
             "news_lookback_hours": settings.news_lookback_hours,
             "news_risk_threshold": settings.news_risk_threshold,
         },
@@ -198,7 +200,8 @@ class ConfigUpdate(BaseModel):
     news_ingestion_enabled: bool | None = None
     news_finnhub_enabled: bool | None = None
     news_ingest_interval_minutes: int | None = None
-    news_classify_concurrency: int | None = None
+    news_classify_workers: int | None = None
+    news_classify_rpm: int | None = None
     news_lookback_hours: int | None = None
     news_risk_threshold: float | None = None
 
@@ -258,3 +261,28 @@ async def get_scheduler_status(
         "running": scheduler.running,
         "jobs": scheduler.get_job_status(),
     }
+
+
+@router.post("/ml/retrain")
+async def trigger_ml_retrain(
+    background_tasks: BackgroundTasks,
+    settings: TycheSettings = Depends(get_settings),
+) -> dict[str, str]:
+    """Manually trigger an ML model retrain."""
+    from tyche.app import _scheduled_ml_retrain
+
+    background_tasks.add_task(_scheduled_ml_retrain)
+    return {"status": "started"}
+
+
+@router.get("/ml/model-info")
+async def get_ml_model_info(
+    settings: TycheSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Get info about the currently loaded ML model."""
+    from tyche.api.deps import get_csp_safety_predictor
+
+    predictor = get_csp_safety_predictor(settings)
+    if predictor is None or not predictor.is_available:
+        return {"available": False}
+    return {"available": True, **predictor.model_info}

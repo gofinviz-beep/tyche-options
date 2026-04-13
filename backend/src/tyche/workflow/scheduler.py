@@ -217,6 +217,29 @@ class WorkflowScheduler:
         self._jobs["edgar_ingest"] = job.id
         logger.info("scheduled_edgar_ingest", interval_min=interval_minutes)
 
+    def schedule_ml_retrain(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        day: int = 1,
+        hour: int = 2,
+        minute: int = 0,
+    ) -> None:
+        """Schedule the monthly ML model retrain (default 1st of month, 2 AM ET)."""
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                day=day,
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="ml_retrain",
+            replace_existing=True,
+            name="ML Model Retrain",
+        )
+        self._jobs["ml_retrain"] = job.id
+        logger.info("scheduled_ml_retrain", day=day, time=f"{hour:02d}:{minute:02d} ET")
+
     def schedule_eod_journal(
         self,
         func: Callable[..., Coroutine[Any, Any, Any]],

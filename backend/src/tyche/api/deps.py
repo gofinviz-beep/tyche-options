@@ -67,6 +67,7 @@ _ticker_meta_store: TickerMetaStore | None = None
 _conviction_signal_store: ConvictionSignalStore | None = None
 _derived_store: DerivedMetricsStore | None = None
 _portfolio_allocator: PortfolioAllocator | None = None
+_csp_predictor: Any | None = None
 
 
 def get_broker(settings: TycheSettings = Depends(get_settings)) -> BrokerClient:
@@ -325,6 +326,26 @@ def get_csp_policy(
     return _csp_policy
 
 
+def get_csp_safety_predictor(
+    settings: TycheSettings = Depends(get_settings),
+) -> Any:
+    """Provide the XGBoost CSP safety predictor (None if no model artifact)."""
+    global _csp_predictor
+    if _csp_predictor is None:
+        try:
+            from tyche.ml.inference import CSPSafetyPredictor
+
+            predictor = CSPSafetyPredictor(data_dir=settings.data_dir)
+            if predictor.is_available:
+                _csp_predictor = predictor
+                logger.info("csp_safety_predictor_initialized", info=predictor.model_info)
+            else:
+                logger.info("csp_safety_predictor_unavailable", reason="no_model_artifact")
+        except ImportError:
+            logger.info("csp_safety_predictor_unavailable", reason="ml_deps_not_installed")
+    return _csp_predictor
+
+
 def get_conviction_engine(
     settings: TycheSettings = Depends(get_settings),
 ) -> ConvictionEngine:
@@ -337,6 +358,7 @@ def get_conviction_engine(
     if _conviction_engine is None:
         signal_store = get_conviction_signal_store(settings)
         derived = get_derived_store(settings)
+        predictor = get_csp_safety_predictor(settings)
         _conviction_engine = ConvictionEngine(
             ema_fast=settings.ema_fast_period,
             ema_slow=settings.ema_slow_period,
@@ -348,6 +370,7 @@ def get_conviction_engine(
             min_prior_streak=settings.min_prior_streak,
             signal_store=signal_store,
             derived_store=derived,
+            csp_predictor=predictor,
         )
         logger.info(
             "conviction_engine_initialized",
@@ -435,7 +458,9 @@ def get_news_classifier(
 
         _news_classifier = NewsClassifier(
             gemini=gemini,
-            concurrency=settings.news_classify_concurrency,
+            classify_model=settings.gemini_model_classify,
+            workers=settings.news_classify_workers,
+            rpm=settings.news_classify_rpm,
         )
         logger.info("news_classifier_initialized")
     return _news_classifier
@@ -498,6 +523,7 @@ def reset_all() -> None:
     global _derived_store, _economic_calendar
     global _news_article_store, _finnhub_client, _news_classifier
     global _edgar_client, _filing_8k_store, _insider_tx_store
+    global _csp_predictor
 
     if _conviction_engine is not None:
         _conviction_engine.invalidate_cache()
@@ -532,3 +558,4 @@ def reset_all() -> None:
     _edgar_client = None
     _filing_8k_store = None
     _insider_tx_store = None
+    _csp_predictor = None

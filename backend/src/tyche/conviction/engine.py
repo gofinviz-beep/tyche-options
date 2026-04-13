@@ -74,6 +74,8 @@ class ConvictionSignal:
 
     conviction_score: float = 0.0
 
+    csp_safety_prob: float | None = None
+
     gate_results: list[GateResult] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,6 +85,7 @@ class ConvictionSignal:
             "conviction_level": self.conviction_level,
             "raw_conviction": self.raw_conviction,
             "conviction_score": round(self.conviction_score, 3),
+            "csp_safety_prob": round(self.csp_safety_prob, 4) if self.csp_safety_prob is not None else None,
             "csp_eligible": self.csp_eligible,
             "last_close": round(self.last_close, 2),
             "ema_8": round(self.ema_8, 4),
@@ -137,6 +140,7 @@ def _feature_to_signal(feature: FeatureSignal, policy_result: dict) -> Convictio
         atm_iv=feature.atm_iv,
         vrp=feature.vrp,
         conviction_score=feature.conviction_score,
+        csp_safety_prob=feature.csp_safety_prob,
         gate_results=policy_result["gate_results"],
     )
 
@@ -168,6 +172,7 @@ class ConvictionEngine:
         max_rsi: float = 0.0,
         signal_store: Any | None = None,
         derived_store: Any | None = None,
+        csp_predictor: Any | None = None,
     ) -> None:
         self._feature_engine = ConvictionFeatureEngine(
             ema_fast=ema_fast,
@@ -185,6 +190,7 @@ class ConvictionEngine:
             min_prior_streak=min_prior_streak,
             max_rsi=max_rsi,
         )
+        self._csp_predictor = csp_predictor
 
     @property
     def feature_engine(self) -> ConvictionFeatureEngine:
@@ -209,8 +215,12 @@ class ConvictionEngine:
 
         Delegates to the feature engine for EMA computation (cached)
         and the CSP policy for gate evaluation (stateless).
+        If a CSPSafetyPredictor is configured, enriches the signal
+        with the ML-based csp_safety_prob.
         """
         feature = self._feature_engine.analyze(ticker, df)
+        if self._csp_predictor is not None and feature.csp_safety_prob is None:
+            feature.csp_safety_prob = self._csp_predictor.predict(feature, df)
         policy_result = self._csp_policy.evaluate(feature)
         return _feature_to_signal(feature, policy_result)
 
@@ -223,10 +233,23 @@ class ConvictionEngine:
 
         Delegates feature computation to the feature engine (handles
         disk store warming/writing) and gate evaluation to the CSP policy.
+        If a CSPSafetyPredictor is configured, enriches signals with
+        ML-based csp_safety_prob via batch prediction.
         """
         features = self._feature_engine.analyze_batch(
             ticker_data, requested_tickers=requested_tickers,
         )
+
+        if self._csp_predictor is not None:
+            items = []
+            for f in features:
+                if f.csp_safety_prob is None and f.ticker in ticker_data:
+                    items.append((f, ticker_data[f.ticker], None, None))
+            if items:
+                probas = self._csp_predictor.predict_batch(items)
+                for f in features:
+                    if f.ticker in probas:
+                        f.csp_safety_prob = probas[f.ticker]
 
         signals: list[ConvictionSignal] = []
         for feature in features:

@@ -1,0 +1,334 @@
+"""Vectorized tabular feature extraction from OHLCV + derived metrics.
+
+Computes per-(ticker, date) feature rows across the full history of each
+ticker using the same EMA/RSI/slope formulas as ConvictionFeatureEngine,
+but applied as rolling pandas operations for efficiency.
+
+The output is a single DataFrame suitable for XGBoost training.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import structlog
+
+from tyche.conviction.features import TrendState
+
+logger = structlog.get_logger()
+
+_TREND_STATE_ORD: dict[str, int] = {
+    TrendState.DOWNTREND.value: 0,
+    TrendState.INSUFFICIENT_DATA.value: 0,
+    TrendState.CONSOLIDATION.value: 1,
+    TrendState.UPTREND.value: 2,
+    TrendState.PULLBACK_TO_8EMA.value: 3,
+    TrendState.PULLBACK_TO_21EMA.value: 4,
+    TrendState.STRONG_UPTREND.value: 5,
+}
+
+FEATURE_COLS: list[str] = [
+    "ema_8",
+    "ema_21",
+    "ema_50",
+    "price_to_8ema_pct",
+    "price_to_21ema_pct",
+    "price_to_50ema_pct",
+    "ema_8_slope",
+    "ema_21_slope",
+    "ema_50_slope",
+    "rsi_14",
+    "days_above_both_emas",
+    "prior_streak",
+    "trend_state_ord",
+    "volume_ratio",
+    "volume_declining",
+    "return_1d",
+    "return_5d",
+    "return_10d",
+    "return_20d",
+    "volatility_20d",
+    "iv_rank",
+    "iv_percentile",
+    "atm_iv",
+    "vrp",
+    "rv_20d",
+    "log_market_cap",
+    "institutional_pct",
+    "sector_encoded",
+]
+
+NEIGHBOR_FEATURE_COLS: list[str] = [
+    "sector_avg_rsi",
+    "sector_avg_ema8_slope",
+    "sector_avg_ema21_slope",
+    "sector_breadth_8ema",
+    "sector_breadth_21ema",
+    "sector_avg_iv_rank",
+    "sector_avg_vrp",
+    "sector_avg_return_5d",
+    "sector_count",
+]
+
+
+def _ema(series: pd.Series, span: int) -> pd.Series:
+    return series.ewm(span=span, adjust=False).mean()
+
+
+def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
+    """Compute RSI as a full series (vectorised Wilder smoothing)."""
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
+    rs = np.where(loss == 0, np.inf, gain / loss)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return pd.Series(np.where(np.isinf(rs), 100.0, rsi), index=close.index)
+
+
+def _slope_series(series: pd.Series, periods: int = 3) -> pd.Series:
+    """Rolling linear-regression slope over *periods* bars."""
+    x = np.arange(periods, dtype=float)
+    x_mean = x.mean()
+    x_var = ((x - x_mean) ** 2).sum()
+
+    def _lr_slope(window: np.ndarray) -> float:
+        if len(window) < periods:
+            return 0.0
+        y = window.astype(float)
+        if np.std(y) == 0:
+            return 0.0
+        return float(np.sum((x - x_mean) * (y - y.mean())) / x_var)
+
+    return series.rolling(periods).apply(_lr_slope, raw=True)
+
+
+def _streak_above(above_mask: pd.Series) -> pd.Series:
+    """Count consecutive True values ending at each row."""
+    groups = (~above_mask).cumsum()
+    return above_mask.groupby(groups).cumsum().astype(int)
+
+
+def _prior_streak_series(above_both: pd.Series) -> pd.Series:
+    """For rows where above_both is False, count the streak of True before.
+
+    For rows where above_both is True, return 0 (not in pullback).
+    """
+    result = pd.Series(0, index=above_both.index, dtype=int)
+    vals = above_both.values
+    n = len(vals)
+    last_streak_end = -1
+    streak_len = 0
+
+    for i in range(n):
+        if vals[i]:
+            streak_len += 1
+            last_streak_end = i
+        else:
+            if last_streak_end == i - 1 and streak_len > 0:
+                result.iloc[i] = streak_len
+            elif i > 0 and not vals[i - 1]:
+                result.iloc[i] = result.iloc[i - 1]
+            streak_len = 0
+
+    return result
+
+
+def _classify_trend_vec(
+    close: pd.Series,
+    ema_8: pd.Series,
+    ema_21: pd.Series,
+    slope_8: pd.Series,
+    slope_21: pd.Series,
+    pct_to_8: pd.Series,
+    pct_to_21: pd.Series,
+    proximity_pct: float = 2.0,
+) -> pd.Series:
+    """Vectorised trend-state classification matching ConvictionFeatureEngine."""
+    above_8 = close > ema_8
+    above_21 = close > ema_21
+    both_slopes_up = (slope_8 > 0) & (slope_21 > 0)
+
+    result = pd.Series(TrendState.CONSOLIDATION.value, index=close.index)
+
+    strong = above_8 & above_21 & both_slopes_up & (pct_to_8 > 1.0)
+    result[strong] = TrendState.STRONG_UPTREND.value
+
+    uptrend = above_8 & above_21 & ~strong
+    result[uptrend] = TrendState.UPTREND.value
+
+    pullback_8 = above_21 & ~above_8 & (pct_to_8.abs() <= proximity_pct)
+    result[pullback_8] = TrendState.PULLBACK_TO_8EMA.value
+
+    pullback_21_above = (
+        above_21 & ~above_8 & (pct_to_8.abs() > proximity_pct)
+        & (pct_to_21.abs() <= proximity_pct)
+    )
+    result[pullback_21_above] = TrendState.PULLBACK_TO_21EMA.value
+
+    pullback_21_below = (
+        ~above_21 & (pct_to_21.abs() <= proximity_pct) & (slope_21 > 0)
+    )
+    result[pullback_21_below] = TrendState.PULLBACK_TO_21EMA.value
+
+    downtrend = ~above_8 & ~above_21 & ~pullback_21_below
+    result[downtrend] = TrendState.DOWNTREND.value
+
+    return result
+
+
+def extract_ticker_features(
+    ohlcv: pd.DataFrame,
+    derived: pd.DataFrame | None = None,
+    market_cap: float | None = None,
+    institutional_pct: float | None = None,
+    sector: str | None = None,
+    sector_map: dict[str, int] | None = None,
+    min_bars: int = 50,
+) -> pd.DataFrame:
+    """Extract tabular features for one ticker across its full OHLCV history.
+
+    Args:
+        ohlcv: OHLCV DataFrame with columns date, open, high, low, close, volume.
+        derived: Optional DerivedMetricsStore DataFrame with date, iv_rank, etc.
+        market_cap: Static market cap (from TickerMetaStore).
+        institutional_pct: Static institutional ownership %.
+        sector: Sector name string.
+        sector_map: Mapping of sector name → integer encoding.
+        min_bars: Minimum bars needed before producing features.
+
+    Returns:
+        DataFrame indexed by date with one row per trading day (after warm-up).
+    """
+    if len(ohlcv) < min_bars:
+        return pd.DataFrame()
+
+    df = ohlcv.copy().sort_values("date").reset_index(drop=True)
+    close = df["close"].astype(float)
+    volume = df["volume"].astype(float)
+
+    ema_8 = _ema(close, 8)
+    ema_21 = _ema(close, 21)
+    ema_50 = _ema(close, 50)
+
+    df["ema_8"] = ema_8
+    df["ema_21"] = ema_21
+    df["ema_50"] = ema_50
+
+    df["price_to_8ema_pct"] = (close - ema_8) / ema_8 * 100
+    df["price_to_21ema_pct"] = (close - ema_21) / ema_21 * 100
+    df["price_to_50ema_pct"] = (close - ema_50) / ema_50 * 100
+
+    df["ema_8_slope"] = _slope_series(ema_8, 3)
+    df["ema_21_slope"] = _slope_series(ema_21, 3)
+    df["ema_50_slope"] = _slope_series(ema_50, 3)
+
+    df["rsi_14"] = _rsi_series(close, 14)
+
+    above_both = (close > ema_8) & (close > ema_21)
+    df["days_above_both_emas"] = _streak_above(above_both)
+    df["prior_streak"] = _prior_streak_series(above_both)
+
+    trend = _classify_trend_vec(
+        close, ema_8, ema_21,
+        df["ema_8_slope"], df["ema_21_slope"],
+        df["price_to_8ema_pct"], df["price_to_21ema_pct"],
+    )
+    df["trend_state"] = trend
+    df["trend_state_ord"] = trend.map(_TREND_STATE_ORD).fillna(0).astype(int)
+
+    avg_vol_20 = volume.rolling(20, min_periods=5).mean()
+    df["volume_ratio"] = volume / avg_vol_20.replace(0, np.nan)
+
+    prior_avg_vol = volume.rolling(10).mean().shift(5)
+    recent_avg_vol = volume.rolling(5).mean()
+    df["volume_declining"] = (
+        (recent_avg_vol < prior_avg_vol) & (close < ema_8)
+    ).astype(int)
+
+    df["return_1d"] = close.pct_change(1)
+    df["return_5d"] = close.pct_change(5)
+    df["return_10d"] = close.pct_change(10)
+    df["return_20d"] = close.pct_change(20)
+
+    log_returns = np.log(close / close.shift(1))
+    df["volatility_20d"] = log_returns.rolling(20).std() * np.sqrt(252)
+
+    if derived is not None and not derived.empty:
+        derived_clean = derived.copy()
+        derived_clean["date"] = pd.to_datetime(derived_clean["date"]).dt.date
+        df["date_key"] = pd.to_datetime(df["date"]).dt.date
+        derived_clean = derived_clean.rename(columns={"date": "date_key"})
+        iv_cols = ["date_key", "iv_rank", "iv_percentile", "atm_iv", "vrp", "rv_20d"]
+        available = [c for c in iv_cols if c in derived_clean.columns]
+        df = df.merge(derived_clean[available], on="date_key", how="left")
+        df.drop(columns=["date_key"], inplace=True, errors="ignore")
+    else:
+        for col in ["iv_rank", "iv_percentile", "atm_iv", "vrp", "rv_20d"]:
+            if col not in df.columns:
+                df[col] = np.nan
+
+    df["log_market_cap"] = np.log1p(market_cap) if market_cap and market_cap > 0 else np.nan
+    df["institutional_pct"] = institutional_pct if institutional_pct else np.nan
+
+    sector_code = 0
+    if sector and sector_map:
+        sector_code = sector_map.get(sector, 0)
+    df["sector_encoded"] = sector_code
+
+    df = df.iloc[min_bars:].reset_index(drop=True)
+
+    return df
+
+
+def build_sector_map(sectors: dict[str, str]) -> dict[str, int]:
+    """Build a deterministic sector-name → integer mapping."""
+    unique = sorted(set(s for s in sectors.values() if s))
+    return {name: i + 1 for i, name in enumerate(unique)}
+
+
+def add_neighbor_features(
+    all_features: pd.DataFrame,
+    sector_col: str = "sector_encoded",
+    date_col: str = "date",
+) -> pd.DataFrame:
+    """Augment per-ticker feature rows with sector-aggregated neighbor features.
+
+    Groups by (date, sector) and computes cross-sectional aggregates.
+    """
+    if all_features.empty:
+        return all_features
+
+    df = all_features.copy()
+
+    grouped = df.groupby([date_col, sector_col])
+
+    aggs = grouped.agg(
+        sector_avg_rsi=("rsi_14", "mean"),
+        sector_avg_ema8_slope=("ema_8_slope", "mean"),
+        sector_avg_ema21_slope=("ema_21_slope", "mean"),
+        sector_avg_return_5d=("return_5d", "mean"),
+        sector_count=("rsi_14", "count"),
+    ).reset_index()
+
+    above_8 = df["price_to_8ema_pct"] > 0
+    above_21 = df["price_to_21ema_pct"] > 0
+    df["_above_8"] = above_8.astype(float)
+    df["_above_21"] = above_21.astype(float)
+
+    breadth = df.groupby([date_col, sector_col]).agg(
+        sector_breadth_8ema=("_above_8", "mean"),
+        sector_breadth_21ema=("_above_21", "mean"),
+    ).reset_index()
+
+    iv_aggs = df.groupby([date_col, sector_col]).agg(
+        sector_avg_iv_rank=("iv_rank", "mean"),
+        sector_avg_vrp=("vrp", "mean"),
+    ).reset_index()
+
+    aggs = aggs.merge(breadth, on=[date_col, sector_col], how="left")
+    aggs = aggs.merge(iv_aggs, on=[date_col, sector_col], how="left")
+
+    df = df.merge(aggs, on=[date_col, sector_col], how="left")
+    df.drop(columns=["_above_8", "_above_21"], inplace=True)
+
+    return df

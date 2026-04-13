@@ -217,6 +217,7 @@ def _snapshot_to_pullback_alert(
         avg_volume_20d=snap.avg_volume_20d or 0,
         price_to_8ema_pct=round(snap.price_to_8ema_pct or 0, 4),
         price_to_21ema_pct=round(snap.price_to_21ema_pct or 0, 4),
+        csp_safety_prob=round(snap.csp_safety_prob, 4) if getattr(snap, "csp_safety_prob", None) is not None else None,
         historical_bounce=historical_bounce,
     )
 

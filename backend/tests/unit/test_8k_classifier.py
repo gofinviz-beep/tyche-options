@@ -8,6 +8,7 @@ import pytest
 
 from tyche.analysis.news_classifier import (
     ArticleClassification,
+    Batch8KClassification,
     NewsClassifier,
     TickerMention,
     _8K_ITEM_MAP,
@@ -17,7 +18,9 @@ from tyche.analysis.news_classifier import (
 @pytest.fixture
 def classifier():
     gemini = MagicMock()
-    return NewsClassifier(gemini=gemini, concurrency=2)
+    gemini.analyze = AsyncMock()
+    gemini.analyze_batch = AsyncMock()
+    return NewsClassifier(gemini=gemini, workers=1, rpm=1000)
 
 
 class TestEightKClassifySingle:
@@ -44,6 +47,8 @@ class TestEightKClassifySingle:
         assert result.event_type == "financial_results"
         assert result.sentiment == "positive"
         assert result.impact_score == 0.6
+        call_kwargs = classifier._gemini.analyze.call_args.kwargs
+        assert call_kwargs["model_override"] == "gemini-2.5-flash-lite"
 
     @pytest.mark.asyncio
     async def test_clamps_impact_score(self, classifier):
@@ -93,7 +98,8 @@ class TestEightKClassifySingle:
 
 class TestEightKBatchClassify:
     @pytest.mark.asyncio
-    async def test_batch_classification(self, classifier):
+    async def test_single_filing_uses_single_call(self, classifier):
+        """A batch of 1 filing should use classify_8k_filing (single call)."""
         expected = ArticleClassification(
             tickers_mentioned=[],
             event_type="executive",
@@ -102,6 +108,47 @@ class TestEightKBatchClassify:
             reasoning="CEO departure.",
         )
         classifier._gemini.analyze = AsyncMock(return_value=expected)
+
+        filings = [
+            {
+                "accession_no": "acc1",
+                "ticker": "AAPL",
+                "form_type": "8-K",
+                "filed_at": "2026-04-10",
+                "description": "Change of officer",
+                "items_reported": "5.02",
+                "content_summary": "CEO resigned...",
+            },
+        ]
+
+        results = await classifier.classify_8k_batch(filings)
+
+        assert len(results) == 1
+        assert "acc1" in results
+        classifier._gemini.analyze.assert_called_once()
+        classifier._gemini.analyze_batch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_batch_uses_analyze_batch(self, classifier):
+        """Multiple filings should use the batch API call."""
+        classifier._gemini.analyze_batch = AsyncMock(return_value=[
+            Batch8KClassification(
+                accession_no="acc1",
+                tickers_mentioned=[],
+                event_type="executive",
+                sentiment="negative",
+                impact_score=-0.4,
+                reasoning="CEO departure.",
+            ),
+            Batch8KClassification(
+                accession_no="acc2",
+                tickers_mentioned=[],
+                event_type="material_agreement",
+                sentiment="positive",
+                impact_score=0.3,
+                reasoning="New partnership.",
+            ),
+        ])
 
         filings = [
             {
@@ -129,25 +176,11 @@ class TestEightKBatchClassify:
         assert len(results) == 2
         assert "acc1" in results
         assert "acc2" in results
+        classifier._gemini.analyze_batch.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_batch_handles_errors(self, classifier):
-        call_count = 0
-
-        async def _side_effect(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise Exception("LLM error")
-            return ArticleClassification(
-                tickers_mentioned=[],
-                event_type="other",
-                sentiment="neutral",
-                impact_score=0.0,
-                reasoning="OK.",
-            )
-
-        classifier._gemini.analyze = AsyncMock(side_effect=_side_effect)
+        classifier._gemini.analyze = AsyncMock(side_effect=Exception("LLM error"))
 
         filings = [
             {
@@ -159,20 +192,10 @@ class TestEightKBatchClassify:
                 "items_reported": "",
                 "content_summary": "test",
             },
-            {
-                "accession_no": "pass",
-                "ticker": "MSFT",
-                "form_type": "8-K",
-                "filed_at": "2026-04-10",
-                "description": "test",
-                "items_reported": "",
-                "content_summary": "test",
-            },
         ]
 
         results = await classifier.classify_8k_batch(filings)
 
-        assert "pass" in results
         assert "fail" not in results
 
 

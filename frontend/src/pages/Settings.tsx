@@ -319,7 +319,8 @@ export function Settings() {
               { key: "news_ingestion_enabled", label: "News ingestion enabled", type: "bool", value: config.news_pipeline.news_ingestion_enabled },
               { key: "news_finnhub_enabled", label: "Finnhub source enabled", type: "bool", value: config.news_pipeline.news_finnhub_enabled },
               { key: "news_ingest_interval_minutes", label: "Ingest interval (min)", type: "number", value: config.news_pipeline.news_ingest_interval_minutes },
-              { key: "news_classify_concurrency", label: "Classify concurrency", type: "number", value: config.news_pipeline.news_classify_concurrency },
+              { key: "news_classify_workers", label: "Classify workers", type: "number", value: config.news_pipeline.news_classify_workers },
+              { key: "news_classify_rpm", label: "Classify RPM limit", type: "number", value: config.news_pipeline.news_classify_rpm },
               { key: "news_lookback_hours", label: "Lookback (hours)", type: "number", value: config.news_pipeline.news_lookback_hours },
               { key: "news_risk_threshold", label: "Risk threshold", type: "number", value: config.news_pipeline.news_risk_threshold },
             ]}

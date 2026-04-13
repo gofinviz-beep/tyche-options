@@ -21,6 +21,7 @@ T = TypeVar("T", bound=BaseModel)
 _FALLBACK_MODELS: dict[str, str] = {
     "gemini-3-flash-preview": "gemini-2.5-flash",
     "gemini-3.1-pro-preview": "gemini-2.5-flash",
+    "gemini-2.5-flash-lite": "gemini-2.0-flash",
 }
 
 _MAX_RETRIES = 3
@@ -124,6 +125,7 @@ class GeminiClient:
         system_prompt: str = "",
         use_deep: bool = False,
         temperature: float = 0.3,
+        model_override: str | None = None,
     ) -> T:
         """Send a prompt and parse the response into a Pydantic model.
 
@@ -133,11 +135,15 @@ class GeminiClient:
             system_prompt: System-level instructions (grounding rules).
             use_deep: Use the Pro model instead of Flash.
             temperature: Sampling temperature (lower = more deterministic).
+            model_override: Explicit model name, bypasses use_deep/fast selection.
 
         Returns:
             Parsed Pydantic model instance.
         """
-        model = self._model_deep if use_deep else self._model_fast
+        if model_override:
+            model = model_override
+        else:
+            model = self._model_deep if use_deep else self._model_fast
 
         config = GenerateContentConfig(
             system_instruction=system_prompt if system_prompt else None,
@@ -185,6 +191,7 @@ class GeminiClient:
         system_prompt: str = "",
         use_deep: bool = False,
         temperature: float = 0.3,
+        model_override: str | None = None,
     ) -> list[T]:
         """Analyze and return a list of structured outputs.
 
@@ -200,6 +207,7 @@ class GeminiClient:
             system_prompt=system_prompt,
             use_deep=use_deep,
             temperature=temperature,
+            model_override=model_override,
         )
         return wrapper.items
 

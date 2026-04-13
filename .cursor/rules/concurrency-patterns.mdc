@@ -1,0 +1,98 @@
+---
+description: Concurrency and workload splitting patterns — prefer queues over semaphores
+globs:
+  - "backend/src/tyche/**/*.py"
+  - "backend/scripts/*.py"
+alwaysApply: false
+---
+
+# Concurrency & Workload Splitting
+
+## Principle
+
+Split large workloads into independent tasks. Use **queues + workers** for rate-limited or externally-constrained work. Avoid `asyncio.Semaphore` + `asyncio.gather` for anything that hits an external API with RPM limits — semaphores gate concurrency but do not pace requests.
+
+## When to Use Each Pattern
+
+### Queue + Rate-Paced Workers (preferred for external APIs)
+
+Use when the workload hits a rate-limited external service (Gemini, Polygon ticker details, Finnhub). Workers pull from a queue and sleep between calls to stay within RPM budgets.
+
+```python
+async def process_batched(
+    items: list[dict],
+    batch_size: int,
+    workers: int,
+    rpm: int,
+    process_fn,
+) -> dict:
+    chunks = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+    queue: asyncio.Queue[list[dict]] = asyncio.Queue()
+    for chunk in chunks:
+        queue.put_nowait(chunk)
+
+    results: dict = {}
+    lock = asyncio.Lock()
+    interval = 60.0 / max(rpm, 1)
+
+    async def worker() -> None:
+        while True:
+            try:
+                chunk = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                chunk_result = await process_fn(chunk)
+                async with lock:
+                    results.update(chunk_result)
+            except Exception:
+                pass  # log and continue
+            finally:
+                queue.task_done()
+                await asyncio.sleep(interval)
+
+    tasks = [asyncio.create_task(worker()) for _ in range(min(workers, len(chunks)))]
+    await queue.join()
+    for t in tasks:
+        t.cancel()
+    return results
+```
+
+Key properties:
+- **Paced**: `sleep(60/rpm)` after each call prevents bursts
+- **Batched**: Multiple items per API call reduces request count
+- **Resilient**: Per-chunk error handling — one failure does not abort the batch
+- **Configurable**: `workers` and `rpm` are config-driven, not hardcoded
+
+### Semaphore + Gather (acceptable for internal parallelism)
+
+Still appropriate when there is no external rate limit — e.g., parallel Parquet reads, CPU-bound computation, or internal I/O where the constraint is just "don't open 1000 file handles at once."
+
+```python
+semaphore = asyncio.Semaphore(10)
+async def bounded_task(item):
+    async with semaphore:
+        return await cpu_bound_work(item)
+
+results = await asyncio.gather(*[bounded_task(i) for i in items])
+```
+
+## Anti-Patterns
+
+- **Semaphore + gather for rate-limited APIs**: All N tasks fire simultaneously within the semaphore window. With RPM=10, even semaphore(2) can burst 2 requests in <100ms, triggering 429s.
+- **Hardcoded concurrency**: Always make worker count and RPM configurable via `TycheSettings`.
+- **Single-item API calls when batching is possible**: If the API supports structured list output, batch N items per call to reduce request count (e.g., 10 articles per Gemini call).
+- **Unbounded `asyncio.create_task`**: Creating thousands of tasks and gathering them all is effectively unbounded concurrency. Always limit via queue size or worker count.
+
+## Existing Patterns in Tyche
+
+| Component | Pattern | Why |
+|---|---|---|
+| `NewsClassifier` | Queue + workers | Gemini RPM limit (30 RPM free tier) |
+| `PolygonClient.get_batch_*` | Semaphore + token bucket | Polygon has high RPM (500+), semaphore is fine with manual sleep |
+| `strategy/engine.py` CSP scan | Semaphore(10) + gather | Tradier 120 RPM, semaphore OK at this scale |
+| `options_snapshot.py` | Semaphore + RPM sleep | Tradier 120 RPM, pacing handled manually |
+
+## Future: Durable Queues
+
+When the system moves to multi-process or distributed execution, replace in-memory `asyncio.Queue` with a durable queue (Redis streams, PostgreSQL `SKIP LOCKED`, or a task broker like `arq`). The worker pattern stays identical — only the queue backend changes.

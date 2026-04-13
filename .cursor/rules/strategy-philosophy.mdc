@@ -83,6 +83,17 @@ A numerical quality score computed per ticker in `ConvictionFeatureEngine`. Disp
 | 21-EMA pullback | Best pullback path for CSPs | Best pullback path for stock buys |
 | Low IV Rank | Poor premiums, skip CSP | No impact — still a valid buy |
 
+## CSP Safety Probability (XGBoost ML Signal)
+
+`csp_safety_prob` is the P(CSP expires worthless) predicted by a trained XGBoost model. Deployed as a Tier 1 signal — displayed on conviction pages and used as a scanner scoring multiplier.
+
+- **Model:** XGBoost classifier trained on `csp_win_5d` target (5% OTM, 5-day DTE). 88% accuracy, 0.914 AUC on walk-forward evaluation across 3.38M rows.
+- **Features:** Same 27 features as the conviction pipeline — EMAs, slopes, RSI, streaks, IV metrics, market cap, institutional ownership, sector. NO neighbor-aggregated features (baselines showed they don't help).
+- **Inference:** `CSPSafetyPredictor` in `tyche/ml/inference.py` bridges `FeatureSignal` to XGBoost `predict_proba`. Loaded once on startup, called during conviction scans.
+- **Scanner scoring:** `ml_factor = 0.5 + 0.5 × csp_safety_prob` when model available. A ticker with 90% safety gets 0.95× multiplier; 50% safety gets 0.75×; absent model gets 1.0× (no penalty).
+- **Retrain:** Monthly (1st of month, 2 AM ET) via scheduled job. Manual trigger: `POST /api/v1/system/ml/retrain`. Model artifact at `data/ml/models/csp_win_5d.json`.
+- **Graceful degradation:** If no model artifact exists, `csp_safety_prob = None` everywhere. The deterministic conviction pipeline is unchanged.
+
 ## IV Metrics (Informational — Phase 2c will add gates)
 
 IV Rank and VRP are computed from historical options data and displayed in the conviction UI but **not yet used as scanner gates**.
@@ -117,7 +128,7 @@ The scanner enforces minimum quality thresholds to avoid penny-premium noise:
 
 ### Scoring Formula
 
-`score = annualized_return × liquidity_factor × dte_factor × vrp_factor × iv_rank_factor × trend_confirm_factor × rsi_factor × earnings_factor × dow_factor × iv_catalyst_factor`
+`score = annualized_return × liquidity_factor × dte_factor × vrp_factor × iv_rank_factor × trend_confirm_factor × rsi_factor × earnings_factor × dow_factor × iv_catalyst_factor × ml_factor`
 
 - **liquidity_factor**: `min(1.0, OI / 1000)` — scales to 1.0 at OI ≥ 1000
 - **dte_factor**: `min(1.0, DTE / 7)` — penalizes < 7 DTE (3 DTE → 0.43×)
@@ -128,6 +139,7 @@ The scanner enforces minimum quality thresholds to avoid penny-premium noise:
 - **earnings_factor**: `0.5` if earnings fall within the option's DTE window, `1.0` otherwise.
 - **dow_factor**: day-of-week entry quality — `1.0` for Tue/Wed (optimal), `0.85` for Mon, `0.70` for Thu/Fri (per backtest data).
 - **iv_catalyst_factor**: `0.5` compound penalty when IV Rank > 80 AND earnings within DTE (IV trap signal), `1.0` otherwise.
+- **ml_factor**: `0.5 + 0.5 × csp_safety_prob` when XGBoost model is available, `1.0` when absent. High `csp_safety_prob` (e.g. 0.89) boosts score; low (e.g. 0.30) penalizes.
 
 ### Allocator Risk Weight (Market Cap Bonus)
 
@@ -150,3 +162,6 @@ The MILP allocator adds a mega-cap preference: `cap_w = 1.0 + 0.1 × min(1.0, ma
 | `csp_min_premium_pct` | `0.5` | Min premium as % of collateral |
 | `csp_min_volume` | `10` | Min daily volume for CSP contracts |
 | `csp_min_oi` | `50` | Min open interest for CSP contracts |
+| `ml_retrain_enabled` | `false` | Enable monthly XGBoost model retraining |
+| `ml_retrain_day_of_month` | `1` | Day of month for scheduled retrain |
+| `ml_retrain_time` | `"02:00"` | Time (ET) for scheduled retrain |

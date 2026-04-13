@@ -95,44 +95,59 @@ function buildSnapshotColumns(
       );
     },
     filter: {
-      type: "select",
+      type: "multiselect",
       placeholder: "All",
       options: [
         { value: "3", label: "High" },
-        { value: "2", label: "Medium" },
+        { value: "2", label: "Med" },
         { value: "1", label: "Low" },
-        { value: "0", label: "None" },
       ],
     },
   },
   {
-    key: "conviction_score",
-    header: "Score",
-    accessor: (r) => r.conviction_score ?? 0,
+    key: "csp_safety_prob",
+    header: "CSP Safety",
+    accessor: (r: ConvictionSnapshot) => r.csp_safety_prob ?? -1,
     sortable: true,
     align: "right" as const,
     render: (r: ConvictionSnapshot) => {
-      const s = r.conviction_score ?? 0;
-      const pct = Math.round(s * 100);
+      if (r.csp_safety_prob == null) return <span className="text-gray-300">—</span>;
+      const pct = Math.round(r.csp_safety_prob * 100);
       const color =
-        pct >= 70
+        pct >= 75
           ? "text-emerald-600"
-          : pct >= 40
+          : pct >= 50
             ? "text-amber-600"
-            : "text-gray-400";
+            : "text-red-500";
+      const bgColor =
+        pct >= 75
+          ? "bg-emerald-500"
+          : pct >= 50
+            ? "bg-amber-400"
+            : "bg-red-400";
       return (
         <div className="flex items-center gap-1.5 justify-end">
-          <div className="h-1.5 w-12 rounded-full bg-gray-100 overflow-hidden">
+          <div className="h-1.5 w-10 rounded-full bg-gray-100 overflow-hidden">
             <div
-              className={`h-full rounded-full ${pct >= 70 ? "bg-emerald-500" : pct >= 40 ? "bg-amber-400" : "bg-gray-300"}`}
+              className={`h-full rounded-full ${bgColor}`}
               style={{ width: `${pct}%` }}
             />
           </div>
-          <span className={`font-mono text-xs ${color}`}>{pct}</span>
+          <span className={`font-mono text-xs ${color}`}>{pct}%</span>
         </div>
       );
     },
-    filter: { type: "min" as const, placeholder: "Min" },
+    filter: {
+      type: "min" as const,
+      placeholder: "Min",
+      options: [
+        { value: "0.50", label: "50%" },
+        { value: "0.60", label: "60%" },
+        { value: "0.75", label: "75%" },
+        { value: "0.80", label: "80%" },
+        { value: "0.90", label: "90%" },
+      ],
+    },
   },
   {
     key: "last_close",
@@ -292,7 +307,7 @@ function buildSnapshotColumns(
   {
     key: "iv_rank",
     header: "IV Rank",
-    accessor: (r) => r.iv_rank ?? -1,
+    accessor: (r) => r.iv_rank,
     sortable: true,
     align: "right",
     render: (r) => {
@@ -321,7 +336,7 @@ function buildSnapshotColumns(
   {
     key: "vrp",
     header: "VRP",
-    accessor: (r) => r.vrp ?? 0,
+    accessor: (r) => r.vrp,
     sortable: true,
     align: "right",
     render: (r) => {
@@ -330,16 +345,13 @@ function buildSnapshotColumns(
       return <span className={`font-mono text-xs ${color}`}>{(r.vrp * 100).toFixed(1)}%</span>;
     },
     filter: {
-      type: "range",
-      minOptions: [
-        { value: "-0.2", label: "-20%" },
-        { value: "-0.1", label: "-10%" },
-        { value: "0", label: "0%" },
-      ],
-      maxOptions: [
-        { value: "0.1", label: "10%" },
-        { value: "0.2", label: "20%" },
-        { value: "0.5", label: "50%" },
+      type: "min",
+      placeholder: "Min VRP",
+      options: [
+        { value: "0", label: "0%+" },
+        { value: "0.05", label: "5%+" },
+        { value: "0.10", label: "10%+" },
+        { value: "0.20", label: "20%+" },
       ],
     },
   },

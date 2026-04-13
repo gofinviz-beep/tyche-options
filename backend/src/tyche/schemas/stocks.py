@@ -35,6 +35,7 @@ class ConvictionSnapshotResponse(BaseModel):
     atm_iv: float | None = None
     vrp: float | None = None
     conviction_score: float = 0.0
+    csp_safety_prob: float | None = None
     computed_at: str | None = None
     market_cap: float | None = None
     institutional_pct: float | None = None

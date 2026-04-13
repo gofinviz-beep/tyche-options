@@ -187,6 +187,7 @@ class StrategyEngine:
         iv_rank_map: dict[str, float] = {}
         trend_confirm_map: dict[str, bool] = {}
         rsi_map: dict[str, float] = {}
+        csp_safety_map: dict[str, float] = {}
         if conviction_signals:
             for sym, sig in conviction_signals.items():
                 v = getattr(sig, "vrp", None)
@@ -202,6 +203,9 @@ class StrategyEngine:
                 rsi = getattr(sig, "rsi_14", None)
                 if rsi is not None:
                     rsi_map[sym] = rsi
+                csp_prob = getattr(sig, "csp_safety_prob", None)
+                if csp_prob is not None:
+                    csp_safety_map[sym] = csp_prob
 
         semaphore = asyncio.Semaphore(10)
 
@@ -391,6 +395,7 @@ class StrategyEngine:
                         trend_confirm_map=trend_confirm_map,
                         rsi_map=rsi_map,
                         earnings_within_dte_set=earnings_set,
+                        csp_safety_map=csp_safety_map,
                     )
                     if not scored:
                         local_drops["insufficient_capital"] = local_drops.get("insufficient_capital", 0) + 1

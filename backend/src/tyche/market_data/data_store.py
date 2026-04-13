@@ -103,6 +103,7 @@ CONVICTION_SIGNAL_SCHEMA = pa.schema(
         ("iv_percentile", pa.float64()),
         ("atm_iv", pa.float64()),
         ("vrp", pa.float64()),
+        ("csp_safety_prob", pa.float64()),
     ]
 )
 
@@ -881,6 +882,7 @@ class ConvictionSignalStore:
                 "iv_percentile": getattr(sig, "iv_percentile", None),
                 "atm_iv": getattr(sig, "atm_iv", None),
                 "vrp": getattr(sig, "vrp", None),
+                "csp_safety_prob": getattr(sig, "csp_safety_prob", None),
             })
 
         if not rows:

@@ -241,5 +241,7 @@ def _get_classifier(settings: TycheSettings):
     )
     return NewsClassifier(
         gemini=gemini,
-        concurrency=settings.news_classify_concurrency,
+        classify_model=settings.gemini_model_classify,
+        workers=settings.news_classify_workers,
+        rpm=settings.news_classify_rpm,
     )

@@ -543,7 +543,7 @@ function buildPullbackColumns(
   {
     key: "iv_rank",
     header: "IV Rank",
-    accessor: (r) => r.iv_rank ?? -1,
+    accessor: (r) => r.iv_rank,
     sortable: true,
     align: "right",
     render: (r) => {
@@ -572,7 +572,7 @@ function buildPullbackColumns(
   {
     key: "vrp",
     header: "VRP",
-    accessor: (r) => r.vrp ?? 0,
+    accessor: (r) => r.vrp,
     sortable: true,
     align: "right",
     render: (r) => {
@@ -581,16 +581,13 @@ function buildPullbackColumns(
       return <span className={`font-mono text-xs ${color}`}>{(r.vrp * 100).toFixed(1)}%</span>;
     },
     filter: {
-      type: "range",
-      minOptions: [
-        { value: "-0.2", label: "-20%" },
-        { value: "-0.1", label: "-10%" },
-        { value: "0", label: "0%" },
-      ],
-      maxOptions: [
-        { value: "0.1", label: "10%" },
-        { value: "0.2", label: "20%" },
-        { value: "0.5", label: "50%" },
+      type: "min",
+      placeholder: "Min VRP",
+      options: [
+        { value: "0", label: "0%+" },
+        { value: "0.05", label: "5%+" },
+        { value: "0.10", label: "10%+" },
+        { value: "0.20", label: "20%+" },
       ],
     },
   },

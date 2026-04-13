@@ -731,14 +731,35 @@ This gives you a fresh candidate every week without the risk of silent degradati
 - Per-ticker expandable rows with raw articles, 8-K filings, and insider transactions
 - Filtering by risk level, insider buy/sell type, and text search
 
-**Tabular baselines — PENDING:**
-- Export feature data (EMAs, RSI, IV metrics) as tabular dataset
-- Build strategy-specific labels (pullback recovery, CSP profitability, max drawdown)
-- Train XGBoost with and without neighbor-aggregated features
-- Walk-forward evaluation
-- Establish baseline accuracy numbers
+**Tabular baselines — ✅ BUILT:**
+- Vectorised feature extraction in `tyche/ml/features.py` — EMAs (8/21/50), slopes, RSI, streaks, volume, trailing returns, volatility, IV metrics, sector encoding, all matching `ConvictionFeatureEngine` formulas
+- Sector-aggregated neighbor features in `add_neighbor_features()` — sector avg RSI, EMA slopes, breadth (% above 8/21 EMA), avg IV Rank, VRP, returns
+- Strategy-specific labels in `tyche/ml/labels.py` — CSP profitability (5% OTM, 5d/14d DTE), pullback recovery (5d/10d), forward returns, max drawdown, direction classification (up/down/flat)
+- Walk-forward XGBoost evaluation in `tyche/ml/xgb_baseline.py` — strict temporal splits, per-window metrics (accuracy, AUC, precision, recall, F1), feature importance tracking, comparison reporting
+- Dataset assembly in `tyche/ml/dataset.py` — loads from OHLCVStore, DerivedMetricsStore, TickerMetaStore; filters by market cap; outputs ML-ready Parquet
+- CLI script `scripts/train_baselines.py` — build dataset, train all model variants, produce comparison reports
+- 43 unit tests covering features, labels, and walk-forward evaluation
 
-**Deliverables completed:** News + EDGAR intelligence visible on Intelligence dashboard and as risk badges on existing pages. No scoring changes to existing conviction system. Tabular baselines remain as next step before Phase 2 GNN work.
+**XGBoost CSP safety integration — ✅ BUILT:**
+- `CSPSafetyPredictor` in `tyche/ml/inference.py` — singleton that loads a trained XGBoost model and produces P(CSP expires worthless) for each ticker during conviction scans
+- Model persistence via `tyche/ml/model_store.py` — XGBoost native JSON + metadata sidecar (feature columns, training stats, timestamp) under `data/ml/models/`
+- Production model training via `train_production_model()` in `xgb_baseline.py` — trains on full dataset (walk-forward is for eval only), called by `train_baselines.py --save-model`
+- `csp_safety_prob: float | None` field threaded through all 5 persistence layers: `FeatureSignal` → `ConvictionSignal` → Parquet signal store → SQLite `ConvictionSnapshot` → API response schemas
+- Frontend "CSP Safety" column on Options Conviction and Stocks Conviction pages — percentage bar with green (≥75%), yellow (50-75%), red (<50%) color coding
+- Scanner scoring multiplier: `ml_factor = 0.5 + 0.5 * csp_safety_prob` when model available, 1.0 when absent
+- Monthly retrain scheduler (`schedule_ml_retrain`) with `CronTrigger` on 1st of month, 2 AM ET; config knobs: `ml_retrain_enabled`, `ml_retrain_day_of_month`, `ml_retrain_time`
+- Manual retrain via `POST /api/v1/system/ml/retrain`; model info via `GET /api/v1/system/ml/model-info`
+- Graceful degradation: when no model artifact exists, `csp_safety_prob = None` everywhere; deterministic conviction pipeline unchanged
+- 22 new unit tests for model_store, inference, and conviction plumbing
+
+**Baseline results (3.38M rows, 8,188 tickers, 2015-2026):**
+- `csp_win_5d`: 88.0% accuracy, 0.914 AUC (single features) — **strong, deployed as Tier 1 signal**
+- `csp_win_14d`: 76.2% accuracy, 0.827 AUC
+- `pullback_recovery_5d`: 87.3% accuracy, 0.947 AUC
+- Neighbor-aggregated features did NOT improve CSP safety prediction — sector averages are too coarse
+- Direction models (5d/10d) are weak (~40-43% accuracy) — not actionable
+
+**Deliverables completed:** News + EDGAR intelligence, tabular baselines, XGBoost CSP safety deployed as Tier 1 scoring signal with monthly recalibration. Next step: richer non-GNN relational baselines (ETF, correlation clusters, leader stocks) or Phase 2 GNN for news contagion risk.
 
 ### Phase 2 (Weeks 4-6): Static Heterogeneous Graph + Prediction Journal
 

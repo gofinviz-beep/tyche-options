@@ -45,6 +45,7 @@ class PullbackAlertResponse(BaseModel):
     atm_iv: float | None = None
     vrp: float | None = None
     conviction_score: float = 0.0
+    csp_safety_prob: float | None = None
     volume_declining: bool
     institutional_pct: float | None = None
     institutional_label: str
@@ -87,6 +88,7 @@ class StockBuyRecommendationResponse(BaseModel):
     atm_iv: float | None = None
     vrp: float | None = None
     conviction_score: float = 0.0
+    csp_safety_prob: float | None = None
     related_csp_strike: float | None = None
     has_active_csp: bool
     recommendation: str

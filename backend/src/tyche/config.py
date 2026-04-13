@@ -138,6 +138,7 @@ class TycheSettings(BaseModel):
     gemini_api_key: str = ""
     gemini_model_fast: str = "gemini-3-flash-preview"
     gemini_model_deep: str = "gemini-3.1-pro-preview"
+    gemini_model_classify: str = "gemini-2.5-flash-lite"
 
     # --- Market Data (keys/infra are env-only) ---
     polygon_api_key: str = ""
@@ -301,15 +302,21 @@ class TycheSettings(BaseModel):
     # --- News Pipeline ---
     news_ingestion_enabled: bool = False
     news_finnhub_enabled: bool = True
-    news_ingest_interval_minutes: int = 30
-    news_classify_concurrency: int = 5
+    news_ingest_interval_minutes: int = 240
+    news_classify_workers: int = 2
+    news_classify_rpm: int = 25
     news_lookback_hours: int = 48
     news_risk_threshold: float = -0.3
+
+    # --- ML Retrain ---
+    ml_retrain_enabled: bool = False
+    ml_retrain_day_of_month: int = 1
+    ml_retrain_time: str = "02:00"
 
     # --- EDGAR Pipeline ---
     edgar_ingestion_enabled: bool = False
     edgar_user_agent_email: str = ""
-    edgar_ingest_interval_minutes: int = 120
+    edgar_ingest_interval_minutes: int = 1440
     edgar_lookback_days: int = 30
 
     # --- Database (env-only) ---

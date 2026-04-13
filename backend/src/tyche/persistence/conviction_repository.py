@@ -65,6 +65,7 @@ async def upsert_snapshots(
             "atm_iv": sig.atm_iv,
             "vrp": sig.vrp,
             "conviction_score": sig.conviction_score,
+            "csp_safety_prob": sig.csp_safety_prob,
             "computed_at": now,
         })
 
@@ -75,7 +76,7 @@ async def upsert_snapshots(
         "days_above_both_emas", "prior_streak", "avg_volume_20d", "latest_volume",
         "ema_50", "ema_50_slope", "rsi_14",
         "iv_rank", "iv_percentile", "atm_iv", "vrp", "conviction_score",
-        "computed_at",
+        "csp_safety_prob", "computed_at",
     }
 
     batch_size = 500

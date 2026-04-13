@@ -57,6 +57,7 @@ class ConvictionSnapshot(Base):
     vrp: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
     conviction_score: Mapped[float] = mapped_column(Float, default=0.0)
+    csp_safety_prob: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -88,6 +89,7 @@ class ConvictionSnapshot(Base):
             "atm_iv": round(self.atm_iv, 4) if self.atm_iv is not None else None,
             "vrp": round(self.vrp, 4) if self.vrp is not None else None,
             "conviction_score": round(self.conviction_score or 0.0, 3),
+            "csp_safety_prob": round(self.csp_safety_prob, 4) if self.csp_safety_prob is not None else None,
             "computed_at": self.computed_at.isoformat() if self.computed_at else None,
         }
 
