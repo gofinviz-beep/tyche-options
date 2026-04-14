@@ -42,7 +42,12 @@ except ImportError:
     _ML_AVAILABLE = False
 
 
-from tyche.ml.features import FEATURE_COLS, NEIGHBOR_FEATURE_COLS
+from tyche.ml.features import (
+    CORRELATION_FEATURE_COLS,
+    ETF_FEATURE_COLS,
+    FEATURE_COLS,
+    NEIGHBOR_FEATURE_COLS,
+)
 
 _DEFAULT_XGB_PARAMS: dict = {
     "objective": "binary:logistic",
@@ -211,11 +216,19 @@ def _average_importance(
     return sorted(averaged.items(), key=lambda x: x[1], reverse=True)
 
 
-def get_feature_columns(include_neighbors: bool = False) -> list[str]:
+def get_feature_columns(
+    include_neighbors: bool = False,
+    include_etf: bool = True,
+    include_correlation: bool = True,
+) -> list[str]:
     """Return the feature column list for the specified model variant."""
     cols = list(FEATURE_COLS)
     if include_neighbors:
         cols.extend(NEIGHBOR_FEATURE_COLS)
+    if include_etf:
+        cols.extend(ETF_FEATURE_COLS)
+    if include_correlation:
+        cols.extend(CORRELATION_FEATURE_COLS)
     return cols
 
 

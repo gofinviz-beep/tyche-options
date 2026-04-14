@@ -70,6 +70,24 @@ NEIGHBOR_FEATURE_COLS: list[str] = [
     "sector_count",
 ]
 
+ETF_FEATURE_COLS: list[str] = [
+    "etf_membership_count",
+    "in_spy",
+    "in_qqq",
+    "in_dia",
+    "spy_weight",
+    "qqq_weight",
+    "max_etf_weight",
+]
+
+CORRELATION_FEATURE_COLS: list[str] = [
+    "spy_beta_60d",
+    "qqq_beta_60d",
+    "top_peer_corr_mean",
+    "top_peer_corr_max",
+    "top_peer_corr_min",
+]
+
 
 def _ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
@@ -284,6 +302,124 @@ def build_sector_map(sectors: dict[str, str]) -> dict[str, int]:
     """Build a deterministic sector-name → integer mapping."""
     unique = sorted(set(s for s in sectors.values() if s))
     return {name: i + 1 for i, name in enumerate(unique)}
+
+
+def add_etf_features(
+    all_features: pd.DataFrame,
+    etf_store=None,
+) -> pd.DataFrame:
+    """Augment per-ticker feature rows with ETF membership features.
+
+    Adds columns for ETF membership count, binary membership in key ETFs,
+    and weight in SPY/QQQ where available.
+    """
+    if all_features.empty or etf_store is None:
+        for col in ETF_FEATURE_COLS:
+            if col not in all_features.columns:
+                all_features[col] = 0.0
+        return all_features
+
+    df = all_features.copy()
+
+    membership_counts = etf_store.get_membership_counts()
+    membership_matrix = etf_store.get_membership_matrix()
+    spy_weights = etf_store.get_etf_weights("SPY")
+    qqq_weights = etf_store.get_etf_weights("QQQ")
+
+    if "ticker" not in df.columns:
+        for col in ETF_FEATURE_COLS:
+            df[col] = 0.0
+        return df
+
+    df["etf_membership_count"] = df["ticker"].map(membership_counts).fillna(0).astype(int)
+    df["in_spy"] = df["ticker"].map(
+        lambda t: 1 if "SPY" in membership_matrix.get(t, []) else 0
+    )
+    df["in_qqq"] = df["ticker"].map(
+        lambda t: 1 if "QQQ" in membership_matrix.get(t, []) else 0
+    )
+    df["in_dia"] = df["ticker"].map(
+        lambda t: 1 if "DIA" in membership_matrix.get(t, []) else 0
+    )
+    df["spy_weight"] = df["ticker"].map(spy_weights).fillna(0.0)
+    df["qqq_weight"] = df["ticker"].map(qqq_weights).fillna(0.0)
+
+    all_etf_weights: dict[str, float] = {}
+    for etf_ticker in ["SPY", "QQQ", "DIA", "XLK", "XLF", "XLE", "XLV", "SMH", "SOXX", "XLI"]:
+        weights = etf_store.get_etf_weights(etf_ticker)
+        for ticker, w in weights.items():
+            if w is not None and (ticker not in all_etf_weights or w > all_etf_weights[ticker]):
+                all_etf_weights[ticker] = w
+
+    df["max_etf_weight"] = df["ticker"].map(all_etf_weights).fillna(0.0)
+
+    return df
+
+
+def add_correlation_features(
+    all_features: pd.DataFrame,
+    correlation_store=None,
+    as_of_date=None,
+) -> pd.DataFrame:
+    """Augment per-ticker feature rows with correlation/beta features.
+
+    Adds SPY/QQQ betas and top-peer correlation statistics.
+    """
+    if all_features.empty or correlation_store is None:
+        for col in CORRELATION_FEATURE_COLS:
+            if col not in all_features.columns:
+                all_features[col] = np.nan
+        return all_features
+
+    df = all_features.copy()
+
+    betas_df = correlation_store.read_betas(as_of=as_of_date)
+    corr_df = correlation_store.read_correlations(as_of=as_of_date)
+
+    if "ticker" not in df.columns:
+        for col in CORRELATION_FEATURE_COLS:
+            df[col] = np.nan
+        return df
+
+    if not betas_df.empty:
+        beta_lookup = betas_df.set_index("ticker")[["spy_beta_60d", "qqq_beta_60d"]].to_dict("index")
+        df["spy_beta_60d"] = df["ticker"].map(
+            lambda t: beta_lookup.get(t, {}).get("spy_beta_60d", np.nan)
+        )
+        df["qqq_beta_60d"] = df["ticker"].map(
+            lambda t: beta_lookup.get(t, {}).get("qqq_beta_60d", np.nan)
+        )
+    else:
+        df["spy_beta_60d"] = np.nan
+        df["qqq_beta_60d"] = np.nan
+
+    if not corr_df.empty:
+        peer_stats: dict[str, dict[str, float]] = {}
+        for ticker in df["ticker"].unique():
+            mask = (corr_df["ticker_a"] == ticker) | (corr_df["ticker_b"] == ticker)
+            sub = corr_df[mask]["correlation_60d"]
+            if len(sub) > 0:
+                peer_stats[ticker] = {
+                    "mean": float(sub.mean()),
+                    "max": float(sub.max()),
+                    "min": float(sub.min()),
+                }
+
+        df["top_peer_corr_mean"] = df["ticker"].map(
+            lambda t: peer_stats.get(t, {}).get("mean", np.nan)
+        )
+        df["top_peer_corr_max"] = df["ticker"].map(
+            lambda t: peer_stats.get(t, {}).get("max", np.nan)
+        )
+        df["top_peer_corr_min"] = df["ticker"].map(
+            lambda t: peer_stats.get(t, {}).get("min", np.nan)
+        )
+    else:
+        df["top_peer_corr_mean"] = np.nan
+        df["top_peer_corr_max"] = np.nan
+        df["top_peer_corr_min"] = np.nan
+
+    return df
 
 
 def add_neighbor_features(

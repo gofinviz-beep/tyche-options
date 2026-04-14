@@ -11,6 +11,8 @@ Usage:
     python scripts/ingest_data.py --intraday --intraday-tickers AAPL,MSFT  # Specific tickers only
     python scripts/ingest_data.py --institutional          # Backfill institutional ownership for all CS tickers
     python scripts/ingest_data.py --sector                # Backfill SIC codes and sector classification
+    python scripts/ingest_data.py --etf                   # Build ETF constituent lists (static + yfinance)
+    python scripts/ingest_data.py --correlations           # Compute rolling 60d correlations + betas
 """
 
 from __future__ import annotations
@@ -366,6 +368,63 @@ async def _backfill_institutional(
     return total_persisted
 
 
+def _ingest_etf(data_dir: str) -> int:
+    """Build ETF constituent data from static lists + yfinance weights."""
+    from tyche.market_data.etf_store import ETFConstituentStore, build_etf_data
+
+    click.echo("Building ETF constituent lists...")
+    etf_data = build_etf_data(use_yfinance=True)
+
+    store = ETFConstituentStore(data_dir=data_dir)
+    total = store.write_all(etf_data)
+
+    for etf, members in etf_data.items():
+        weighted = sum(1 for m in members if m.get("weight") is not None)
+        click.echo(f"  {etf}: {len(members)} constituents ({weighted} with weights)")
+
+    click.echo(f"  Total: {total:,} rows written to {store._path}")
+    return total
+
+
+def _compute_correlations(data_dir: str) -> tuple[int, int]:
+    """Compute 60-day rolling correlations and betas from OHLCV data."""
+    from tyche.market_data.correlation_store import (
+        CorrelationStore,
+        compute_rolling_correlations,
+    )
+
+    click.echo("Computing rolling correlations and betas...")
+    ohlcv_store = OHLCVStore(data_dir=data_dir)
+    meta_store = TickerMetaStore(data_dir=data_dir)
+
+    all_tickers = ohlcv_store.get_all_tickers()
+    if meta_store.exists:
+        all_tickers = meta_store.filter_equity_only(all_tickers)
+        market_caps = meta_store.get_market_caps()
+        all_tickers = [
+            t for t in all_tickers
+            if market_caps.get(t, float("inf")) >= 4e9
+        ]
+
+    click.echo(f"  Universe: {len(all_tickers)} tickers")
+
+    corr_df, beta_df = compute_rolling_correlations(
+        ohlcv_store=ohlcv_store,
+        tickers=all_tickers,
+        window=60,
+        top_n=20,
+    )
+
+    store = CorrelationStore(data_dir=data_dir)
+    n_corr = store.write_correlations(corr_df) if not corr_df.empty else 0
+    n_beta = store.write_betas(beta_df) if not beta_df.empty else 0
+
+    click.echo(f"  Correlations: {n_corr:,} pairs")
+    click.echo(f"  Betas: {n_beta:,} tickers")
+
+    return n_corr, n_beta
+
+
 async def _run(
     from_date: date | None,
     to_date: date | None,
@@ -378,6 +437,8 @@ async def _run(
     institutional: bool = False,
     skip_market_cap_backfill: bool = False,
     sector: bool = False,
+    etf: bool = False,
+    correlations: bool = False,
 ) -> None:
     settings = get_settings()
     store = OHLCVStore(data_dir=settings.data_dir)
@@ -505,6 +566,14 @@ async def _run(
         click.echo("\nBackfilling institutional ownership...")
         await _backfill_institutional(meta_store)
 
+    if etf:
+        click.echo("\nIngesting ETF constituent data...")
+        _ingest_etf(settings.data_dir)
+
+    if correlations:
+        click.echo("\nComputing rolling correlations...")
+        _compute_correlations(settings.data_dir)
+
     if not status and not no_conviction and store.exists:
         click.echo("\nRunning conviction batch...")
         try:
@@ -584,6 +653,10 @@ async def _run_conviction_batch(
               help="Skip automatic market-cap backfill from per-ticker detail endpoint.")
 @click.option("--sector", is_flag=True, default=False,
               help="Backfill SIC codes and sector classification from Polygon ticker details.")
+@click.option("--etf", is_flag=True, default=False,
+              help="Build ETF constituent lists from static curated data + yfinance weights.")
+@click.option("--correlations", is_flag=True, default=False,
+              help="Compute 60-day rolling correlations and SPY/QQQ betas from OHLCV data.")
 def main(
     from_date: click.DateTime | None,
     to_date: click.DateTime | None,
@@ -596,6 +669,8 @@ def main(
     institutional: bool,
     skip_market_cap_backfill: bool,
     sector: bool,
+    etf: bool,
+    correlations: bool,
 ) -> None:
     """Ingest OHLCV daily bars, intraday bars, and ticker metadata from Polygon.io."""
     fd = from_date.date() if from_date else None
@@ -603,6 +678,7 @@ def main(
     asyncio.run(_run(
         fd, td, days, meta, status, intraday, intraday_tickers,
         no_conviction, institutional, skip_market_cap_backfill, sector,
+        etf, correlations,
     ))
 
 

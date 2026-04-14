@@ -240,6 +240,149 @@ class WorkflowScheduler:
         self._jobs["ml_retrain"] = job.id
         logger.info("scheduled_ml_retrain", day=day, time=f"{hour:02d}:{minute:02d} ET")
 
+    def schedule_conviction_batch(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 16,
+        minute: int = 8,
+    ) -> None:
+        """Schedule conviction batch after OHLCV refresh (default 4:08 PM ET)."""
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="conviction_batch",
+            replace_existing=True,
+            name="Conviction Batch Upsert",
+        )
+        self._jobs["conviction_batch"] = job.id
+        logger.info("scheduled_conviction_batch", time=f"{hour:02d}:{minute:02d} ET")
+
+    def schedule_bridge_tradier_iv(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 16,
+        minute: int = 45,
+    ) -> None:
+        """Schedule Tradier IV bridge after options snapshot (default 4:45 PM ET).
+
+        Must run after the options snapshot job (~30 min for 1k+ tickers at
+        120 RPM) has written snapshot data to OptionsChainStore.
+        """
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="bridge_tradier_iv",
+            replace_existing=True,
+            name="Bridge Tradier IV",
+        )
+        self._jobs["bridge_tradier_iv"] = job.id
+        logger.info("scheduled_bridge_tradier_iv", time=f"{hour:02d}:{minute:02d} ET")
+
+    def schedule_correlation_refresh(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        day: int = 28,
+        hour: int = 22,
+        minute: int = 0,
+    ) -> None:
+        """Schedule monthly correlation refresh (default 28th of month, 10 PM ET).
+
+        Runs before the monthly ML retrain (1st of month) so fresh
+        correlation features are available for dataset building.
+        """
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                day=day,
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="correlation_refresh",
+            replace_existing=True,
+            name="Correlation Refresh",
+        )
+        self._jobs["correlation_refresh"] = job.id
+        logger.info("scheduled_correlation_refresh", day=day, time=f"{hour:02d}:{minute:02d} ET")
+
+    def schedule_etf_refresh(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 3,
+        minute: int = 0,
+    ) -> None:
+        """Schedule quarterly ETF constituent refresh (Mar/Jun/Sep/Dec 1st, 3 AM ET)."""
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                month="3,6,9,12",
+                day=1,
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="etf_refresh",
+            replace_existing=True,
+            name="ETF Constituent Refresh",
+        )
+        self._jobs["etf_refresh"] = job.id
+        logger.info("scheduled_etf_refresh", months="3,6,9,12", time=f"{hour:02d}:{minute:02d} ET")
+
+    def schedule_quarterly_meta(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 3,
+        minute: int = 30,
+    ) -> None:
+        """Schedule quarterly ticker meta refresh — sector + institutional (Mar/Jun/Sep/Dec)."""
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                month="3,6,9,12",
+                day=1,
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="quarterly_meta",
+            replace_existing=True,
+            name="Quarterly Meta Refresh",
+        )
+        self._jobs["quarterly_meta"] = job.id
+        logger.info("scheduled_quarterly_meta", months="3,6,9,12", time=f"{hour:02d}:{minute:02d} ET")
+
+    def schedule_weekly_meta(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 2,
+        minute: int = 0,
+    ) -> None:
+        """Schedule weekly ticker metadata refresh (Sundays 2 AM ET)."""
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                day_of_week="sun",
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="weekly_meta",
+            replace_existing=True,
+            name="Weekly Meta Refresh",
+        )
+        self._jobs["weekly_meta"] = job.id
+        logger.info("scheduled_weekly_meta", time=f"{hour:02d}:{minute:02d} ET")
+
     def schedule_eod_journal(
         self,
         func: Callable[..., Coroutine[Any, Any, Any]],

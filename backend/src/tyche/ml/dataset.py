@@ -18,6 +18,8 @@ from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.derived_store import DerivedMetricsStore
 from tyche.ml.features import (
     FEATURE_COLS,
+    add_correlation_features,
+    add_etf_features,
     add_neighbor_features,
     build_sector_map,
     extract_ticker_features,
@@ -36,6 +38,8 @@ def build_dataset(
     end_date: date | None = None,
     min_market_cap: float = MIN_MARKET_CAP,
     include_neighbors: bool = True,
+    include_etf: bool = True,
+    include_correlation: bool = True,
     max_tickers: int | None = None,
 ) -> pd.DataFrame:
     """Build the full tabular dataset from on-disk stores.
@@ -130,6 +134,36 @@ def build_dataset(
 
     if include_neighbors and "sector_encoded" in dataset.columns:
         dataset = add_neighbor_features(dataset)
+
+    if include_etf:
+        try:
+            from tyche.market_data.etf_store import ETFConstituentStore
+
+            etf_store = ETFConstituentStore(data_dir=data_dir)
+            if etf_store.exists:
+                dataset = add_etf_features(dataset, etf_store=etf_store)
+                logger.info("etf_features_added")
+            else:
+                logger.info("etf_features_skipped", reason="no etf data file")
+                dataset = add_etf_features(dataset, etf_store=None)
+        except Exception:
+            logger.warning("etf_features_failed", exc_info=True)
+            dataset = add_etf_features(dataset, etf_store=None)
+
+    if include_correlation:
+        try:
+            from tyche.market_data.correlation_store import CorrelationStore
+
+            corr_store = CorrelationStore(data_dir=data_dir)
+            if corr_store.exists:
+                dataset = add_correlation_features(dataset, correlation_store=corr_store)
+                logger.info("correlation_features_added")
+            else:
+                logger.info("correlation_features_skipped", reason="no correlation data file")
+                dataset = add_correlation_features(dataset, correlation_store=None)
+        except Exception:
+            logger.warning("correlation_features_failed", exc_info=True)
+            dataset = add_correlation_features(dataset, correlation_store=None)
 
     elapsed = time.time() - t0
     logger.info(

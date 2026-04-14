@@ -38,7 +38,7 @@
 - Vectorised features (`ml/features.py`) match `ConvictionFeatureEngine` formulas but run over full history
 - Labels (`ml/labels.py`) use only raw OHLCV — no derived features in label construction (leakage prevention)
 - Two model variants: per-stock features only vs. + sector-aggregated neighbor features
-- Walk-forward: 126d train / 63d test windows, strict temporal splits
+- Walk-forward: 126d train / 63d test windows, strict temporal splits, 39 windows (2015–2026)
 - Model persistence (`ml/model_store.py`): XGBoost native JSON + metadata sidecar under `data/ml/models/`
 - Live inference (`ml/inference.py`): `CSPSafetyPredictor` bridges `FeatureSignal` → XGBoost `predict_proba` → `csp_safety_prob`
 - `csp_safety_prob` threaded through: `FeatureSignal` → `ConvictionSignal` → Parquet → SQLite → API → frontend
@@ -46,10 +46,36 @@
 - Monthly retrain: APScheduler `CronTrigger` (1st of month, 2 AM ET). Manual: `POST /api/v1/system/ml/retrain`
 - CLI: `python scripts/train_baselines.py` (build dataset + train + evaluate + save production model)
 - Requires `pip install -e ".[ml]"` for `xgboost` and `scikit-learn`
+- **Results (3.39M rows, 8,192 tickers):** single model = 88.0% acc / 0.915 AUC, neighbor model = 87.6% acc / 0.910 AUC → single model deployed (neighbor features don't help). Top feature: `price_to_21ema_pct` (51.3%). Relational features (ETF + correlation) contribute 8.1% of importance; SPY/QQQ betas rank 12th/14th.
+- `compute_rolling_correlations()` auto-injects SPY/QQQ into the ticker list — they are ETFs excluded by `filter_equity_only()` but required for beta computation
+
+## ETF Constituents & Correlation (Pre-GNN Relational Features)
+
+- `market_data/etf_constituents.py`: static curated lists for 10 key ETFs (SPY, QQQ, DIA, XLK, XLF, XLE, XLV, SMH, SOXX, XLI)
+- `market_data/etf_store.py`: `ETFConstituentStore` — Parquet-backed persistence of ETF membership + weights
+- `market_data/etf_store.py`: `build_etf_data()` merges static lists with yfinance `funds_data.top_holdings` for weights
+- `market_data/correlation_store.py`: `CorrelationStore` — Parquet-backed 60d rolling pairwise correlations + SPY/QQQ betas
+- `market_data/correlation_store.py`: `compute_rolling_correlations()` — builds return matrix from OHLCV, produces top-N peers + betas
+- `ml/features.py`: `ETF_FEATURE_COLS` (7) and `CORRELATION_FEATURE_COLS` (5) — added to XGBoost feature set
+- `ml/features.py`: `add_etf_features()` and `add_correlation_features()` augment the dataset
+- `ml/dataset.py`: `build_dataset()` auto-integrates ETF + correlation features (flags: `include_etf`, `include_correlation`)
+- Ingestion: `python scripts/ingest_data.py --etf --correlations`
+- Leakage prevention: correlation window = `[as_of_date - 60, as_of_date - 1]` (no same-day data)
+
+## Automated Data Pipelines
+
+All data operations are automated via APScheduler. Full runbook: `docs/data-operations.md`.
+
+- **Daily after close:** OHLCV refresh (16:02) → conviction batch (16:08) → exit monitor (16:05), options snapshot (16:10) → bridge Tradier IV (16:45)
+- **Weekly:** Ticker meta refresh (Sundays 02:00 ET) — Polygon reference data + market cap backfill
+- **Monthly:** Correlation refresh (28th, 22:00 ET) → ML retrain (1st, 02:00 ET, includes ETF + correlation features)
+- **Quarterly (Mar/Jun/Sep/Dec):** ETF constituents (1st, 03:00) → sector/SIC + institutional ownership (1st, 03:30)
+- **Config knobs:** `conviction_batch_after_ohlcv`, `bridge_tradier_iv_enabled`, `correlation_refresh_enabled`, `etf_refresh_enabled`, `quarterly_meta_refresh_enabled`, `weekly_meta_refresh_enabled` — all default `true`
+- Handler functions in `app.py`, scheduler methods in `workflow/scheduler.py`
 
 ## Testing
 
-- ~1200 unit tests in `tests/unit/`, run with `pytest`
+- ~1240 unit tests in `tests/unit/`, run with `pytest`
 - External APIs are always mocked — no network calls in tests
 - Use `AsyncMock` for async broker/LLM calls, `MagicMock` for data stores
 - `morning_scan.py`, `analysis/client.py` have 100% coverage; `exit_monitor.py` at 95%

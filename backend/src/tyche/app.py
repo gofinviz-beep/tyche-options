@@ -271,6 +271,349 @@ async def _scheduled_edgar_ingest() -> None:
         logger.error("scheduled_edgar_ingest_failed", exc_info=True)
 
 
+async def _scheduled_conviction_batch() -> None:
+    """Run conviction batch after daily OHLCV refresh."""
+    from tyche.api.deps import get_data_store, get_conviction_engine
+    from tyche.config import get_settings as _gs
+    from tyche.market_data.data_store import TickerMetaStore
+    from tyche.workflow.conviction_batch import run_conviction_batch
+
+    settings = _gs()
+    try:
+        store = get_data_store(settings)
+        meta_store = TickerMetaStore(data_dir=settings.data_dir)
+        engine = get_conviction_engine(settings)
+
+        result = await run_conviction_batch(
+            data_store=store,
+            conviction_engine=engine,
+            ticker_meta_store=meta_store,
+            min_market_cap=settings.conviction_batch_min_market_cap_millions * 1_000_000,
+            min_price=settings.conviction_batch_min_price,
+            min_avg_volume=settings.conviction_batch_min_avg_volume,
+            retention_days=settings.conviction_snapshot_retention_days,
+        )
+        logger.info(
+            "scheduled_conviction_batch_complete",
+            signals=result.signals_computed,
+            snapshots=result.snapshots_upserted,
+            transitions=result.transitions_detected,
+            duration_ms=round(result.duration_ms),
+        )
+    except Exception:
+        logger.error("scheduled_conviction_batch_failed", exc_info=True)
+
+
+async def _scheduled_bridge_tradier_iv() -> None:
+    """Bridge Tradier options snapshots into IV/derived metrics pipeline."""
+    import asyncio
+    from tyche.config import get_settings as _gs
+
+    settings = _gs()
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _run_bridge_tradier_iv_sync, settings.data_dir)
+        logger.info("scheduled_bridge_tradier_iv_complete")
+    except Exception:
+        logger.error("scheduled_bridge_tradier_iv_failed", exc_info=True)
+
+
+def _run_bridge_tradier_iv_sync(data_dir: str) -> None:
+    """Run Tradier IV bridge in a thread (CPU-bound derived metrics)."""
+    import math
+    from datetime import date, timedelta
+
+    from tyche.market_data.data_store import OHLCVStore, OptionsChainStore
+    from tyche.market_data.derived_store import DerivedMetricsStore
+    from tyche.market_data.historical_iv_store import HistoricalIVStore
+
+    snapshot_date = date.today()
+    chain_store = OptionsChainStore(data_dir=data_dir)
+    ohlcv_store = OHLCVStore(data_dir=data_dir)
+    iv_store = HistoricalIVStore(data_dir=data_dir)
+    derived_store = DerivedMetricsStore(data_dir=data_dir)
+
+    available_dates = chain_store.list_snapshot_dates()
+    if snapshot_date not in available_dates:
+        logger.info("bridge_iv_no_snapshot", date=str(snapshot_date))
+        return
+
+    all_tickers = sorted(
+        p.stem.upper()
+        for p in chain_store.store_dir.glob("*.parquet")
+        if not p.name.startswith("_")
+    )
+
+    iv_written = 0
+    derived_written = 0
+    target_dte = 30
+    dte_tolerance = 15
+
+    for ticker in all_tickers:
+        try:
+            df = chain_store.read_ticker(ticker, snapshot_date=snapshot_date, option_type="put")
+            if df.empty:
+                continue
+
+            ohlcv_df = ohlcv_store.read_ticker(ticker)
+            if ohlcv_df.empty:
+                continue
+
+            ohlcv_df["date"] = ohlcv_df["date"].apply(
+                lambda d: d.date() if hasattr(d, "date") else d
+            )
+            close_row = ohlcv_df[ohlcv_df["date"] == snapshot_date]
+            if close_row.empty:
+                yesterday = snapshot_date - timedelta(days=1)
+                close_row = ohlcv_df[ohlcv_df["date"] == yesterday]
+            if close_row.empty:
+                close_row = ohlcv_df.sort_values("date").tail(1)
+            if close_row.empty:
+                continue
+
+            underlying_close = float(close_row.iloc[-1]["close"])
+            if underlying_close <= 0:
+                continue
+
+            df = df.copy()
+            df["dte"] = df["expiration"].apply(
+                lambda exp: (exp - snapshot_date).days if exp > snapshot_date else 0
+            )
+            df = df[df["dte"] > 0]
+            if df.empty:
+                continue
+
+            dte_diff = (df["dte"] - target_dte).abs()
+            within_tolerance = df[dte_diff <= dte_tolerance + 10]
+            if within_tolerance.empty:
+                within_tolerance = df
+
+            best_dte_idx = (within_tolerance["dte"] - target_dte).abs().idxmin()
+            best_dte = within_tolerance.loc[best_dte_idx, "dte"]
+            dte_group = within_tolerance[within_tolerance["dte"] == best_dte]
+
+            atm_idx = (dte_group["strike"] - underlying_close).abs().idxmin()
+            row = dte_group.loc[atm_idx]
+
+            iv = float(row.get("implied_volatility", 0))
+            strike = float(row["strike"])
+            dte_val = int(row["dte"])
+            option_close = float(row.get("last", 0) or row.get("mid", 0))
+
+            if iv <= 0 or math.isnan(iv) or dte_val <= 0:
+                continue
+
+            iv_store.write_iv_data(ticker, [{
+                "date": snapshot_date,
+                "strike": strike,
+                "expiration": row["expiration"],
+                "contract_ticker": f"O:{ticker}_TRADIER_SNAPSHOT",
+                "option_close": option_close,
+                "underlying_close": underlying_close,
+                "dte": dte_val,
+                "implied_volatility": iv,
+            }])
+            iv_written += 1
+
+            iv_df = iv_store.read_ticker(ticker)
+            ohlcv_full = ohlcv_store.read_ticker(ticker)
+            metrics_df = DerivedMetricsStore.compute_metrics(iv_df, ohlcv_full)
+            if not metrics_df.empty:
+                derived_store.write_metrics(ticker, metrics_df)
+                derived_written += 1
+
+        except Exception:
+            continue
+
+    if iv_written > 0:
+        iv_store.write_checkpoint(
+            last_options_date=snapshot_date.isoformat(),
+            tickers_processed=iv_written,
+            iv_points=iv_written,
+        )
+
+    logger.info(
+        "bridge_tradier_iv_sync_complete",
+        iv_written=iv_written,
+        derived_written=derived_written,
+    )
+
+
+async def _scheduled_correlation_refresh() -> None:
+    """Monthly refresh of rolling correlations and betas."""
+    import asyncio
+    from tyche.config import get_settings as _gs
+
+    settings = _gs()
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _run_correlation_refresh_sync, settings.data_dir)
+        logger.info("scheduled_correlation_refresh_complete")
+    except Exception:
+        logger.error("scheduled_correlation_refresh_failed", exc_info=True)
+
+
+def _run_correlation_refresh_sync(data_dir: str) -> None:
+    """Compute 60d rolling correlations in a thread (CPU-bound matrix ops)."""
+    from tyche.market_data.correlation_store import (
+        CorrelationStore,
+        compute_rolling_correlations,
+    )
+    from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
+
+    ohlcv_store = OHLCVStore(data_dir=data_dir)
+    meta_store = TickerMetaStore(data_dir=data_dir)
+
+    all_tickers = ohlcv_store.get_all_tickers()
+    if meta_store.exists:
+        all_tickers = meta_store.filter_equity_only(all_tickers)
+        market_caps = meta_store.get_market_caps()
+        all_tickers = [
+            t for t in all_tickers
+            if market_caps.get(t, float("inf")) >= 4e9
+        ]
+
+    corr_df, beta_df = compute_rolling_correlations(
+        ohlcv_store=ohlcv_store,
+        tickers=all_tickers,
+        window=60,
+        top_n=20,
+    )
+
+    store = CorrelationStore(data_dir=data_dir)
+    if not corr_df.empty:
+        store.write_correlations(corr_df)
+    if not beta_df.empty:
+        store.write_betas(beta_df)
+
+
+async def _scheduled_etf_refresh() -> None:
+    """Quarterly ETF constituent list refresh."""
+    import asyncio
+    from tyche.config import get_settings as _gs
+
+    settings = _gs()
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _run_etf_refresh_sync, settings.data_dir)
+        logger.info("scheduled_etf_refresh_complete")
+    except Exception:
+        logger.error("scheduled_etf_refresh_failed", exc_info=True)
+
+
+def _run_etf_refresh_sync(data_dir: str) -> None:
+    """Build ETF data from static lists + yfinance in a thread."""
+    from tyche.market_data.etf_store import ETFConstituentStore, build_etf_data
+
+    etf_data = build_etf_data(use_yfinance=True)
+    store = ETFConstituentStore(data_dir=data_dir)
+    store.write_all(etf_data)
+
+
+async def _scheduled_quarterly_meta() -> None:
+    """Quarterly sector/SIC + institutional ownership refresh."""
+    from tyche.api.deps import get_polygon
+    from tyche.config import get_settings as _gs
+    from tyche.market_data.data_store import TickerMetaStore, _backfill_sic_data
+
+    settings = _gs()
+    try:
+        polygon = get_polygon(settings)
+        if polygon is None:
+            logger.warning("quarterly_meta_skipped_no_polygon_key")
+            return
+
+        meta_store = TickerMetaStore(data_dir=settings.data_dir)
+
+        sic_updated = await _backfill_sic_data(
+            polygon, meta_store,
+            concurrency=settings.polygon_market_cap_concurrency,
+            rate_limit_rpm=settings.polygon_rate_limit_rpm,
+        )
+        logger.info("quarterly_sic_refresh_complete", updated=sic_updated)
+
+    except Exception:
+        logger.error("quarterly_sic_refresh_failed", exc_info=True)
+
+    try:
+        from tyche.market_data.institutional import get_institutional_ownership
+        from tyche.market_data.data_store import TickerMetaStore
+
+        meta_store = TickerMetaStore(data_dir=settings.data_dir)
+        if not meta_store.exists:
+            return
+
+        import asyncio
+
+        all_tickers = sorted(meta_store.filter_equity_only(
+            list(meta_store.get_ticker_types().keys())
+        ))
+        existing = meta_store.get_institutional_pcts(all_tickers)
+        missing = [t for t in all_tickers if t not in existing]
+
+        if not missing:
+            logger.info("quarterly_institutional_already_complete")
+            return
+
+        results: dict[str, float] = {}
+        sem = asyncio.Semaphore(5)
+
+        async def _fetch(ticker: str) -> None:
+            async with sem:
+                await asyncio.sleep(0.5)
+                try:
+                    pct = await get_institutional_ownership(ticker)
+                    if pct is not None:
+                        results[ticker] = pct
+                except Exception:
+                    pass
+
+        batch_size = 50
+        for i in range(0, len(missing), batch_size):
+            batch = missing[i:i + batch_size]
+            await asyncio.gather(*[_fetch(t) for t in batch])
+            if results:
+                meta_store.update_institutional_pcts(results)
+                results.clear()
+
+        logger.info("quarterly_institutional_complete", tickers=len(missing))
+    except Exception:
+        logger.error("quarterly_institutional_failed", exc_info=True)
+
+
+async def _scheduled_weekly_meta() -> None:
+    """Weekly ticker metadata refresh from Polygon."""
+    from tyche.api.deps import get_polygon
+    from tyche.config import get_settings as _gs
+    from tyche.market_data.data_store import TickerMetaStore, _backfill_market_caps
+
+    settings = _gs()
+    try:
+        polygon = get_polygon(settings)
+        if polygon is None:
+            logger.warning("weekly_meta_skipped_no_polygon_key")
+            return
+
+        meta_store = TickerMetaStore(data_dir=settings.data_dir)
+
+        ticker_infos = await polygon.get_tickers(
+            market="stocks", active=True, ticker_type="CS",
+        )
+        if ticker_infos:
+            count = meta_store.write_meta(ticker_infos)
+            logger.info("weekly_meta_tickers_written", count=count)
+
+            updated = await _backfill_market_caps(
+                polygon, meta_store,
+                concurrency=settings.polygon_market_cap_concurrency,
+                rate_limit_rpm=settings.polygon_rate_limit_rpm,
+            )
+            logger.info("weekly_meta_caps_updated", count=updated)
+
+    except Exception:
+        logger.error("scheduled_weekly_meta_failed", exc_info=True)
+
+
 async def _scheduled_ml_retrain() -> None:
     """Monthly retrain of the XGBoost CSP safety model."""
     import asyncio
@@ -293,7 +636,12 @@ def _run_ml_retrain_sync(data_dir: str) -> None:
     from tyche.ml.dataset import build_dataset
     from tyche.ml.xgb_baseline import train_production_model
 
-    dataset = build_dataset(data_dir=data_dir, include_neighbors=False)
+    dataset = build_dataset(
+        data_dir=data_dir,
+        include_neighbors=True,
+        include_etf=True,
+        include_correlation=True,
+    )
     if dataset.empty:
         logger.error("ml_retrain_empty_dataset")
         return
@@ -430,6 +778,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             hour=retrain_h,
             minute=retrain_m,
         )
+
+    if settings.conviction_batch_after_ohlcv:
+        scheduler.schedule_conviction_batch(_scheduled_conviction_batch)
+
+    if settings.bridge_tradier_iv_enabled and settings.tradier_api_token:
+        scheduler.schedule_bridge_tradier_iv(_scheduled_bridge_tradier_iv)
+
+    if settings.correlation_refresh_enabled:
+        scheduler.schedule_correlation_refresh(_scheduled_correlation_refresh)
+
+    if settings.etf_refresh_enabled:
+        scheduler.schedule_etf_refresh(_scheduled_etf_refresh)
+
+    if settings.quarterly_meta_refresh_enabled:
+        scheduler.schedule_quarterly_meta(_scheduled_quarterly_meta)
+
+    if settings.weekly_meta_refresh_enabled:
+        scheduler.schedule_weekly_meta(_scheduled_weekly_meta)
 
     scheduler.start()
 

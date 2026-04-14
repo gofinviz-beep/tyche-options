@@ -172,6 +172,7 @@ def main() -> None:
 
     if reports:
         _print_final_summary(reports)
+        _print_relational_feature_summary(reports)
 
 
 def _print_dataset_summary(dataset) -> None:
@@ -231,6 +232,41 @@ def _print_final_summary(reports) -> None:
                 f"\n    Neighbor: acc={n.mean_accuracy:.1f}%  auc={n.mean_auc:.4f}"
                 f"\n    Δ acc={delta_acc:+.1f}pp  Δ auc={delta_auc:+.4f}  → {verdict}"
             )
+
+    print(f"\n{'=' * 70}")
+
+
+def _print_relational_feature_summary(reports) -> None:
+    """Report on ETF and correlation feature importance."""
+    from tyche.ml.features import CORRELATION_FEATURE_COLS, ETF_FEATURE_COLS
+
+    relational_cols = set(ETF_FEATURE_COLS + CORRELATION_FEATURE_COLS)
+
+    print(f"\n{'=' * 70}")
+    print("RELATIONAL FEATURES (ETF + CORRELATION) IMPORTANCE")
+    print(f"{'=' * 70}")
+
+    for r in reports:
+        if not r.windows:
+            continue
+        all_imp: dict[str, list[float]] = {}
+        for w in r.windows:
+            for feat, score in w.feature_importance.items():
+                all_imp.setdefault(feat, []).append(score)
+
+        avg_imp = {k: sum(v) / len(v) for k, v in all_imp.items()}
+        relational_found = {k: v for k, v in avg_imp.items() if k in relational_cols}
+
+        if relational_found:
+            total_imp = sum(avg_imp.values())
+            relational_imp = sum(relational_found.values())
+            pct = (relational_imp / total_imp * 100) if total_imp > 0 else 0
+
+            print(f"\n  {r.model_name} ({r.target}):")
+            print(f"    Relational features: {len(relational_found)}/{len(relational_cols)} present")
+            print(f"    Share of total importance: {pct:.1f}%")
+            for feat, imp in sorted(relational_found.items(), key=lambda x: x[1], reverse=True):
+                print(f"      {feat:<30} {imp:.4f}")
 
     print(f"\n{'=' * 70}")
 

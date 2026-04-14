@@ -87,8 +87,8 @@ A numerical quality score computed per ticker in `ConvictionFeatureEngine`. Disp
 
 `csp_safety_prob` is the P(CSP expires worthless) predicted by a trained XGBoost model. Deployed as a Tier 1 signal — displayed on conviction pages and used as a scanner scoring multiplier.
 
-- **Model:** XGBoost classifier trained on `csp_win_5d` target (5% OTM, 5-day DTE). 88% accuracy, 0.914 AUC on walk-forward evaluation across 3.38M rows.
-- **Features:** Same 27 features as the conviction pipeline — EMAs, slopes, RSI, streaks, IV metrics, market cap, institutional ownership, sector. NO neighbor-aggregated features (baselines showed they don't help).
+- **Model:** XGBoost classifier trained on `csp_win_5d` target (5% OTM, 5-day DTE). 88.0% accuracy, 0.915 AUC on 39-window walk-forward evaluation across 3.39M rows (8,192 tickers, 2015–2026).
+- **Features:** 40 features total — 28 base (EMAs, slopes, RSI, streaks, IV metrics, market cap, institutional ownership, sector) + 7 ETF membership + 5 correlation/beta. NO neighbor-aggregated features (baselines showed sector averages don't help). `price_to_21ema_pct` carries 51% of feature importance; SPY/QQQ betas rank 12th/14th. Relational features (ETF + correlation) contribute 8.1% of total importance.
 - **Inference:** `CSPSafetyPredictor` in `tyche/ml/inference.py` bridges `FeatureSignal` to XGBoost `predict_proba`. Loaded once on startup, called during conviction scans.
 - **Scanner scoring:** `ml_factor = 0.5 + 0.5 × csp_safety_prob` when model available. A ticker with 90% safety gets 0.95× multiplier; 50% safety gets 0.75×; absent model gets 1.0× (no penalty).
 - **Retrain:** Monthly (1st of month, 2 AM ET) via scheduled job. Manual trigger: `POST /api/v1/system/ml/retrain`. Model artifact at `data/ml/models/csp_win_5d.json`.

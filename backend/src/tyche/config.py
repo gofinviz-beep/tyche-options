@@ -313,6 +313,14 @@ class TycheSettings(BaseModel):
     ml_retrain_day_of_month: int = 1
     ml_retrain_time: str = "02:00"
 
+    # --- Automated Data Pipelines ---
+    conviction_batch_after_ohlcv: bool = True
+    bridge_tradier_iv_enabled: bool = True
+    correlation_refresh_enabled: bool = True
+    etf_refresh_enabled: bool = True
+    quarterly_meta_refresh_enabled: bool = True
+    weekly_meta_refresh_enabled: bool = True
+
     # --- EDGAR Pipeline ---
     edgar_ingestion_enabled: bool = False
     edgar_user_agent_email: str = ""

@@ -630,13 +630,13 @@ Tyche already has substantial data infrastructure the GNN consumes (not rebuilds
 - **Gemini LLM client** — retry, fallback, structured output parsing (reusable for news entity extraction)
 - **Ticker metadata** — market cap, exchange, type, institutional ownership
 
-### Prerequisite: Sector/Industry Data — ✅ PARTIALLY COMPLETE
+### Prerequisite: Sector/Industry Data — ✅ COMPLETE
 
 Sector/industry classification is now populated in `ticker_meta.parquet`:
 
 - ✅ Polygon's ticker reference API provides SIC codes and sector classification — implemented via `sic_sectors.py` (SIC-to-GICS mapping) + `get_batch_ticker_details_concurrent()` + `_backfill_sic_data()`. Run `python scripts/ingest_data.py --sector` to backfill. Sector is displayed as a filterable column on all conviction/dashboard pages.
-- ETF constituent lists (SPY, QQQ, SMH, SOXX, XLK, XLF, etc.) need ingestion — PENDING
-- ETF weight data available from ETF providers — PENDING
+- ✅ ETF constituent lists (SPY, QQQ, DIA, XLK, XLF, XLE, XLV, SMH, SOXX, XLI) — static curated lists in `etf_constituents.py` + yfinance weights via `ETFConstituentStore`. Ingest: `ingest_data.py --etf`. Automated quarterly.
+- ✅ ETF weight data from yfinance `funds_data.top_holdings` — merged with static lists during `build_etf_data()`. Quarterly refresh scheduled.
 
 ---
 
@@ -702,9 +702,11 @@ This gives you a fresh candidate every week without the risk of silent degradati
 ### Pre-work (Week 0): Data Foundation — ✅ COMPLETE
 
 - ✅ Ingest sector/industry classification from Polygon into ticker metadata — SIC code mapping via `sic_sectors.py`, backfill via `ingest_data.py --sector`, sector column on all conviction/dashboard pages with filterable dropdown
-- Ingest ETF constituent lists (SPY, QQQ, SMH, SOXX, XLK, XLF, etc.) — PENDING
-- Build stock-to-stock rolling correlation matrix from existing OHLCV — PENDING
+- ✅ Ingest ETF constituent lists (SPY, QQQ, SMH, SOXX, XLK, XLF, etc.) — static curated lists in `etf_constituents.py` + yfinance weights via `ETFConstituentStore`. 10 ETFs, ~400 unique tickers. Ingest: `ingest_data.py --etf`
+- ✅ Build stock-to-stock rolling correlation matrix from existing OHLCV — `CorrelationStore` with 60d rolling pairwise correlations (top-20 peers) + SPY/QQQ betas. Strict backward-looking windows (leakage prevention). Ingest: `ingest_data.py --correlations`
 - ✅ Add ML package to the backend codebase — `xgboost>=2.1` + `scikit-learn>=1.5` as optional `[ml]` dependency group
+- ✅ ETF + correlation features integrated into ML pipeline — 7 ETF features (`etf_membership_count`, `in_spy`, `in_qqq`, `in_dia`, `spy_weight`, `qqq_weight`, `max_etf_weight`) + 5 correlation features (`spy_beta_60d`, `qqq_beta_60d`, `top_peer_corr_mean/max/min`). Auto-included in `build_dataset()` and `get_feature_columns()`
+- ✅ **All pre-work data pipelines fully automated via APScheduler.** ETF refresh: quarterly (Mar/Jun/Sep/Dec 1st, 03:00 ET). Correlation refresh: monthly (28th, 22:00 ET). Conviction batch: daily (16:08 ET, after OHLCV refresh). Bridge Tradier IV: daily (16:45 ET, after options snapshot). Weekly ticker meta refresh (Sundays 02:00 ET). Quarterly sector/institutional refresh (Mar/Jun/Sep/Dec 1st, 03:30 ET). ML retrain now includes ETF + correlation features. See `docs/data-operations.md` for full runbook.
 
 ### Phase 1 (Weeks 1-3): News Pipeline + EDGAR Pipeline + Intelligence Dashboard — ✅ COMPLETE
 
@@ -752,14 +754,44 @@ This gives you a fresh candidate every week without the risk of silent degradati
 - Graceful degradation: when no model artifact exists, `csp_safety_prob = None` everywhere; deterministic conviction pipeline unchanged
 - 22 new unit tests for model_store, inference, and conviction plumbing
 
-**Baseline results (3.38M rows, 8,188 tickers, 2015-2026):**
-- `csp_win_5d`: 88.0% accuracy, 0.914 AUC (single features) — **strong, deployed as Tier 1 signal**
+**Baseline results (3.39M rows, 8,192 tickers, 2015-12-18 → 2026-04-13, 39 walk-forward windows):**
+- `csp_win_5d`: 88.0% accuracy, 0.915 AUC (single features) — **strong, deployed as Tier 1 signal**
 - `csp_win_14d`: 76.2% accuracy, 0.827 AUC
 - `pullback_recovery_5d`: 87.3% accuracy, 0.947 AUC
-- Neighbor-aggregated features did NOT improve CSP safety prediction — sector averages are too coarse
+- Neighbor-aggregated features (sector averages) did NOT improve CSP safety: 87.6% accuracy, 0.910 AUC (Δ acc = -0.4pp, Δ AUC = -0.004). Sector averages are too coarse to add signal beyond what per-stock features already capture.
 - Direction models (5d/10d) are weak (~40-43% accuracy) — not actionable
 
-**Deliverables completed:** News + EDGAR intelligence, tabular baselines, XGBoost CSP safety deployed as Tier 1 scoring signal with monthly recalibration. Next step: richer non-GNN relational baselines (ETF, correlation clusters, leader stocks) or Phase 2 GNN for news contagion risk.
+**Top 15 feature importance (single model, averaged across 39 windows):**
+
+| Rank | Feature | Importance |
+|------|---------|-----------|
+| 1 | `price_to_21ema_pct` | 0.5127 |
+| 2 | `rsi_14` | 0.0941 |
+| 3 | `trend_state_ord` | 0.0458 |
+| 4 | `price_to_50ema_pct` | 0.0334 |
+| 5 | `days_above_both_emas` | 0.0270 |
+| 6 | `price_to_8ema_pct` | 0.0249 |
+| 7 | `volatility_20d` | 0.0230 |
+| 8 | `return_10d` | 0.0149 |
+| 9 | `return_1d` | 0.0134 |
+| 10 | `ema_21_slope` | 0.0129 |
+| 11 | `return_20d` | 0.0106 |
+| 12 | `spy_beta_60d` | 0.0095 |
+| 13 | `volume_ratio` | 0.0093 |
+| 14 | `qqq_beta_60d` | 0.0092 |
+| 15 | `sector_encoded` | 0.0089 |
+
+**Relational feature analysis (ETF + correlation, 12 features):**
+- 8.1% share of total feature importance in the single model (6.2% in the neighbor model where sector features compete)
+- SPY/QQQ betas are the most valuable relational features (ranks 12, 14) — high-beta stocks have greater CSP assignment risk
+- ETF membership count (0.0078) and binary membership flags (`in_qqq` 0.0069, `in_spy` 0.0065) provide signal — index constituents show more institutional mean-reversion behavior
+- Peer correlation features (mean/max/min of top-20 correlated peers) add moderate signal (0.0062–0.0075)
+- ETF weight features (`spy_weight`, `qqq_weight`, `max_etf_weight`) are weakest (0.0039–0.0061) — weight granularity doesn't matter as much as binary membership
+- **Bug fix (April 2026):** SPY/QQQ were initially excluded from beta computation because `filter_equity_only()` removed ETFs. Fixed by auto-injecting benchmark tickers into `compute_rolling_correlations()`.
+
+**Key insight:** `price_to_21ema_pct` alone carries 51% of model importance — how far the stock is from its 21-EMA dominates all other signals for predicting 5-day CSP safety. This aligns with the strategy philosophy: the 21-EMA pullback is the primary edge. Relational features (8.1%) contribute real signal but cannot overcome the inherent ceiling of static cross-sectional features applied across 10 years of history. Time-varying graph edges (Phase 2 GNN) are the natural next step to unlock temporal relationship dynamics.
+
+**Phase 1 status: COMPLETE.** All deliverables built and deployed: news/EDGAR intelligence pipelines, tabular XGBoost baselines, CSP safety Tier 1 scoring signal with monthly recalibration, ETF + correlation relational features, and fully automated data operations (see `docs/data-operations.md`). The non-GNN relational baseline has reached its ceiling at ~88% accuracy, establishing the bar that Phase 2 GNN must beat.
 
 ### Phase 2 (Weeks 4-6): Static Heterogeneous Graph + Prediction Journal
 
