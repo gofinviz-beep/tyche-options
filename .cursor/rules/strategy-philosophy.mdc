@@ -33,13 +33,61 @@ Backtest results on $4B+ market cap stocks (2024-2026 data):
 - 8-EMA pullbacks outperform 21-EMA pullbacks for CSPs
 - Larger market cap stocks consistently show higher win rates
 
+## Path C — Deep Dip + Covered Call (Stock Buy Strategy)
+
+The "other side of the coin" — instead of selling puts near support, **buy the stock** when it has overshot to the downside and sell **covered calls** during recovery.
+
+### Entry Conditions
+- Stock in `OVERSOLD_21EMA` or `OVERSOLD_50EMA` trend state
+- Price ≥ 5% below the reference EMA (`oversold_dip_pct_21ema`, `oversold_dip_pct_50ema`)
+- **Prior streak** ≥ 10 days above both EMAs before the dip started (`oversold_min_prior_uptrend`)
+- 50-EMA slope > -0.3 (not a chronic decline — the drop is recent/sudden)
+- Market cap ≥ $10B (mega/large-cap recovery candidates)
+- Gate flow: Trend State → 50-EMA Slope Guard → Prior Uptrend Streak
+
+### Oversold Detection Logic
+- `OVERSOLD_21EMA`: price ≥ 5% below 21-EMA, below both 8 and 21 EMAs, 50-EMA slope not chronically negative
+- `OVERSOLD_50EMA`: price ≥ 5% below 50-EMA AND below the 50-EMA, 50-EMA slope not chronically negative
+- **Chronic decline guard**: if 50-EMA slope < -0.3, the stock is in a persistent downtrend (not an oversold recovery candidate) → stays `DOWNTREND`
+
+### Dual-Return Strategy
+1. **Buy stock** at the deep dip (stock is at a discount to quality)
+2. **Sell covered calls** at strike above entry (e.g. 5% above entry, 14-21 DTE)
+3. **Roll CCs** every expiration until recovery or stop-loss
+4. **Exit**: Price recovers above 21-EMA (profit target), or stop-loss at 15% below entry, or max 60-day hold
+
+### Why Deep Dip + CC Works
+- Quality large-caps that dip on market fear, sector rotation, or earnings overreaction tend to recover
+- The covered call adds income while waiting (theta decay works in your favor)
+- CC premium partially offsets drawdown during recovery period
+- Example: GOOG dipped to $273 on March 30, 2026 (well below 21/50 EMA), recovered past $315
+
+### Conviction for Oversold States
+| Level | Conditions |
+|-------|-----------|
+| high | `OVERSOLD_50EMA` + prior streak ≥ 10 |
+| medium | `OVERSOLD_50EMA` + prior streak 5-9, or `OVERSOLD_21EMA` + prior streak ≥ 10 |
+| low | `OVERSOLD_21EMA` + prior streak 5-9 |
+| none | `OVERSOLD_21EMA` + prior streak < 5 (weak prior uptrend) |
+
+### RSI Scoring for Oversold States
+For oversold states, the RSI sweet spot shifts lower (deeper oversold = more recovery conviction):
+- RSI ≤ 30: full 0.10 RSI component (deeply oversold — mean-reversion likely)
+- RSI 30-40: linear decay from 0.10
+- RSI > 40: 0.0 (not actually oversold per RSI)
+
+### Backtest Script
+`cd backend && python scripts/backtest_deep_dip.py` — measures recovery rates, stock-only vs stock+CC returns, breakdowns by dip depth, RSI, market cap, volume spike.
+
 ## Conviction Ranking (Highest to Lowest)
 
 1. `PULLBACK_TO_21EMA` + volume declining + rising 21-EMA slope → **high**
 2. `PULLBACK_TO_21EMA` + rising 21-EMA slope → **medium**
 3. `PULLBACK_TO_8EMA` + rising 21-EMA slope → **medium**
-4. `STRONG_UPTREND` with 5+ day streak → **high** (uptrend path)
-5. `UPTREND` with rising 21-EMA slope → **medium** (uptrend path)
+4. `OVERSOLD_50EMA` + prior streak ≥ 10 → **high** (deep dip path)
+5. `OVERSOLD_21EMA` + prior streak ≥ 10 → **medium** (deep dip path)
+6. `STRONG_UPTREND` with 5+ day streak → **high** (uptrend path)
+7. `UPTREND` with rising 21-EMA slope → **medium** (uptrend path)
 
 Within the same conviction level, pullback CSPs are sorted first (safer per backtest data), with prior streak as tiebreaker (longer prior uptrend = stronger setup).
 
@@ -51,7 +99,7 @@ A numerical quality score computed per ticker in `ConvictionFeatureEngine`. Disp
 
 | Component | Weight | Formula |
 |---|---|---|
-| **trend_base** | 0.00–0.35 | `STRONG_UPTREND=0.35`, `PULLBACK_TO_21EMA=0.30`, `PULLBACK_TO_8EMA=0.25`, `UPTREND=0.20`, `CONSOLIDATION=0.05` |
+| **trend_base** | 0.00–0.35 | `STRONG_UPTREND=0.35`, `PULLBACK_TO_21EMA=0.30`, `OVERSOLD_50EMA=0.30`, `OVERSOLD_21EMA=0.25`, `PULLBACK_TO_8EMA=0.25`, `UPTREND=0.20`, `CONSOLIDATION=0.05` |
 | **streak** | 0.00–0.20 | `min(1, streak / 15) × 0.20` — prior streak (pullback) or days-above (uptrend), capped at 15d |
 | **slope** | 0.00–0.10 | `min(1, 21-EMA slope / 0.5) × 0.10` — steeper = stronger |
 | **volume** | 0 or 0.05 | 0.05 if pullback with declining volume, else 0 |
@@ -109,6 +157,47 @@ IV Rank and VRP are computed from historical options data and displayed in the c
   Only strikes between this floor and the support EMA are considered (no ITM puts).
 - **Uptrend CSPs:** Strike within `strike_range_pct` (15%) below 8-EMA, with `near_21ema` bonus.
 
+## Deep Dip Recovery Strategy (Buy + Covered Call)
+
+Complementary strategy to CSP pullbacks. When quality stocks dip **below** their 21-EMA or 50-EMA (OVERSOLD states), buy shares and sell covered calls for dual returns (stock appreciation + premium).
+
+### Backtest-Validated Thresholds
+
+Validated on 176K deep dip rows (2015–2026, $1B+ cap, 60%+ institutional ownership):
+
+| Condition | Threshold | Purpose |
+|---|---|---|
+| RSI(14) | 30–50 | Stabilization sweet spot — below 30 is still falling, above 50 is not dipping |
+| 21-EMA slope | > -0.5 | Trend not structurally broken before the dip |
+| Concurrent dips | ≥ 100 stocks | Broad market selloff (not stock-specific) |
+| Market cap | ≥ $20B | Mega-cap recovery reliability |
+| Dip classification | Low/medium risk | No insider cluster selling, no extreme news-driven |
+
+### Recovery Probability (from backtest)
+
+| Filter Combination | R20d | R40d |
+|---|---|---|
+| All thresholds met | ~55–58% | ~73–75% |
+| RSI + slope + (broad OR large cap) | ~45–52% | ~60–70% |
+| Baseline (no filters) | ~42% | ~58% |
+
+### Key Findings
+
+- **Per-ticker modeling does NOT work.** Recovery tendencies are not persistent per ticker (correlation 0.025 between first/second half). Market context dominates.
+- **Broad selloff is the strongest signal.** 100+ concurrent dips = market-driven pullback, not company-specific fundamental issue. Recovery rates jump 13pp.
+- **RSI 30–50 outperforms RSI 20–30.** Deeply oversold stocks (RSI < 30) are still in free fall; RSI 30–50 indicates stabilization.
+- **XGBoost AUC ceiling is ~0.67** for this task (even with market context features). Rule-based thresholds outperform the ML model for this specific signal.
+
+### Covered Call Guidance
+
+- All thresholds met: 14–30 DTE, strike near 21-EMA (aggressive — expect recovery)
+- Partially met: 21–45 DTE, strike below 21-EMA (conservative — slower recovery)
+- Not actionable: skip — baseline 42% recovery is a coin flip
+
+### Signal Flow
+
+`GET /stocks/deep-dips` → `_compute_market_context()` (SPY state + concurrent dips) → `_assess_recovery_signal()` (5 threshold checks per ticker) → `RecoverySignalResponse` with actionable/meets_all_thresholds flags → frontend sorted actionable-first.
+
 ## Assignment Philosophy
 
 If assigned on a pullback CSP, the stock was bought at 5% below a rising EMA on a quality large-cap name — exactly where we'd want to own it anyway. Enter the wheel: sell covered calls on the assigned shares.
@@ -156,6 +245,9 @@ The MILP allocator adds a mega-cap preference: `cap_w = 1.0 + 0.1 × min(1.0, ma
 | `min_days_above_emas` | `5` | Min streak for uptrend path (Gate 3a) |
 | `max_days_above_emas` | `10` | Max streak for uptrend path (Gate 3a) |
 | `csp_max_rsi` | `0.0` | RSI overbought gate (0 = disabled; e.g. 70 blocks RSI > 70) |
+| `oversold_dip_pct_21ema` | `5.0` | Min % below 21-EMA for oversold detection |
+| `oversold_dip_pct_50ema` | `5.0` | Min % below 50-EMA for oversold detection |
+| `oversold_min_prior_uptrend` | `10` | Min prior uptrend days for oversold conviction |
 | `min_scan_dte` | `5` | Min DTE for expiration targeting |
 | `target_dte_sweet_spot` | `14` | Preferred DTE for expiration selection |
 | `csp_min_bid` | `0.50` | Min bid per share for CSP candidates |
@@ -165,3 +257,6 @@ The MILP allocator adds a mega-cap preference: `cap_w = 1.0 + 0.1 × min(1.0, ma
 | `ml_retrain_enabled` | `true` | Enable monthly XGBoost model retraining |
 | `ml_retrain_day_of_month` | `1` | Day of month for scheduled retrain |
 | `ml_retrain_time` | `"02:00"` | Time (ET) for scheduled retrain |
+| `flatfile_ingest_enabled` | `true` | Enable nightly S3 options flat file ingest |
+| `flatfile_ingest_time` | `"02:00"` | Time (ET) for nightly flat file download |
+| `flatfile_ingest_min_market_cap` | `1000000000` | Min market cap ($1B) for flat file universe |

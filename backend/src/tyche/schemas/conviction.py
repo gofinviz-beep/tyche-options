@@ -173,6 +173,13 @@ class OrderIntentListResponse(BaseModel):
 # ── Data Store ──────────────────────────────────────────────────────────
 
 
+class ConvictionVersionResponse(BaseModel):
+    """Cache version info — cheap query for frontend staleness checks."""
+
+    last_computed_at: str | None = None
+    as_of_date: str | None = None
+
+
 class DataStoreStatusResponse(BaseModel):
     """Status of the local OHLCV data store."""
 

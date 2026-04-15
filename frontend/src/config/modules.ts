@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   TrendingUp,
+  TrendingDown,
   BookOpen,
   LayoutDashboard,
   Search,
@@ -56,6 +57,7 @@ export const modules: AppModule[] = [
     pages: [
       { path: "", label: "Dashboard", icon: LayoutDashboard },
       { path: "/conviction", label: "Conviction", icon: BarChart3 },
+      { path: "/deep-dips", label: "Deep Dips", icon: TrendingDown },
       { path: "/history", label: "History", icon: Clock },
     ],
   },

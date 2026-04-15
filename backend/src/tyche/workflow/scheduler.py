@@ -240,6 +240,33 @@ class WorkflowScheduler:
         self._jobs["ml_retrain"] = job.id
         logger.info("scheduled_ml_retrain", day=day, time=f"{hour:02d}:{minute:02d} ET")
 
+    def schedule_flatfile_ingest(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 2,
+        minute: int = 0,
+    ) -> None:
+        """Schedule nightly S3 flat file options ingest (default 2:00 AM ET).
+
+        Downloads the previous trading day's options flat file from Massive S3,
+        persists to OptionsHistoryStore, extracts ATM IV, and recomputes
+        derived metrics (IV Rank, VRP). Runs daily including weekends
+        (the job itself skips non-trading days via the completed-dates check).
+        """
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="flatfile_ingest",
+            replace_existing=True,
+            name="S3 Flatfile Options Ingest",
+        )
+        self._jobs["flatfile_ingest"] = job.id
+        logger.info("scheduled_flatfile_ingest", time=f"{hour:02d}:{minute:02d} ET")
+
     def schedule_conviction_batch(
         self,
         func: Callable[..., Coroutine[Any, Any, Any]],

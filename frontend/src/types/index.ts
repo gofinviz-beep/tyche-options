@@ -855,3 +855,80 @@ export interface InsiderTransaction {
   shares_owned_after: number;
   acquisition_or_disposition: string;
 }
+
+// ── Deep Dip (Oversold Recovery) ─────────────────────────────────────
+
+export interface DipClassification {
+  catalyst: string;
+  risk_level: string;
+  reasons: string[];
+  actionable: boolean;
+  news_impact_score: number | null;
+  negative_news_count: number;
+  insider_cluster_sell: boolean;
+  last_8k_impact: number | null;
+}
+
+export interface MarketContext {
+  concurrent_dips: number;
+  total_universe: number;
+  market_dip_breadth: number;
+  spy_return_5d: number | null;
+  spy_drawdown_from_high: number | null;
+  spy_rsi_14: number | null;
+  is_broad_selloff: boolean;
+}
+
+export interface RecoverySignal {
+  actionable: boolean;
+  recovery_20d_est: string;
+  recovery_40d_est: string;
+  meets_all_thresholds: boolean;
+  threshold_checks: string[];
+  suggested_cc_dte: string;
+  peak_recovery_est: string;
+}
+
+export interface DeepDipAlert {
+  ticker: string;
+  alert_type: "oversold_21ema" | "oversold_50ema";
+  severity: "info" | "high";
+  trend_state: string;
+  conviction_level: string;
+  last_close: number;
+  ema_8: number;
+  ema_21: number;
+  ema_50: number;
+  ema_8_slope: number;
+  ema_21_slope: number;
+  ema_50_slope: number;
+  rsi_14: number;
+  prior_streak: number;
+  dip_pct: number;
+  price_to_21ema_pct: number;
+  price_to_50ema_pct: number;
+  iv_rank: number | null;
+  vrp: number | null;
+  conviction_score: number;
+  volume_declining: boolean;
+  institutional_pct: number | null;
+  suggested_action: string;
+  position_size_hint: "standard" | "large";
+  stop_loss_level: number;
+  market_cap: number | null;
+  market_cap_label: string;
+  sector: string | null;
+  name: string;
+  dip_classification: DipClassification | null;
+  recovery_signal: RecoverySignal | null;
+  detected_at: string;
+}
+
+export interface DeepDipScanResult {
+  alerts: DeepDipAlert[];
+  total_analyzed: number;
+  total_oversold: number;
+  total_actionable: number;
+  market_context: MarketContext | null;
+  as_of_date: string;
+}

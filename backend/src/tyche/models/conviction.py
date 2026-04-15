@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, Index, Integer, String
+from sqlalchemy import Boolean, Date, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tyche.persistence.database import Base
@@ -59,6 +59,8 @@ class ConvictionSnapshot(Base):
     conviction_score: Mapped[float] = mapped_column(Float, default=0.0)
     csp_safety_prob: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
+    gate_results_json: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     def to_dict(self) -> dict:
@@ -90,6 +92,7 @@ class ConvictionSnapshot(Base):
             "vrp": round(self.vrp, 4) if self.vrp is not None else None,
             "conviction_score": round(self.conviction_score or 0.0, 3),
             "csp_safety_prob": round(self.csp_safety_prob, 4) if self.csp_safety_prob is not None else None,
+            "gate_results_json": self.gate_results_json,
             "computed_at": self.computed_at.isoformat() if self.computed_at else None,
         }
 

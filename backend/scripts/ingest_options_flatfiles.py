@@ -71,6 +71,8 @@ MIN_MARKET_CAP = 1_000_000_000
 TARGET_DTE = 30
 DTE_TOLERANCE = 5
 CSV_CHUNK_SIZE = 500_000
+MAX_MONEYNESS_PCT = 15.0
+MAX_IV = 3.0
 
 
 # ── logging ──────────────────────────────────────────────────────────
@@ -259,12 +261,19 @@ def _extract_atm_iv_from_history(
     ticker: str,
     target_dte: int = TARGET_DTE,
     dte_tolerance: int = DTE_TOLERANCE,
+    max_moneyness_pct: float = MAX_MONEYNESS_PCT,
+    max_iv: float = MAX_IV,
 ) -> int:
     """Extract ATM put IV from stored options history for one ticker.
 
     For each trading day, selects the nearest-ATM put with DTE closest
     to ``target_dte``, computes IV via Black-Scholes, and writes to
     ``HistoricalIVStore``.
+
+    Skips dates where the nearest available strike is more than
+    ``max_moneyness_pct`` from the underlying (data too sparse for
+    reliable ATM IV).  Caps IV at ``max_iv`` (300%) to reject
+    Black-Scholes artefacts from deep-OTM / low-DTE residual prices.
 
     Returns number of IV data points written.
     """
@@ -312,6 +321,10 @@ def _extract_atm_iv_from_history(
         if option_close <= 0 or dte <= 0:
             continue
 
+        moneyness_pct = abs(strike - underlying_close) / underlying_close * 100
+        if moneyness_pct > max_moneyness_pct:
+            continue
+
         iv = compute_iv(
             option_price=option_close,
             underlying_price=underlying_close,
@@ -319,7 +332,7 @@ def _extract_atm_iv_from_history(
             dte=dte,
         )
 
-        if math.isnan(iv):
+        if math.isnan(iv) or iv > max_iv:
             continue
 
         iv_records.append(

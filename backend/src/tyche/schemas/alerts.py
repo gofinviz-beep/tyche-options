@@ -96,6 +96,91 @@ class StockBuyRecommendationResponse(BaseModel):
     created_at: str
 
 
+class DipClassificationResponse(BaseModel):
+    """API response for a dip catalyst classification."""
+
+    catalyst: str
+    risk_level: str
+    reasons: list[str]
+    actionable: bool
+    news_impact_score: float | None = None
+    negative_news_count: int = 0
+    insider_cluster_sell: bool = False
+    last_8k_impact: float | None = None
+
+
+class MarketContextResponse(BaseModel):
+    """Market-wide context at the time of the dip scan."""
+
+    concurrent_dips: int = 0
+    total_universe: int = 0
+    market_dip_breadth: float = 0.0
+    spy_return_5d: float | None = None
+    spy_drawdown_from_high: float | None = None
+    spy_rsi_14: float | None = None
+    is_broad_selloff: bool = False
+
+
+class RecoverySignalResponse(BaseModel):
+    """Backtest-validated recovery probability assessment."""
+
+    actionable: bool = False
+    recovery_20d_est: str = "unknown"
+    recovery_40d_est: str = "unknown"
+    meets_all_thresholds: bool = False
+    threshold_checks: list[str] = []
+    suggested_cc_dte: str = ""
+    peak_recovery_est: str = ""
+
+
+class DeepDipAlertResponse(BaseModel):
+    """API response for an oversold / deep dip stock buy candidate."""
+
+    ticker: str
+    alert_type: str
+    severity: str
+    trend_state: str
+    conviction_level: str
+    last_close: float
+    ema_8: float
+    ema_21: float
+    ema_50: float = 0.0
+    ema_8_slope: float = 0.0
+    ema_21_slope: float = 0.0
+    ema_50_slope: float = 0.0
+    rsi_14: float = 0.0
+    prior_streak: int = 0
+    dip_pct: float = 0.0
+    price_to_21ema_pct: float = 0.0
+    price_to_50ema_pct: float = 0.0
+    iv_rank: float | None = None
+    vrp: float | None = None
+    conviction_score: float = 0.0
+    volume_declining: bool = False
+    institutional_pct: float | None = None
+    suggested_action: str = ""
+    position_size_hint: str = "standard"
+    stop_loss_level: float = 0.0
+    market_cap: float | None = None
+    market_cap_label: str = ""
+    sector: str | None = None
+    name: str = ""
+    dip_classification: DipClassificationResponse | None = None
+    recovery_signal: RecoverySignalResponse | None = None
+    detected_at: str = ""
+
+
+class DeepDipScanResponse(BaseModel):
+    """Full response for a deep dip oversold scan."""
+
+    alerts: list[DeepDipAlertResponse]
+    total_analyzed: int
+    total_oversold: int = 0
+    total_actionable: int = 0
+    market_context: MarketContextResponse | None = None
+    as_of_date: str
+
+
 class CSPFallbackAlertResponse(BaseModel):
     """API response for a CSP expiry fallback alert."""
 

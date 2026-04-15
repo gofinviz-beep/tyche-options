@@ -10,6 +10,8 @@ Label definitions:
     stayed above the strike.
   - pullback_recovery_{horizon}: Did price close above the support EMA
     within {horizon} trading days?
+  - deep_dip_recovery_{horizon}: Did price recover above the 21-EMA
+    within {horizon} trading days? For oversold/deep-dip entries.
   - forward_return_{horizon}: Percentage return over the next {horizon}
     trading days.
   - max_drawdown_{horizon}: Maximum intra-period drawdown (close-to-low)
@@ -26,8 +28,10 @@ import structlog
 logger = structlog.get_logger()
 
 LABEL_HORIZONS: list[int] = [5, 10, 14, 20]
+DEEP_DIP_RECOVERY_HORIZONS: list[int] = [10, 20, 40]
 CSP_DTE_LIST: list[int] = [5, 14]
 CSP_STRIKE_OFFSET: float = 0.05
+RECOVERY_MAGNITUDE_HORIZONS: list[int] = [10, 20, 40, 60]
 
 
 def _forward_min_low(
@@ -77,6 +81,8 @@ def compute_labels(
     if support_ema is None:
         support_ema = close.ewm(span=21, adjust=False).mean()
 
+    ema_21 = close.ewm(span=21, adjust=False).mean()
+
     labels = pd.DataFrame(index=ohlcv.index)
 
     for h in LABEL_HORIZONS:
@@ -110,6 +116,34 @@ def compute_labels(
                 recovered.iloc[i] = float((fwd_slice > ema_val).any())
         labels[f"pullback_recovery_{h}d"] = recovered
 
+    for h in DEEP_DIP_RECOVERY_HORIZONS:
+        recovered = pd.Series(np.nan, index=ohlcv.index)
+        for i in range(len(close) - h):
+            fwd_slice = close.iloc[i + 1 : i + 1 + h]
+            ema_val = ema_21.iloc[i]
+            if pd.notna(ema_val) and len(fwd_slice) == h:
+                recovered.iloc[i] = float((fwd_slice > ema_val).any())
+        labels[f"deep_dip_recovery_{h}d"] = recovered
+
+    for h in RECOVERY_MAGNITUDE_HORIZONS:
+        fwd_max = _forward_max_close(close, h)
+        labels[f"peak_recovery_pct_{h}d"] = (fwd_max - close) / close * 100
+        fwd_close_h = close.shift(-h)
+        labels[f"close_return_pct_{h}d"] = (fwd_close_h - close) / close * 100
+
+    first_above = pd.Series(np.nan, index=ohlcv.index, dtype=float)
+    n = len(close)
+    max_horizon = max(RECOVERY_MAGNITUDE_HORIZONS)
+    for i in range(n - 1):
+        ema_val = ema_21.iloc[i]
+        if pd.isna(ema_val):
+            continue
+        for j in range(1, min(max_horizon + 1, n - i)):
+            if close.iloc[i + j] > ema_val:
+                first_above.iloc[i] = float(j)
+                break
+    labels["days_to_ema_recovery"] = first_above
+
     return labels
 
 
@@ -127,6 +161,8 @@ def compute_labels_vectorized(
 
     if support_ema is None:
         support_ema = close.ewm(span=21, adjust=False).mean()
+
+    ema_21 = close.ewm(span=21, adjust=False).mean()
 
     labels = pd.DataFrame(index=ohlcv.index)
 
@@ -158,5 +194,31 @@ def compute_labels_vectorized(
             fwd_max_close > support_ema
         ).astype(float)
         labels.loc[fwd_max_close.isna(), f"pullback_recovery_{h}d"] = np.nan
+
+    for h in DEEP_DIP_RECOVERY_HORIZONS:
+        fwd_max_close = _forward_max_close(close, h)
+        labels[f"deep_dip_recovery_{h}d"] = (
+            fwd_max_close > ema_21
+        ).astype(float)
+        labels.loc[fwd_max_close.isna(), f"deep_dip_recovery_{h}d"] = np.nan
+
+    for h in RECOVERY_MAGNITUDE_HORIZONS:
+        fwd_max = _forward_max_close(close, h)
+        labels[f"peak_recovery_pct_{h}d"] = (fwd_max - close) / close * 100
+        fwd_close_h = close.shift(-h)
+        labels[f"close_return_pct_{h}d"] = (fwd_close_h - close) / close * 100
+
+    first_above = pd.Series(np.nan, index=ohlcv.index, dtype=float)
+    n = len(close)
+    max_horizon = max(RECOVERY_MAGNITUDE_HORIZONS)
+    for i in range(n - 1):
+        ema_val = ema_21.iloc[i]
+        if pd.isna(ema_val):
+            continue
+        for j in range(1, min(max_horizon + 1, n - i)):
+            if close.iloc[i + j] > ema_val:
+                first_above.iloc[i] = float(j)
+                break
+    labels["days_to_ema_recovery"] = first_above
 
     return labels

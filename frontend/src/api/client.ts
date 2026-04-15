@@ -105,6 +105,10 @@ export const api = {
   },
 
   conviction: {
+    getVersion: () =>
+      request<{ last_computed_at: string | null; as_of_date: string | null }>(
+        "/conviction/version",
+      ),
     getStatus: () =>
       request<import("@/types").DataStoreStatus>("/conviction/status"),
     bootstrap: (days = 120) =>
@@ -230,6 +234,8 @@ export const api = {
         `/stocks/csp-expiries/${encodeURIComponent(ticker)}`,
         { method: "DELETE" },
       ),
+    getDeepDips: () =>
+      request<import("@/types").DeepDipScanResult>("/stocks/deep-dips"),
     getConvictionSnapshots: (asOfDate?: string) => {
       const params = asOfDate ? `?as_of_date=${asOfDate}` : "";
       return request<import("@/types").ConvictionSnapshot[]>(

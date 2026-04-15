@@ -25,6 +25,8 @@ _TREND_STATE_ORD: dict[str, int] = {
     TrendState.PULLBACK_TO_8EMA.value: 3,
     TrendState.PULLBACK_TO_21EMA.value: 4,
     TrendState.STRONG_UPTREND.value: 5,
+    TrendState.OVERSOLD_21EMA.value: 6,
+    TrendState.OVERSOLD_50EMA.value: 7,
 }
 
 FEATURE_COLS: list[str] = [
@@ -86,6 +88,15 @@ CORRELATION_FEATURE_COLS: list[str] = [
     "top_peer_corr_mean",
     "top_peer_corr_max",
     "top_peer_corr_min",
+]
+
+MARKET_CONTEXT_COLS: list[str] = [
+    "concurrent_dips",
+    "spy_return_5d",
+    "spy_return_10d",
+    "spy_drawdown_from_high",
+    "spy_rsi_14",
+    "market_dip_breadth",
 ]
 
 
@@ -160,6 +171,10 @@ def _classify_trend_vec(
     pct_to_8: pd.Series,
     pct_to_21: pd.Series,
     proximity_pct: float = 2.0,
+    pct_to_50: pd.Series | None = None,
+    ema_50: pd.Series | None = None,
+    oversold_dip_21: float = 5.0,
+    oversold_dip_50: float = 5.0,
 ) -> pd.Series:
     """Vectorised trend-state classification matching ConvictionFeatureEngine."""
     above_8 = close > ema_8
@@ -188,7 +203,26 @@ def _classify_trend_vec(
     )
     result[pullback_21_below] = TrendState.PULLBACK_TO_21EMA.value
 
-    downtrend = ~above_8 & ~above_21 & ~pullback_21_below
+    below_both = ~above_8 & ~above_21 & ~pullback_21_below
+
+    if ema_50 is not None:
+        slope_50_series = _slope_series(ema_50, 3)
+        not_chronic = slope_50_series > -0.3
+    else:
+        not_chronic = pd.Series(False, index=close.index)
+
+    if pct_to_50 is not None and ema_50 is not None:
+        above_50 = close > ema_50
+        oversold_50 = below_both & ~above_50 & (pct_to_50 <= -oversold_dip_50) & not_chronic
+        result[oversold_50] = TrendState.OVERSOLD_50EMA.value
+        oversold_21 = below_both & ~oversold_50 & (pct_to_21 <= -oversold_dip_21) & not_chronic
+        result[oversold_21] = TrendState.OVERSOLD_21EMA.value
+        downtrend = below_both & ~oversold_50 & ~oversold_21
+    else:
+        oversold_21 = below_both & (pct_to_21 <= -oversold_dip_21) & not_chronic
+        result[oversold_21] = TrendState.OVERSOLD_21EMA.value
+        downtrend = below_both & ~oversold_21
+
     result[downtrend] = TrendState.DOWNTREND.value
 
     return result
@@ -250,6 +284,8 @@ def extract_ticker_features(
         close, ema_8, ema_21,
         df["ema_8_slope"], df["ema_21_slope"],
         df["price_to_8ema_pct"], df["price_to_21ema_pct"],
+        pct_to_50=df["price_to_50ema_pct"],
+        ema_50=ema_50,
     )
     df["trend_state"] = trend
     df["trend_state_ord"] = trend.map(_TREND_STATE_ORD).fillna(0).astype(int)
@@ -418,6 +454,72 @@ def add_correlation_features(
         df["top_peer_corr_mean"] = np.nan
         df["top_peer_corr_max"] = np.nan
         df["top_peer_corr_min"] = np.nan
+
+    return df
+
+
+def add_market_context_features(
+    all_features: pd.DataFrame,
+    spy_ohlcv: pd.DataFrame | None = None,
+    dip_threshold_pct: float = -5.0,
+    date_col: str = "date",
+) -> pd.DataFrame:
+    """Add market-wide context features: concurrent dip count and SPY state.
+
+    These are cross-sectional features computed per date across all tickers.
+    They capture whether a dip is stock-specific or part of a broad selloff,
+    which is the strongest predictor of recovery probability.
+
+    Args:
+        all_features: Full dataset with all tickers and dates.
+        spy_ohlcv: SPY OHLCV DataFrame (date, close, high, low).
+        dip_threshold_pct: price_to_21ema_pct threshold to count as "dipping".
+        date_col: Name of the date column.
+    """
+    if all_features.empty:
+        for col in MARKET_CONTEXT_COLS:
+            if col not in all_features.columns:
+                all_features[col] = np.nan
+        return all_features
+
+    df = all_features.copy()
+
+    is_dipping = df["price_to_21ema_pct"] <= dip_threshold_pct
+    df["_is_dipping"] = is_dipping.astype(int)
+
+    date_aggs = df.groupby(date_col).agg(
+        concurrent_dips=("_is_dipping", "sum"),
+        _total_tickers=("_is_dipping", "count"),
+    ).reset_index()
+    date_aggs["market_dip_breadth"] = date_aggs["concurrent_dips"] / date_aggs["_total_tickers"]
+    date_aggs.drop(columns=["_total_tickers"], inplace=True)
+
+    df = df.merge(date_aggs, on=date_col, how="left")
+    df.drop(columns=["_is_dipping"], inplace=True)
+
+    if spy_ohlcv is not None and not spy_ohlcv.empty:
+        spy = spy_ohlcv.copy().sort_values("date").reset_index(drop=True)
+        spy_close = spy["close"].astype(float)
+
+        spy["spy_return_5d"] = spy_close.pct_change(5)
+        spy["spy_return_10d"] = spy_close.pct_change(10)
+
+        rolling_high = spy_close.rolling(50, min_periods=10).max()
+        spy["spy_drawdown_from_high"] = (spy_close - rolling_high) / rolling_high
+
+        spy["spy_rsi_14"] = _rsi_series(spy_close, 14)
+
+        spy["date_key"] = pd.to_datetime(spy["date"]).dt.date
+        df["date_key"] = pd.to_datetime(df[date_col]).dt.date
+
+        spy_cols = spy[["date_key", "spy_return_5d", "spy_return_10d",
+                        "spy_drawdown_from_high", "spy_rsi_14"]].drop_duplicates("date_key")
+        df = df.merge(spy_cols, on="date_key", how="left")
+        df.drop(columns=["date_key"], inplace=True)
+    else:
+        for col in ["spy_return_5d", "spy_return_10d", "spy_drawdown_from_high", "spy_rsi_14"]:
+            if col not in df.columns:
+                df[col] = np.nan
 
     return df
 

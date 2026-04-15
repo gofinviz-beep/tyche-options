@@ -104,8 +104,13 @@ async def _scheduled_morning_scan() -> None:
 
 
 async def _scheduled_ohlcv_refresh() -> None:
-    """Fetch today's OHLCV data from Polygon after market close."""
+    """Fetch today's OHLCV data from Polygon after market close.
+
+    Invalidates conviction caches so the subsequent conviction batch
+    (scheduled ~6 minutes later) writes fresh data.
+    """
     from tyche.api.deps import get_data_store, get_polygon
+    from tyche.api.routes.conviction import invalidate_conviction_cache
     from tyche.config import get_settings as _gs
     from tyche.market_data.data_store import bootstrap_ohlcv
 
@@ -119,6 +124,7 @@ async def _scheduled_ohlcv_refresh() -> None:
         result = await bootstrap_ohlcv(
             polygon, store, days=5, include_today=True,
         )
+        invalidate_conviction_cache()
         logger.info("scheduled_ohlcv_refresh_complete", **result)
     except Exception:
         logger.error("scheduled_ohlcv_refresh_failed", exc_info=True)
@@ -271,9 +277,80 @@ async def _scheduled_edgar_ingest() -> None:
         logger.error("scheduled_edgar_ingest_failed", exc_info=True)
 
 
+async def _scheduled_flatfile_ingest() -> None:
+    """Download previous day's S3 options flat file and compute IV metrics.
+
+    Runs ingest_options_flatfiles.py as a subprocess with --days-back 3
+    (catches weekends and missed days).  The script's own completed-dates
+    check makes re-runs safe.
+    """
+    import asyncio
+    from pathlib import Path
+
+    from tyche.config import get_settings as _gs
+
+    settings = _gs()
+    if not settings.massive_s3_access_key:
+        logger.warning("flatfile_ingest_skipped_no_s3_credentials")
+        return
+
+    backend_dir = Path(__file__).resolve().parent.parent.parent
+    script = backend_dir / "scripts" / "ingest_options_flatfiles.py"
+    venv_python = backend_dir / ".venv" / "bin" / "python"
+
+    if not script.exists():
+        logger.error("flatfile_ingest_script_not_found", path=str(script))
+        return
+
+    python_bin = str(venv_python) if venv_python.exists() else "python3"
+    min_cap = settings.flatfile_ingest_min_market_cap
+
+    cmd = [
+        python_bin,
+        str(script),
+        "--from-ohlcv",
+        "--include-today",
+        "--days-back", "3",
+        "--concurrency", "8",
+        "--min-market-cap", str(min_cap),
+    ]
+
+    logger.info("flatfile_ingest_starting", cmd=" ".join(cmd))
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(backend_dir),
+        )
+        stdout, _ = await proc.communicate()
+        output = stdout.decode(errors="replace") if stdout else ""
+
+        if proc.returncode == 0:
+            logger.info(
+                "scheduled_flatfile_ingest_complete",
+                returncode=proc.returncode,
+                output_tail=output[-500:] if len(output) > 500 else output,
+            )
+        else:
+            logger.error(
+                "scheduled_flatfile_ingest_failed",
+                returncode=proc.returncode,
+                output_tail=output[-1000:] if len(output) > 1000 else output,
+            )
+    except Exception:
+        logger.error("scheduled_flatfile_ingest_failed", exc_info=True)
+
+
 async def _scheduled_conviction_batch() -> None:
-    """Run conviction batch after daily OHLCV refresh."""
+    """Run conviction batch after daily OHLCV refresh.
+
+    After persisting snapshots, invalidates all conviction-related
+    caches so subsequent requests read fresh data from conviction.db.
+    """
     from tyche.api.deps import get_data_store, get_conviction_engine
+    from tyche.api.routes.conviction import invalidate_conviction_cache
     from tyche.config import get_settings as _gs
     from tyche.market_data.data_store import TickerMetaStore
     from tyche.workflow.conviction_batch import run_conviction_batch
@@ -293,6 +370,11 @@ async def _scheduled_conviction_batch() -> None:
             min_avg_volume=settings.conviction_batch_min_avg_volume,
             retention_days=settings.conviction_snapshot_retention_days,
         )
+
+        # Clear route-level response caches only — the engine's in-memory
+        # cache is warm from the batch and should be preserved for the scanner.
+        invalidate_conviction_cache(clear_engine=False)
+
         logger.info(
             "scheduled_conviction_batch_complete",
             signals=result.signals_computed,
@@ -676,6 +758,7 @@ async def _migrate_conviction_columns() -> None:
         ("conviction_snapshots", "vrp", "REAL DEFAULT NULL"),
         ("conviction_snapshots", "conviction_score", "REAL DEFAULT 0.0"),
         ("conviction_snapshots", "csp_safety_prob", "REAL DEFAULT NULL"),
+        ("conviction_snapshots", "gate_results_json", "TEXT DEFAULT NULL"),
     ]
 
     async with engine.begin() as conn:
@@ -777,6 +860,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             day=settings.ml_retrain_day_of_month,
             hour=retrain_h,
             minute=retrain_m,
+        )
+
+    if settings.flatfile_ingest_enabled and settings.massive_s3_access_key:
+        parts = settings.flatfile_ingest_time.split(":")
+        ff_h = int(parts[0]) if len(parts) >= 1 else 2
+        ff_m = int(parts[1]) if len(parts) >= 2 else 0
+        scheduler.schedule_flatfile_ingest(
+            _scheduled_flatfile_ingest, hour=ff_h, minute=ff_m
         )
 
     if settings.conviction_batch_after_ohlcv:

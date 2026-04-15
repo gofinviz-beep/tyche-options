@@ -1182,15 +1182,18 @@ function CspExpiryTracker() {
   return (
     <Card
       title={
-        <button
+        <div
+          role="button"
+          tabIndex={0}
           onClick={() => setOpen(!open)}
-          className="flex w-full items-center justify-between text-left"
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setOpen(!open); }}
+          className="flex w-full cursor-pointer items-center justify-between text-left"
         >
           <span>CSP Expiry Watchlist</span>
           <span className="text-xs text-gray-400">
             {open ? "▲ Collapse" : "▼ Expand"}
           </span>
-        </button>
+        </div>
       }
       subtitle="Track CSPs that expired worthless for fallback stock buy alerts"
     >

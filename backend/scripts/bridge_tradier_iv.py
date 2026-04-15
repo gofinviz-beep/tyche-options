@@ -36,6 +36,8 @@ logger = structlog.get_logger()
 
 TARGET_DTE = 30
 DTE_TOLERANCE = 15
+MAX_MONEYNESS_PCT = 15.0
+MAX_IV = 3.0
 
 
 def _extract_atm_iv_from_snapshot(
@@ -104,6 +106,13 @@ def _extract_atm_iv_from_snapshot(
     option_close = float(row.get("last", 0) or row.get("mid", 0))
 
     if iv <= 0 or math.isnan(iv) or dte <= 0:
+        return 0
+
+    moneyness_pct = abs(strike - underlying_close) / underlying_close * 100
+    if moneyness_pct > MAX_MONEYNESS_PCT:
+        return 0
+
+    if iv > MAX_IV:
         return 0
 
     iv_store.write_iv_data(ticker, [

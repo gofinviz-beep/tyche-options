@@ -528,6 +528,51 @@ class TestConvictionScore:
         score = compute_conviction_score(sig)
         assert score <= 0.15
 
+    def test_oversold_50ema_scores_reasonably(self):
+        sig = self._base_signal(
+            trend_state=TrendState.OVERSOLD_50EMA,
+            prior_streak=15,
+            rsi_14=25.0,
+            volume_declining_on_pullback=True,
+        )
+        score = compute_conviction_score(sig)
+        assert 0.4 < score <= 1.0
+
+    def test_oversold_21ema_scores_reasonably(self):
+        sig = self._base_signal(
+            trend_state=TrendState.OVERSOLD_21EMA,
+            prior_streak=10,
+            rsi_14=28.0,
+        )
+        score = compute_conviction_score(sig)
+        assert 0.3 < score <= 1.0
+
+    def test_oversold_rsi_sweet_spot(self):
+        """For oversold states, RSI 30-40 is the sweet spot (backtest-validated)."""
+        sweet_spot = compute_conviction_score(
+            self._base_signal(
+                trend_state=TrendState.OVERSOLD_50EMA,
+                rsi_14=35.0,
+                prior_streak=15,
+            )
+        )
+        too_deep = compute_conviction_score(
+            self._base_signal(
+                trend_state=TrendState.OVERSOLD_50EMA,
+                rsi_14=20.0,
+                prior_streak=15,
+            )
+        )
+        mild = compute_conviction_score(
+            self._base_signal(
+                trend_state=TrendState.OVERSOLD_50EMA,
+                rsi_14=45.0,
+                prior_streak=15,
+            )
+        )
+        assert sweet_spot > too_deep
+        assert sweet_spot > mild
+
     def test_trend_state_ordering(self):
         strong = compute_conviction_score(
             self._base_signal(trend_state=TrendState.STRONG_UPTREND, days_above_both_emas=10)

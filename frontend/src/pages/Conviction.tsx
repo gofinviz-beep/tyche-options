@@ -9,6 +9,7 @@ import {
   useUpdateDailyData,
   useConvictionScan,
   useTriggerConvictionScan,
+  useRefreshConviction,
   useNewsSignals,
   useFilingSignals,
 } from "@/hooks/useApi";
@@ -411,6 +412,7 @@ export function Conviction() {
   const bootstrap = useBootstrapData();
   const updateDaily = useUpdateDailyData();
   const manualScan = useTriggerConvictionScan();
+  const refreshMutation = useRefreshConviction();
   const [symbols, setSymbols] = useState("");
   const [showDataStore, setShowDataStore] = useState(false);
   const { data: newsSignals } = useNewsSignals();
@@ -433,10 +435,14 @@ export function Conviction() {
   const autoScan = useConvictionScan(undefined, !!status?.exists);
 
   const scanData = manualScan.data ?? autoScan.data;
-  const scanLoading = manualScan.isPending || autoScan.isLoading;
+  const scanLoading = manualScan.isPending || refreshMutation.isPending || autoScan.isLoading;
 
   const handleScan = () => {
-    manualScan.mutate(symbols || undefined);
+    if (symbols.trim()) {
+      manualScan.mutate(symbols);
+    } else {
+      refreshMutation.mutate();
+    }
   };
 
   const allSignals = scanData?.signals ?? [];
@@ -496,24 +502,28 @@ export function Conviction() {
         <div className="flex items-center gap-3">
           <input
             type="text"
-            placeholder="Enter tickers: AAPL, RIG, NO... (blank = watchlist or full universe)"
+            placeholder="Enter tickers to scan specific symbols, or leave blank to refresh all"
             value={symbols}
             onChange={(e) => setSymbols(e.target.value)}
             className="flex-1 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           <button
             onClick={handleScan}
-            disabled={manualScan.isPending || !storeReady}
+            disabled={manualScan.isPending || refreshMutation.isPending || !storeReady}
             className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
           >
-            {manualScan.isPending ? "Scanning..." : "Run Scan"}
+            {manualScan.isPending || refreshMutation.isPending
+              ? "Refreshing..."
+              : symbols.trim()
+                ? "Scan Tickers"
+                : "Refresh Conviction"}
           </button>
         </div>
       )}
 
-      {manualScan.isError && (
+      {(manualScan.isError || refreshMutation.isError) && (
         <p className="text-sm text-red-600">
-          Scan failed: {manualScan.error.message}
+          Failed: {(manualScan.error ?? refreshMutation.error)?.message}
         </p>
       )}
 

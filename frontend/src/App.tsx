@@ -13,6 +13,7 @@ import { ResearchHome } from "@/pages/research/ResearchHome";
 import { StocksDashboard } from "@/pages/stocks/Dashboard";
 import { StocksConviction } from "@/pages/stocks/Conviction";
 import { ConvictionHistory } from "@/pages/stocks/History";
+import { DeepDipDashboard } from "@/pages/stocks/DeepDips";
 import { IntelligenceDashboard } from "@/pages/intelligence/Dashboard";
 import { IntelligenceNews } from "@/pages/intelligence/News";
 import { IntelligenceFilings } from "@/pages/intelligence/Filings";
@@ -47,6 +48,7 @@ export default function App() {
             <Route path="/stocks/scanner" element={<Navigate to="/stocks" replace />} />
             <Route path="/stocks/conviction" element={<StocksConviction />} />
             <Route path="/stocks/history" element={<ConvictionHistory />} />
+            <Route path="/stocks/deep-dips" element={<DeepDipDashboard />} />
 
             {/* Intelligence module */}
             <Route path="/intelligence" element={<IntelligenceDashboard />} />

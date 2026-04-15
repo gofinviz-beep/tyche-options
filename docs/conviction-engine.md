@@ -44,17 +44,19 @@ These are **not** CSP eligibility gates — they are exposed as filterable colum
 
 ## Trend State Classification
 
-The engine classifies each stock into one of seven states based on price position relative to EMAs and their slopes:
+The engine classifies each stock into one of nine states based on price position relative to EMAs and their slopes:
 
-| State | Condition | CSP Eligible |
-|---|---|---|
-| `strong_uptrend` | Price above both EMAs, both slopes positive, price >1% above 8-EMA | Yes |
-| `uptrend` | Price above both EMAs (not strong) | Yes |
-| `pullback_to_8ema` | Price above 21-EMA but below 8-EMA, within 2% of 8-EMA | Yes |
-| `pullback_to_21ema` | Price near 21-EMA (within 2%), 21-EMA slope positive | Yes |
-| `consolidation` | Price between EMAs but not near either | No |
-| `downtrend` | Price below both EMAs | No |
-| `insufficient_data` | Fewer than 50 bars available | No |
+| State | Condition | CSP Eligible | Deep Dip |
+|---|---|---|---|
+| `strong_uptrend` | Price above both EMAs, both slopes positive, price >1% above 8-EMA | Yes | No |
+| `uptrend` | Price above both EMAs (not strong) | Yes | No |
+| `pullback_to_8ema` | Price above 21-EMA but below 8-EMA, within 2% of 8-EMA | Yes | No |
+| `pullback_to_21ema` | Price near 21-EMA (within 2%), 21-EMA slope positive | Yes | No |
+| `oversold_21ema` | Price ≥ 5% below 21-EMA, 50-EMA slope > -0.3 | No | Yes |
+| `oversold_50ema` | Price ≥ 5% below 50-EMA, 50-EMA slope > -0.3 | No | Yes |
+| `consolidation` | Price between EMAs but not near either | No | No |
+| `downtrend` | Price below both EMAs | No | No |
+| `insufficient_data` | Fewer than 50 bars available | No | No |
 
 ### Classification Logic
 
@@ -240,7 +242,122 @@ If you change any conviction threshold:
 4. Both backtests use `ConvictionEngine` (or `ConvictionFeatureEngine` + `CSPEligibilityPolicy`), so results are production-identical
 5. Feature computation thresholds (`pullback_proximity_pct`, `min_bars`) live in `ConvictionFeatureEngine`. CSP gate thresholds (`max_extension_pct`, `min_days_above_emas`, etc.) live in `CSPEligibilityPolicy`. Config changes to CSP gates take effect on next evaluation without re-running EMA computation (split cache design).
 
-## Disk Cache (ConvictionSignalStore)
+## Deep Dip Recovery Signals
+
+When a stock is in an `OVERSOLD_21EMA` or `OVERSOLD_50EMA` state, the `/stocks/deep-dips` endpoint applies backtest-validated recovery thresholds to assess whether the dip is a buying opportunity:
+
+### Market Context (`_compute_market_context`)
+
+Computed once per scan from SPY OHLCV + universe-wide dip count:
+
+- `concurrent_dips`: number of stocks in the universe currently dipping below EMAs
+- `market_dip_breadth`: concurrent_dips / total_universe
+- `spy_return_5d`, `spy_drawdown_from_high`, `spy_rsi_14`: SPY health metrics
+- `is_broad_selloff`: true when concurrent_dips ≥ 100
+
+### Recovery Assessment (`_assess_recovery_signal`)
+
+Per-ticker, applies 5 threshold checks derived from backtest analysis on 176K deep dip rows:
+
+1. **RSI 30-50** — stabilization sweet spot
+2. **21-EMA slope > -0.5** — trend not structurally broken
+3. **Broad selloff** — 100+ concurrent dips (market-driven, not stock-specific)
+4. **Market cap ≥ $20B** — mega-cap recovery reliability
+5. **Dip classification: low/medium risk** — no insider cluster selling or extreme news
+
+`meets_all_thresholds` = all 5 pass → ~55-58% recovery in 20d, ~73-75% in 40d.
+`actionable` = RSI + slope + risk + (broad OR large cap) → ~45-52% in 20d.
+Neither = baseline ~42% — not compelling, skip.
+
+### Integration with Covered Call Strategy
+
+When actionable, the recovery signal includes `suggested_cc_dte`:
+- All thresholds: 14-30 DTE, strike near 21-EMA (aggressive)
+- Partial: 21-45 DTE, strike below 21-EMA (conservative)
+
+This complements the CSP pipeline — CSPs are sold when stocks are *above* EMAs; deep dip buys + covered calls target stocks *below* EMAs.
+
+## Compute Once, Serve All Day — Caching Architecture
+
+Conviction data is expensive to compute (EMA calculation across 3,500+ tickers, OHLCV Parquet reads) but changes only when new OHLCV data arrives (once daily at 4 PM ET). The system uses a "compute once, serve all day" architecture with `conviction.db` as the source of truth.
+
+### Data Flow
+
+```
+Daily 16:02  OHLCV Refresh (Polygon grouped bars)
+       │
+Daily 16:08  Conviction Batch (run_conviction_batch)
+       │     └─ Computes EMA/RSI/trend for full equity universe
+       │     └─ Upserts results to conviction.db → conviction_snapshots
+       │     └─ Detects transitions → conviction_transitions
+       │     └─ Persists to conviction_signals.parquet
+       │     └─ Clears route-level caches (invalidate_conviction_cache)
+       │     └─ Bumps version (last_computed_at) for frontend polling
+       │
+  All day     Pages read from conviction.db (sub-second)
+              └─ GET /conviction/scan → reads conviction_snapshots
+              └─ GET /stocks/conviction/snapshots → reads conviction_snapshots
+              └─ GET /stocks/deep-dips → in-memory cache by date
+```
+
+### Version-Based Cache Invalidation
+
+The frontend polls `GET /conviction/version` every 5 minutes. This returns `last_computed_at` from `conviction.db`. When the version changes (e.g., after the 16:08 batch completes), the frontend invalidates all conviction-dependent React Query caches, triggering fresh reads from the DB.
+
+```
+Frontend hooks:
+  useConvictionVersion()     → polls every 5 min, invalidates on change
+  useConvictionScan()        → staleTime: Infinity, refetchOnWindowFocus: false
+  useConvictionSnapshots()   → staleTime: Infinity, refetchOnWindowFocus: false
+  useDeepDips()              → staleTime: Infinity, refetchOnWindowFocus: false
+  useActivePullbacks()       → staleTime: Infinity, refetchOnWindowFocus: false
+  useStockRecommendations()  → staleTime: Infinity, refetchOnWindowFocus: false
+```
+
+### Lazy Dependency Resolution (Cold-Start Protection)
+
+On backend restart, the first page load must NOT block on heavy I/O. The conviction routes use lazy dependency resolution — heavy objects (`ConvictionEngine`, `OHLCVStore`) are only initialized if the fast DB/cache path misses:
+
+```python
+# routes/conviction.py — GET /conviction/scan
+async def scan_conviction(
+    settings = Depends(get_settings),        # lightweight
+    meta_store = Depends(get_ticker_meta_store),  # lightweight
+    # NOTE: no Depends(get_conviction_engine) or Depends(get_data_store)
+):
+    # Fast path: read from conviction.db (sub-second)
+    response = await _build_scan_from_db(...)
+    if response is not None:
+        return response  # <-- returns here on warm DB, no heavy I/O
+
+    # Slow path: only reached if DB is empty or force=True
+    store = get_data_store(settings)      # NOW we initialize OHLCVStore
+    engine = get_conviction_engine(settings)  # NOW we initialize engine
+    # ... full live compute ...
+```
+
+Without this, `Depends(get_data_store)` eagerly calls `OHLCVStore.__init__()` which triggers `read_all()` (13,000+ Parquet files, 30-40s blocking I/O), stalling the entire uvicorn event loop even when `conviction.db` has fresh data.
+
+### Cache Layers
+
+| Layer | Location | Eviction | Purpose |
+|---|---|---|---|
+| 1. In-memory feature cache | `ConvictionFeatureEngine._cache` | OHLCV date change or `reset_all()` | Per-ticker `FeatureSignal` keyed by `(ticker, as_of_date)` |
+| 2. In-memory derived cache | `_derived_cache` | `reset_all()` | IV Rank/VRP batch data |
+| 3. Parquet signal store | `conviction_signals.parquet` | `reset_all()` | Warm-on-restart for feature engine |
+| 4. SQLite snapshots | `conviction.db` → `conviction_snapshots` | Never evicted (upsert on each batch) | **Source of truth** for all page loads |
+| 5. Route-level caches | `_scan_cache`, `_deep_dip_cache` | Conviction batch completion | Serialized API responses for instant re-serve |
+
+### What Triggers Invalidation
+
+| Event | Layers Cleared | Trigger |
+|---|---|---|
+| OHLCV refresh (16:02) | All (1-5) via `deps.reset_all()` | New price data arrived |
+| Conviction batch (16:08) | 5 only (route caches) | Batch writes fresh snapshots to Layer 4 |
+| Config change (Settings UI) | All (1-5) via `deps.reset_all()` | User changed thresholds |
+| Manual "Refresh Conviction" button | 5 only, then triggers batch | User requests re-scan |
+
+### Disk Cache (ConvictionSignalStore)
 
 Feature signals are optionally persisted to `data/conviction_signals.parquet` via the `ConvictionSignalStore`:
 

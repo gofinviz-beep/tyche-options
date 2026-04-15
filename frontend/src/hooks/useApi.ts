@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 
@@ -127,6 +128,46 @@ export function usePreviewOrder() {
 
 // --- Conviction hooks ---
 
+/**
+ * Polls the conviction cache version endpoint every 5 minutes.
+ * When last_computed_at changes, invalidates all conviction-dependent queries
+ * so they re-fetch from the (now-fresh) backend cache.
+ */
+export function useConvictionVersion() {
+  const queryClient = useQueryClient();
+  const prevComputedAt = useRef<string | null>(null);
+
+  const query = useQuery({
+    queryKey: ["conviction", "version"],
+    queryFn: api.conviction.getVersion,
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  useEffect(() => {
+    const computedAt = query.data?.last_computed_at ?? null;
+    if (
+      computedAt &&
+      prevComputedAt.current !== null &&
+      computedAt !== prevComputedAt.current
+    ) {
+      queryClient.invalidateQueries({ queryKey: ["conviction", "scan"] });
+      queryClient.invalidateQueries({
+        queryKey: ["stocks", "conviction-snapshots"],
+      });
+      queryClient.invalidateQueries({ queryKey: ["stocks", "deep-dips"] });
+      queryClient.invalidateQueries({ queryKey: ["stocks", "pullbacks"] });
+      queryClient.invalidateQueries({
+        queryKey: ["stocks", "recommendations"],
+      });
+    }
+    prevComputedAt.current = computedAt;
+  }, [query.data?.last_computed_at, queryClient]);
+
+  return query;
+}
+
 export function useDataStoreStatus() {
   return useQuery({
     queryKey: ["conviction", "status"],
@@ -159,8 +200,9 @@ export function useConvictionScan(symbols?: string, autoRun = false) {
     queryKey: ["conviction", "scan", symbols],
     queryFn: () => api.conviction.scan(symbols),
     enabled: autoRun,
-    staleTime: 5 * 60 * 1000,
-    gcTime: 10 * 60 * 1000,
+    staleTime: Infinity,
+    gcTime: 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -188,7 +230,9 @@ export function useActivePullbacks() {
   return useQuery({
     queryKey: ["stocks", "pullbacks"],
     queryFn: api.stocks.getActivePullbacks,
-    refetchInterval: 60_000,
+    staleTime: Infinity,
+    gcTime: 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -196,7 +240,9 @@ export function useStockRecommendations() {
   return useQuery({
     queryKey: ["stocks", "recommendations"],
     queryFn: api.stocks.getRecommendations,
-    refetchInterval: 60_000,
+    staleTime: Infinity,
+    gcTime: 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -269,6 +315,19 @@ export function useConvictionSnapshots(asOfDate?: string) {
   return useQuery({
     queryKey: ["stocks", "conviction-snapshots", asOfDate],
     queryFn: () => api.stocks.getConvictionSnapshots(asOfDate),
+    staleTime: Infinity,
+    gcTime: 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useDeepDips() {
+  return useQuery({
+    queryKey: ["stocks", "deep-dips"],
+    queryFn: () => api.stocks.getDeepDips(),
+    staleTime: Infinity,
+    gcTime: 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 }
 

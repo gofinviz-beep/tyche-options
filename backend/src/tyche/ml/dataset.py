@@ -20,6 +20,7 @@ from tyche.ml.features import (
     FEATURE_COLS,
     add_correlation_features,
     add_etf_features,
+    add_market_context_features,
     add_neighbor_features,
     build_sector_map,
     extract_ticker_features,
@@ -40,6 +41,7 @@ def build_dataset(
     include_neighbors: bool = True,
     include_etf: bool = True,
     include_correlation: bool = True,
+    include_market_context: bool = True,
     max_tickers: int | None = None,
 ) -> pd.DataFrame:
     """Build the full tabular dataset from on-disk stores.
@@ -164,6 +166,19 @@ def build_dataset(
         except Exception:
             logger.warning("correlation_features_failed", exc_info=True)
             dataset = add_correlation_features(dataset, correlation_store=None)
+
+    if include_market_context:
+        try:
+            spy_ohlcv = ohlcv_store.read_ticker(
+                "SPY", start_date=start_date, end_date=end_date,
+            )
+            dataset = add_market_context_features(
+                dataset, spy_ohlcv=spy_ohlcv,
+            )
+            logger.info("market_context_features_added")
+        except Exception:
+            logger.warning("market_context_features_failed", exc_info=True)
+            dataset = add_market_context_features(dataset, spy_ohlcv=None)
 
     elapsed = time.time() - t0
     logger.info(

@@ -177,6 +177,11 @@ class TycheSettings(BaseModel):
     max_days_above_emas: int = 10
     bootstrap_days: int = 120
 
+    # --- Deep Dip / Oversold Detection ---
+    oversold_dip_pct_21ema: float = 5.0
+    oversold_dip_pct_50ema: float = 5.0
+    oversold_min_prior_uptrend: int = 10
+
     # --- CSP RSI Gate ---
     csp_max_rsi: float = 0.0  # 0 = disabled; e.g. 70 blocks overbought tickers
 
@@ -314,6 +319,9 @@ class TycheSettings(BaseModel):
     ml_retrain_time: str = "02:00"
 
     # --- Automated Data Pipelines ---
+    flatfile_ingest_enabled: bool = True
+    flatfile_ingest_time: str = "02:00"
+    flatfile_ingest_min_market_cap: float = 1_000_000_000
     conviction_batch_after_ohlcv: bool = True
     bridge_tradier_iv_enabled: bool = True
     correlation_refresh_enabled: bool = True

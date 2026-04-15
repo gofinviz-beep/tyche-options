@@ -298,6 +298,9 @@ def get_feature_engine(
             pullback_proximity_pct=settings.pullback_proximity_pct,
             signal_store=signal_store,
             derived_store=derived,
+            oversold_dip_pct_21ema=settings.oversold_dip_pct_21ema,
+            oversold_dip_pct_50ema=settings.oversold_dip_pct_50ema,
+            oversold_min_prior_uptrend=settings.oversold_min_prior_uptrend,
         )
         logger.info(
             "feature_engine_initialized",
@@ -371,6 +374,9 @@ def get_conviction_engine(
             signal_store=signal_store,
             derived_store=derived,
             csp_predictor=predictor,
+            oversold_dip_pct_21ema=settings.oversold_dip_pct_21ema,
+            oversold_dip_pct_50ema=settings.oversold_dip_pct_50ema,
+            oversold_min_prior_uptrend=settings.oversold_min_prior_uptrend,
         )
         logger.info(
             "conviction_engine_initialized",
@@ -525,13 +531,11 @@ def reset_all() -> None:
     global _edgar_client, _filing_8k_store, _insider_tx_store
     global _csp_predictor
 
-    if _conviction_engine is not None:
-        _conviction_engine.invalidate_cache()
-    elif _feature_engine is not None:
-        _feature_engine.invalidate_cache()
-
     from tyche.api.routes.conviction import invalidate_conviction_cache
-    invalidate_conviction_cache()
+    invalidate_conviction_cache(clear_engine=True)
+
+    if _feature_engine is not None and _conviction_engine is None:
+        _feature_engine.invalidate_cache()
 
     _broker_instance = None
     _gemini_instance = None

@@ -759,6 +759,47 @@ class TickerMetaStore:
         df = df.dropna(subset=["sector"])
         return dict(zip(df["ticker"], df["sector"]))
 
+    def get_names(self, tickers: list[str] | None = None) -> dict[str, str]:
+        """Return a ticker -> name mapping from persisted data."""
+        if not self.exists:
+            return {}
+
+        try:
+            df = pd.read_parquet(self._parquet_path, columns=["ticker", "name"])
+        except Exception:
+            return {}
+        if tickers:
+            df = df[df["ticker"].isin(tickers)]
+        df = df.dropna(subset=["name"])
+        return dict(zip(df["ticker"], df["name"]))
+
+    def get_meta_batch(self, tickers: list[str]) -> dict[str, dict]:
+        """Return a ticker -> {market_cap, exchange, name, sector} mapping.
+
+        Vectorized — reads only the columns needed, filters to the
+        requested tickers, and converts NaN to None for Pydantic compat.
+        """
+        if not self.exists or not tickers:
+            return {}
+
+        cols = ["ticker", "market_cap", "exchange", "name", "sector"]
+        try:
+            df = pd.read_parquet(self._parquet_path, columns=cols)
+        except Exception:
+            return {}
+
+        df = df[df["ticker"].isin(tickers)]
+
+        result: dict[str, dict] = {}
+        for row in df.itertuples(index=False):
+            result[row.ticker] = {
+                "market_cap": None if pd.isna(row.market_cap) else row.market_cap,
+                "exchange": row.exchange if pd.notna(row.exchange) else "",
+                "name": row.name if pd.notna(row.name) else "",
+                "sector": None if pd.isna(row.sector) else row.sector,
+            }
+        return result
+
     def update_sic_data(
         self, sic_data: dict[str, tuple[str, str, str | None]]
     ) -> int:

@@ -12,8 +12,10 @@ import pytest
 from tyche.ml.features import (
     CORRELATION_FEATURE_COLS,
     ETF_FEATURE_COLS,
+    MARKET_CONTEXT_COLS,
     add_correlation_features,
     add_etf_features,
+    add_market_context_features,
 )
 
 
@@ -144,13 +146,69 @@ class TestFeatureColumnLists:
         assert len(CORRELATION_FEATURE_COLS) == 5
         assert "spy_beta_60d" in CORRELATION_FEATURE_COLS
 
+    def test_market_context_cols_defined(self):
+        assert len(MARKET_CONTEXT_COLS) == 6
+        assert "concurrent_dips" in MARKET_CONTEXT_COLS
+        assert "spy_drawdown_from_high" in MARKET_CONTEXT_COLS
+
     def test_no_overlap_with_feature_cols(self):
         from tyche.ml.features import FEATURE_COLS, NEIGHBOR_FEATURE_COLS
 
         all_existing = set(FEATURE_COLS + NEIGHBOR_FEATURE_COLS)
-        new_cols = set(ETF_FEATURE_COLS + CORRELATION_FEATURE_COLS)
+        new_cols = set(ETF_FEATURE_COLS + CORRELATION_FEATURE_COLS + MARKET_CONTEXT_COLS)
         overlap = all_existing & new_cols
         assert overlap == set(), f"Column name collision: {overlap}"
+
+
+class TestAddMarketContextFeatures:
+    def _make_df_with_ema(self):
+        rows = []
+        for ticker in ["AAPL", "MSFT", "NVDA"]:
+            for i in range(5):
+                rows.append({
+                    "ticker": ticker,
+                    "date": date(2026, 1, 1 + i),
+                    "price_to_21ema_pct": -6.0 if ticker != "NVDA" else 2.0,
+                })
+        return pd.DataFrame(rows)
+
+    def test_no_spy_fills_nan(self):
+        df = self._make_df_with_ema()
+        result = add_market_context_features(df, spy_ohlcv=None)
+        assert "spy_return_5d" in result.columns
+        assert result["spy_return_5d"].isna().all()
+        assert "concurrent_dips" in result.columns
+        assert not result["concurrent_dips"].isna().any()
+
+    def test_concurrent_dips_counted(self):
+        df = self._make_df_with_ema()
+        result = add_market_context_features(df, spy_ohlcv=None)
+        row = result[result["date"] == date(2026, 1, 1)].iloc[0]
+        assert row["concurrent_dips"] == 2
+
+    def test_market_dip_breadth(self):
+        df = self._make_df_with_ema()
+        result = add_market_context_features(df, spy_ohlcv=None)
+        row = result[result["date"] == date(2026, 1, 1)].iloc[0]
+        assert row["market_dip_breadth"] == pytest.approx(2 / 3)
+
+    def test_with_spy_ohlcv(self):
+        df = self._make_df_with_ema()
+        spy = pd.DataFrame({
+            "date": [date(2026, 1, 1 + i) for i in range(20)],
+            "close": [500 - i * 2 for i in range(20)],
+            "high": [505 - i * 2 for i in range(20)],
+            "low": [495 - i * 2 for i in range(20)],
+        })
+        result = add_market_context_features(df, spy_ohlcv=spy)
+        assert "spy_rsi_14" in result.columns
+        assert "spy_drawdown_from_high" in result.columns
+        valid = result["spy_rsi_14"].dropna()
+        assert len(valid) > 0
+
+    def test_empty_df(self):
+        result = add_market_context_features(pd.DataFrame(), spy_ohlcv=None)
+        assert result.empty
 
 
 class TestGetFeatureColumns:
@@ -162,6 +220,8 @@ class TestGetFeatureColumns:
             assert c in cols
         for c in CORRELATION_FEATURE_COLS:
             assert c in cols
+        for c in MARKET_CONTEXT_COLS:
+            assert c in cols
 
     def test_excludes_when_flags_false(self):
         from tyche.ml.xgb_baseline import get_feature_columns
@@ -170,10 +230,13 @@ class TestGetFeatureColumns:
             include_neighbors=False,
             include_etf=False,
             include_correlation=False,
+            include_market_context=False,
         )
         for c in ETF_FEATURE_COLS:
             assert c not in cols
         for c in CORRELATION_FEATURE_COLS:
+            assert c not in cols
+        for c in MARKET_CONTEXT_COLS:
             assert c not in cols
 
     def test_includes_all(self):
@@ -184,6 +247,11 @@ class TestGetFeatureColumns:
             include_neighbors=True,
             include_etf=True,
             include_correlation=True,
+            include_market_context=True,
         )
-        total = len(FEATURE_COLS) + len(NEIGHBOR_FEATURE_COLS) + len(ETF_FEATURE_COLS) + len(CORRELATION_FEATURE_COLS)
+        total = (
+            len(FEATURE_COLS) + len(NEIGHBOR_FEATURE_COLS)
+            + len(ETF_FEATURE_COLS) + len(CORRELATION_FEATURE_COLS)
+            + len(MARKET_CONTEXT_COLS)
+        )
         assert len(cols) == total

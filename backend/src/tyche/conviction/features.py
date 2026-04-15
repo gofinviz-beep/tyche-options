@@ -25,12 +25,14 @@ logger = structlog.get_logger()
 
 
 class TrendState(str, Enum):
-    """Stock trend classification based on 8/21 EMA position."""
+    """Stock trend classification based on 8/21/50 EMA position."""
 
     STRONG_UPTREND = "strong_uptrend"
     UPTREND = "uptrend"
     PULLBACK_TO_8EMA = "pullback_to_8ema"
     PULLBACK_TO_21EMA = "pullback_to_21ema"
+    OVERSOLD_21EMA = "oversold_21ema"
+    OVERSOLD_50EMA = "oversold_50ema"
     CONSOLIDATION = "consolidation"
     DOWNTREND = "downtrend"
     INSUFFICIENT_DATA = "insufficient_data"
@@ -88,6 +90,7 @@ class FeatureSignal:
 
     ema_50: float = 0.0
     ema_50_slope: float = 0.0
+    price_to_50ema_pct: float = 0.0
     rsi_14: float = 0.0
 
     iv_rank: float | None = None
@@ -121,6 +124,7 @@ class FeatureSignal:
             "as_of_date": self.as_of_date.isoformat() if self.as_of_date else None,
             "ema_50": round(self.ema_50, 4),
             "ema_50_slope": round(self.ema_50_slope, 6),
+            "price_to_50ema_pct": round(self.price_to_50ema_pct, 2),
             "rsi_14": round(self.rsi_14, 2),
             "iv_rank": round(self.iv_rank, 1) if self.iv_rank is not None else None,
             "iv_percentile": round(self.iv_percentile, 1) if self.iv_percentile is not None else None,
@@ -132,6 +136,8 @@ class FeatureSignal:
 _TREND_BASE: dict[TrendState, float] = {
     TrendState.STRONG_UPTREND: 0.35,
     TrendState.PULLBACK_TO_21EMA: 0.30,
+    TrendState.OVERSOLD_50EMA: 0.30,
+    TrendState.OVERSOLD_21EMA: 0.25,
     TrendState.PULLBACK_TO_8EMA: 0.25,
     TrendState.UPTREND: 0.20,
     TrendState.CONSOLIDATION: 0.05,
@@ -158,15 +164,28 @@ def compute_conviction_score(sig: FeatureSignal) -> float:
         TrendState.PULLBACK_TO_8EMA,
         TrendState.PULLBACK_TO_21EMA,
     )
-    streak_raw = sig.prior_streak if is_pullback else sig.days_above_both_emas
+    is_oversold = sig.trend_state in (
+        TrendState.OVERSOLD_21EMA,
+        TrendState.OVERSOLD_50EMA,
+    )
+    streak_raw = sig.prior_streak if (is_pullback or is_oversold) else sig.days_above_both_emas
     streak = min(1.0, streak_raw / 15) * 0.20
 
     slope = min(1.0, max(0.0, sig.ema_21_slope) / 0.5) * 0.10
 
-    volume = 0.05 if (is_pullback and sig.volume_declining_on_pullback) else 0.0
+    volume = 0.05 if ((is_pullback or is_oversold) and sig.volume_declining_on_pullback) else 0.0
 
     rsi = sig.rsi_14
-    if 30 <= rsi <= 50:
+    if is_oversold:
+        if 30 <= rsi <= 40:
+            rsi_component = 0.10
+        elif 20 <= rsi < 30:
+            rsi_component = 0.10 * ((rsi - 20) / 10)
+        elif 40 < rsi <= 50:
+            rsi_component = 0.10 * (1.0 - (rsi - 40) / 10)
+        else:
+            rsi_component = 0.0
+    elif 30 <= rsi <= 50:
         rsi_component = 0.10
     elif 50 < rsi <= 70:
         rsi_component = 0.10 * (1.0 - (rsi - 50) / 20)
@@ -249,6 +268,10 @@ class ConvictionFeatureEngine:
         min_bars: int = 50,
         signal_store: Any | None = None,
         derived_store: Any | None = None,
+        *,
+        oversold_dip_pct_21ema: float = 5.0,
+        oversold_dip_pct_50ema: float = 5.0,
+        oversold_min_prior_uptrend: int = 10,
     ) -> None:
         self._fast = ema_fast
         self._slow = ema_slow
@@ -256,6 +279,9 @@ class ConvictionFeatureEngine:
         self._min_bars = min_bars
         self._signal_store = signal_store
         self._derived_store = derived_store
+        self._oversold_dip_21 = oversold_dip_pct_21ema
+        self._oversold_dip_50 = oversold_dip_pct_50ema
+        self._oversold_min_prior = oversold_min_prior_uptrend
 
         self._cache: dict[str, FeatureSignal] = {}
         self._cache_date: str | None = None
@@ -328,6 +354,7 @@ class ConvictionFeatureEngine:
 
         price_to_8 = ((last_close - last_ema_8) / last_ema_8 * 100) if last_ema_8 else 0
         price_to_21 = ((last_close - last_ema_21) / last_ema_21 * 100) if last_ema_21 else 0
+        price_to_50 = ((last_close - last_ema_50) / last_ema_50 * 100) if last_ema_50 else 0
 
         avg_vol_20 = int(volume.iloc[-20:].mean()) if len(volume) >= 20 else int(volume.mean())
 
@@ -346,15 +373,23 @@ class ConvictionFeatureEngine:
         trend_state = self._classify_trend(
             last_close, last_ema_8, last_ema_21,
             ema_8_slope, ema_21_slope, price_to_8, price_to_21,
+            pct_to_50=price_to_50, ema_50=last_ema_50,
+            slope_50=ema_50_slope,
         )
 
         prior_streak_val = 0
-        if trend_state in (TrendState.PULLBACK_TO_8EMA, TrendState.PULLBACK_TO_21EMA):
+        if trend_state in (
+            TrendState.PULLBACK_TO_8EMA,
+            TrendState.PULLBACK_TO_21EMA,
+            TrendState.OVERSOLD_21EMA,
+            TrendState.OVERSOLD_50EMA,
+        ):
             prior_streak_val = self._compute_prior_streak(above_both)
 
         raw_conviction = self._assess_conviction(
             trend_state, ema_8_slope, ema_21_slope,
             pullback_declining, streak,
+            prior_streak=prior_streak_val,
         )
 
         as_of = raw_as_of
@@ -382,6 +417,7 @@ class ConvictionFeatureEngine:
             as_of_date=as_of,
             ema_50=last_ema_50,
             ema_50_slope=ema_50_slope,
+            price_to_50ema_pct=price_to_50,
             rsi_14=rsi_14,
             iv_rank=iv_metrics.get("iv_rank"),
             iv_percentile=iv_metrics.get("iv_percentile"),
@@ -492,13 +528,21 @@ class ConvictionFeatureEngine:
             streak = int(row["days_above_both_emas"])
             prior_streak_val = int(row["prior_streak"])
 
+            ema_50_val = float(row.get("ema_50", 0.0))
+            price_to_50_val = float(row.get("price_to_50ema_pct", 0.0))
+
+            ema_50_slope_val = float(row.get("ema_50_slope", 0.0))
+
             trend_state = self._classify_trend(
                 last_close, ema_8, ema_21,
                 ema_8_slope, ema_21_slope, price_to_8, price_to_21,
+                pct_to_50=price_to_50_val, ema_50=ema_50_val,
+                slope_50=ema_50_slope_val,
             )
             raw_conviction = self._assess_conviction(
                 trend_state, ema_8_slope, ema_21_slope,
                 pullback_declining, streak,
+                prior_streak=prior_streak_val,
             )
 
             def _opt_float(val: Any) -> float | None:
@@ -525,6 +569,7 @@ class ConvictionFeatureEngine:
                 as_of_date=as_of,
                 ema_50=float(row.get("ema_50", 0.0)),
                 ema_50_slope=float(row.get("ema_50_slope", 0.0)),
+                price_to_50ema_pct=float(row.get("price_to_50ema_pct", 0.0)),
                 rsi_14=float(row.get("rsi_14", 0.0)),
                 iv_rank=_opt_float(row.get("iv_rank")),
                 iv_percentile=_opt_float(row.get("iv_percentile")),
@@ -555,10 +600,21 @@ class ConvictionFeatureEngine:
         slope_21: float,
         pct_to_8: float,
         pct_to_21: float,
+        pct_to_50: float = 0.0,
+        ema_50: float = 0.0,
+        slope_50: float = 0.0,
     ) -> TrendState:
-        """Classify the current trend state based on price vs EMAs."""
+        """Classify the current trend state based on price vs EMAs.
+
+        Oversold states require the stock to be significantly below EMAs
+        (beyond the proximity band), distinguishing recoverable dips from
+        shallow pullbacks. The 50-EMA slope guards against chronic declines:
+        a sudden dip from uptrend keeps the 50-EMA slope near zero or positive,
+        while a chronic decline has a strongly negative 50-EMA slope.
+        """
         above_8 = price > ema_8
         above_21 = price > ema_21
+        above_50 = price > ema_50 if ema_50 > 0 else True
         both_slopes_up = slope_8 > 0 and slope_21 > 0
 
         if above_8 and above_21:
@@ -577,6 +633,11 @@ class ConvictionFeatureEngine:
             return TrendState.PULLBACK_TO_21EMA
 
         if not above_8 and not above_21:
+            not_chronic = slope_50 > -0.3
+            if not above_50 and pct_to_50 <= -self._oversold_dip_50 and not_chronic:
+                return TrendState.OVERSOLD_50EMA
+            if pct_to_21 <= -self._oversold_dip_21 and not_chronic:
+                return TrendState.OVERSOLD_21EMA
             return TrendState.DOWNTREND
 
         return TrendState.CONSOLIDATION
@@ -588,6 +649,7 @@ class ConvictionFeatureEngine:
         slope_21: float,
         vol_declining: bool,
         streak: int,
+        prior_streak: int = 0,
     ) -> str:
         """Map trend state to raw conviction level (data-derived, no policy)."""
         match state:
@@ -603,6 +665,18 @@ class ConvictionFeatureEngine:
                 return "low"
             case TrendState.PULLBACK_TO_8EMA:
                 return "medium" if slope_21 > 0 else "low"
+            case TrendState.OVERSOLD_50EMA:
+                if prior_streak >= self._oversold_min_prior:
+                    return "high"
+                if prior_streak >= 5:
+                    return "medium"
+                return "low"
+            case TrendState.OVERSOLD_21EMA:
+                if prior_streak >= self._oversold_min_prior:
+                    return "medium"
+                if prior_streak >= 5:
+                    return "low"
+                return "none"
             case TrendState.CONSOLIDATION:
                 return "low"
             case TrendState.DOWNTREND | TrendState.INSUFFICIENT_DATA:

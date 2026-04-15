@@ -46,6 +46,7 @@ from tyche.ml.features import (
     CORRELATION_FEATURE_COLS,
     ETF_FEATURE_COLS,
     FEATURE_COLS,
+    MARKET_CONTEXT_COLS,
     NEIGHBOR_FEATURE_COLS,
 )
 
@@ -220,6 +221,7 @@ def get_feature_columns(
     include_neighbors: bool = False,
     include_etf: bool = True,
     include_correlation: bool = True,
+    include_market_context: bool = True,
 ) -> list[str]:
     """Return the feature column list for the specified model variant."""
     cols = list(FEATURE_COLS)
@@ -229,6 +231,8 @@ def get_feature_columns(
         cols.extend(ETF_FEATURE_COLS)
     if include_correlation:
         cols.extend(CORRELATION_FEATURE_COLS)
+    if include_market_context:
+        cols.extend(MARKET_CONTEXT_COLS)
     return cols
 
 

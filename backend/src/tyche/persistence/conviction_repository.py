@@ -5,6 +5,7 @@ Operates against conviction.db via the 'conviction' engine.
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 
 import structlog
@@ -38,6 +39,13 @@ async def upsert_snapshots(
     now = datetime.now(timezone.utc)
     rows = []
     for sig in signals:
+        gate_json = None
+        if sig.gate_results:
+            gate_json = json.dumps(
+                [g.to_dict() for g in sig.gate_results],
+                default=str,
+            )
+
         rows.append({
             "ticker": sig.ticker,
             "as_of_date": sig.as_of_date or as_of_date,
@@ -66,6 +74,7 @@ async def upsert_snapshots(
             "vrp": sig.vrp,
             "conviction_score": sig.conviction_score,
             "csp_safety_prob": sig.csp_safety_prob,
+            "gate_results_json": gate_json,
             "computed_at": now,
         })
 
@@ -76,7 +85,7 @@ async def upsert_snapshots(
         "days_above_both_emas", "prior_streak", "avg_volume_20d", "latest_volume",
         "ema_50", "ema_50_slope", "rsi_14",
         "iv_rank", "iv_percentile", "atm_iv", "vrp", "conviction_score",
-        "csp_safety_prob", "computed_at",
+        "csp_safety_prob", "gate_results_json", "computed_at",
     }
 
     batch_size = 500
@@ -264,6 +273,40 @@ async def get_latest_snapshot_date() -> date | None:
     if isinstance(row, str):
         return date.fromisoformat(row)
     return row
+
+
+async def get_conviction_version() -> dict[str, str | None]:
+    """Return the latest computed_at and as_of_date from conviction_snapshots.
+
+    Single SQL query — extremely cheap (~1ms on SQLite).
+    """
+    async with get_session(DB_NAME) as session:
+        from sqlalchemy import func
+
+        stmt = select(
+            func.max(ConvictionSnapshot.computed_at).label("last_computed_at"),
+            func.max(ConvictionSnapshot.as_of_date).label("as_of_date"),
+        )
+        result = await session.execute(stmt)
+        row = result.one_or_none()
+
+    if row is None:
+        return {"last_computed_at": None, "as_of_date": None}
+
+    computed_at = row.last_computed_at
+    as_of = row.as_of_date
+
+    if computed_at is not None and hasattr(computed_at, "isoformat"):
+        computed_at = computed_at.isoformat()
+    elif computed_at is not None:
+        computed_at = str(computed_at)
+
+    if as_of is not None and hasattr(as_of, "isoformat"):
+        as_of = as_of.isoformat()
+    elif as_of is not None:
+        as_of = str(as_of)
+
+    return {"last_computed_at": computed_at, "as_of_date": as_of}
 
 
 async def cleanup_old_snapshots(retention_days: int = 90) -> int:

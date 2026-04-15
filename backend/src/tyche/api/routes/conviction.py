@@ -1,16 +1,19 @@
 """Conviction engine routes — 8/21 EMA analysis and data store management.
 
-Conviction scans are cached server-side by (latest_ohlcv_date, ticker_set).
-Since OHLCV data only changes once per day, this avoids re-computing EMAs
-for the entire universe on every page visit.  The cache is invalidated
-when new OHLCV data arrives (bootstrap or daily update).
+Primary read path: pre-computed snapshots from conviction.db (written by the
+scheduled conviction batch at 4:08 PM).  Live compute is the fallback when
+no snapshots exist (first startup, manual bootstrap).
+
+The ``/version`` endpoint returns the cache version for frontend staleness
+checks.
 """
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 import structlog
@@ -23,11 +26,18 @@ from tyche.market_data.data_store import OHLCVStore, TickerMetaStore, bootstrap_
 from tyche.market_data.institutional import get_cached_ownership_batch
 from tyche.market_data.polygon import PolygonClient
 from tyche.conviction.engine import TrendState as _TS
+from tyche.models.conviction import ConvictionSnapshot
+from tyche.persistence.conviction_repository import (
+    get_conviction_version,
+    get_latest_snapshot_date,
+    get_snapshots_for_date,
+)
 from tyche.schemas.conviction import (
     BootstrapRequest,
     BootstrapResponse,
     ConvictionScanResponse,
     ConvictionSignalResponse,
+    ConvictionVersionResponse,
     DataStoreStatusResponse,
     GateResultResponse,
     TrendSummary,
@@ -37,27 +47,40 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/conviction", tags=["conviction"])
 
 _scan_cache: dict[str, ConvictionScanResponse] = {}
-_scan_cache_key: str | None = None
+_deep_dip_cache: dict[str, Any] = {}
 
 
-def _make_cache_key(store: OHLCVStore, tickers: list[str]) -> str:
-    _, latest = store.get_date_range()
-    date_str = latest.isoformat() if latest else "none"
-    ticker_hash = hash(frozenset(t.upper() for t in tickers))
-    return f"{date_str}:{ticker_hash}"
+def invalidate_conviction_cache(clear_engine: bool = True) -> None:
+    """Clear all conviction-related response caches across route modules.
 
-
-def invalidate_conviction_cache() -> None:
-    """Clear both the response cache and the engine's per-ticker cache."""
-    global _scan_cache, _scan_cache_key
+    Args:
+        clear_engine: If True, also clear the engine's in-memory EMA cache
+            and on-disk Parquet signal store.  Set to False when the engine
+            cache is known-good (e.g. right after a batch run) and we only
+            want to bust the route-level response caches.
+    """
     _scan_cache.clear()
-    _scan_cache_key = None
 
-    from tyche.api.deps import _conviction_engine
-    if _conviction_engine is not None:
-        _conviction_engine.invalidate_cache()
+    if clear_engine:
+        from tyche.api.deps import _conviction_engine
+        if _conviction_engine is not None:
+            _conviction_engine.invalidate_cache()
 
-    logger.info("conviction_cache_invalidated")
+    from tyche.api.routes.stocks import invalidate_deep_dip_cache
+    invalidate_deep_dip_cache()
+
+    logger.info("conviction_cache_invalidated", clear_engine=clear_engine)
+
+
+@router.get("/version", response_model=ConvictionVersionResponse)
+async def get_version() -> ConvictionVersionResponse:
+    """Return the cache version — last_computed_at and as_of_date.
+
+    Frontend polls this to decide whether its cached data is stale.
+    Extremely cheap: single SQL query against conviction.db.
+    """
+    version = await get_conviction_version()
+    return ConvictionVersionResponse(**version)
 
 
 @router.get("/status", response_model=DataStoreStatusResponse)
@@ -124,27 +147,60 @@ async def scan_conviction(
     symbols: str | None = Query(default=None, description="Comma-separated symbols"),
     limit_per_path: int = Query(default=100, ge=1, le=500, description="Max results per path (Path A, Path B, forming)"),
     force: bool = Query(default=False, description="Bypass cache and recompute"),
-    engine: ConvictionEngine = Depends(get_conviction_engine),
-    store: OHLCVStore = Depends(get_data_store),
     meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
     settings: TycheSettings = Depends(get_settings),
 ) -> ConvictionScanResponse:
-    """Run the conviction engine across the full universe.
+    """Return conviction signals for the full universe.
 
-    Always scans the full screened universe (not limited to watchlist).
-    Watchlist tickers are tagged with ``is_watchlist=true`` for display.
-    Results include both CSP-eligible stocks AND pullback-state stocks
-    (even if not yet eligible) so the user can see opportunities forming.
+    Primary path: read pre-computed snapshots from conviction.db
+    (written by the scheduled batch at 4:08 PM).  This is instant.
 
-    Results are cached by (latest OHLCV date, ticker set).
-    Use ``force=true`` to bypass cache.
+    Fallback: if no snapshots exist for today (or the latest trading day),
+    run live ``analyze_batch`` — identical to the old behavior.
+
+    Heavy dependencies (ConvictionEngine, OHLCVStore.screen_universe) are
+    resolved lazily — only when the DB path misses and live compute is needed.
+    This keeps cold-start page loads under 200ms.
+
+    Use ``force=true`` to bypass the DB path and force live compute.
+    Passing ``symbols=`` always computes live (per-ticker queries
+    don't benefit from the batch cache).
     """
+    specific_symbols = bool(symbols)
+    watchlist_set = frozenset(
+        s.upper() for s in (settings.watchlist_symbols or [])
+    )
+
+    # --- Fast DB path for full-universe scans (no heavy deps needed) ---
+    if not force and not specific_symbols:
+        if _scan_cache:
+            cache_key = next(iter(_scan_cache))
+            logger.info("conviction_scan_cache_hit")
+            return _scan_cache[cache_key]
+
+        response = await _build_scan_from_db(
+            tickers=None,
+            limit_per_path=limit_per_path,
+            watchlist_set=watchlist_set,
+            meta_store=meta_store,
+        )
+        if response is not None:
+            _scan_cache["db"] = response
+            return response
+
+        logger.info("conviction_scan_db_miss_falling_back_to_live")
+
+    # --- Lazily resolve heavy deps only for live compute path ---
+    store = get_data_store(settings)
+    engine = get_conviction_engine(settings)
+
     if not store.exists:
         raise HTTPException(
             status_code=400,
             detail="No OHLCV data. Run POST /conviction/bootstrap first.",
         )
 
+    # --- Resolve ticker list (expensive screen_universe) only for live path ---
     if symbols:
         tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     else:
@@ -154,20 +210,140 @@ async def scan_conviction(
         )
         if meta_store.exists:
             tickers = meta_store.filter_equity_only(tickers)
-        logger.info("conviction_dynamic_discovery", candidates=len(tickers))
 
     if not tickers:
         raise HTTPException(status_code=400, detail="No symbols found after screening.")
 
-    watchlist_set = frozenset(
-        s.upper() for s in (settings.watchlist_symbols or [])
+    # --- Live compute fallback ---
+    return await _live_compute_scan(
+        tickers=tickers,
+        symbols=symbols,
+        limit_per_path=limit_per_path,
+        watchlist_set=watchlist_set,
+        engine=engine,
+        store=store,
+        meta_store=meta_store,
     )
 
-    cache_key = _make_cache_key(store, tickers)
-    if not force and cache_key in _scan_cache:
-        logger.info("conviction_scan_cache_hit", tickers=len(tickers))
-        return _scan_cache[cache_key]
 
+async def _build_scan_from_db(
+    *,
+    tickers: list[str] | None,
+    limit_per_path: int,
+    watchlist_set: frozenset[str],
+    meta_store: TickerMetaStore,
+) -> ConvictionScanResponse | None:
+    """Build a ConvictionScanResponse from conviction.db snapshots.
+
+    Returns None if no snapshots are available (triggers live fallback).
+    When tickers is None, all snapshots for the date are used.
+    """
+    t0 = time.perf_counter()
+
+    target = date.today()
+    snaps = await get_snapshots_for_date(target)
+    if not snaps:
+        latest = await get_latest_snapshot_date()
+        if latest and latest < target:
+            snaps = await get_snapshots_for_date(latest)
+    if not snaps:
+        return None
+
+    if tickers is not None:
+        ticker_set_upper = frozenset(t.upper() for t in tickers)
+        snaps = [s for s in snaps if s.ticker in ticker_set_upper]
+        if not snaps:
+            return None
+
+    pullback_states_str = {"pullback_to_8ema", "pullback_to_21ema"}
+    uptrend_states_str = {"strong_uptrend", "uptrend"}
+
+    trend_counts: dict[str, int] = {}
+    eligible: list[ConvictionSnapshot] = []
+    pullback_all: list[ConvictionSnapshot] = []
+    pullback_eligible: list[ConvictionSnapshot] = []
+    uptrend_eligible: list[ConvictionSnapshot] = []
+
+    for s in snaps:
+        trend_counts[s.trend_state] = trend_counts.get(s.trend_state, 0) + 1
+        if s.csp_eligible:
+            eligible.append(s)
+            if s.trend_state in pullback_states_str:
+                pullback_eligible.append(s)
+            elif s.trend_state in uptrend_states_str:
+                uptrend_eligible.append(s)
+        if s.trend_state in pullback_states_str:
+            pullback_all.append(s)
+
+    conviction_order = {"high": 0, "medium": 1, "low": 2, "none": 3}
+
+    def _snap_sort_key(s: ConvictionSnapshot) -> tuple:
+        return (
+            conviction_order.get(s.conviction_level, 99),
+            -(s.prior_streak or 0),
+            -(s.days_above_both_emas or 0),
+        )
+
+    pullback_not_eligible = [s for s in pullback_all if not s.csp_eligible]
+    pb_sorted = sorted(pullback_eligible, key=_snap_sort_key)[:limit_per_path]
+    up_sorted = sorted(uptrend_eligible, key=_snap_sort_key)[:limit_per_path]
+    forming_sorted = sorted(pullback_not_eligible, key=_snap_sort_key)[:limit_per_path]
+    display_snaps = pb_sorted + up_sorted + forming_sorted
+
+    display_tickers = [s.ticker for s in display_snaps]
+    market_caps = meta_store.get_market_caps(display_tickers) if meta_store.exists else {}
+    inst_persisted = meta_store.get_institutional_pcts(display_tickers) if meta_store.exists else {}
+    inst_cached = get_cached_ownership_batch(display_tickers)
+    inst_ownership = {**inst_persisted, **inst_cached}
+    sectors = meta_store.get_sectors(display_tickers) if meta_store.exists else {}
+
+    signals_resp = [
+        _snapshot_to_signal_response(
+            s,
+            is_watchlist=s.ticker in watchlist_set,
+            market_cap=market_caps.get(s.ticker),
+            institutional_pct=inst_ownership.get(s.ticker),
+            sector=sectors.get(s.ticker),
+        )
+        for s in display_snaps
+    ]
+
+    response = ConvictionScanResponse(
+        scan_id=str(uuid.uuid4()),
+        scanned_at=datetime.now(timezone.utc).isoformat(),
+        total_screened=len(snaps),
+        eligible_count=len(eligible),
+        uptrend_eligible=len(uptrend_eligible),
+        pullback_eligible=len(pullback_eligible),
+        pullback_count=len(pullback_all),
+        trend_summary=TrendSummary(**{
+            k: trend_counts.get(k, 0) for k in TrendSummary.model_fields
+        }),
+        signals=signals_resp,
+    )
+
+    dur_ms = (time.perf_counter() - t0) * 1000
+    logger.info(
+        "conviction_scan_served_from_db",
+        snapshots=len(snaps),
+        eligible=len(eligible),
+        display=len(display_snaps),
+        duration_ms=round(dur_ms, 2),
+    )
+    return response
+
+
+async def _live_compute_scan(
+    *,
+    tickers: list[str],
+    symbols: str | None,
+    limit_per_path: int,
+    watchlist_set: frozenset[str],
+    engine: ConvictionEngine,
+    store: OHLCVStore,
+    meta_store: TickerMetaStore,
+) -> ConvictionScanResponse:
+    """Compute conviction live via analyze_batch (original behavior)."""
     t0 = time.perf_counter()
     ticker_data = store.read_tickers(tickers)
 
@@ -182,7 +358,6 @@ async def scan_conviction(
             detail="No data found for the requested symbols.",
         )
 
-    # --- Trend breakdown ---
     trend_counts: dict[str, int] = {}
     for s in signals:
         trend_counts[s.trend_state.value] = trend_counts.get(s.trend_state.value, 0) + 1
@@ -191,9 +366,7 @@ async def scan_conviction(
     uptrend_states = (_TS.STRONG_UPTREND, _TS.UPTREND)
 
     eligible = [s for s in signals if s.csp_eligible]
-    pullback_all = [
-        s for s in signals if s.trend_state in pullback_states
-    ]
+    pullback_all = [s for s in signals if s.trend_state in pullback_states]
     pullback_eligible_list = [s for s in eligible if s.trend_state in pullback_states]
     uptrend_eligible_list = [s for s in eligible if s.trend_state in uptrend_states]
 
@@ -209,14 +382,10 @@ async def scan_conviction(
     if symbols:
         display_signals = signals
     else:
-        pullback_not_eligible = [
-            s for s in pullback_all if not s.csp_eligible
-        ]
-
+        pullback_not_eligible = [s for s in pullback_all if not s.csp_eligible]
         pb_eligible_sorted = sorted(pullback_eligible_list, key=_sort_key)[:limit_per_path]
         up_eligible_sorted = sorted(uptrend_eligible_list, key=_sort_key)[:limit_per_path]
         pb_forming_sorted = sorted(pullback_not_eligible, key=_sort_key)[:limit_per_path]
-
         display_signals = pb_eligible_sorted + up_eligible_sorted + pb_forming_sorted
 
     display_tickers = [s.ticker for s in display_signals]
@@ -249,15 +418,12 @@ async def scan_conviction(
         ],
     )
 
-    _scan_cache[cache_key] = response
+    _scan_cache["live"] = response
     dur_ms = (time.perf_counter() - t0) * 1000
     logger.info(
-        "conviction_scan_computed_and_cached",
+        "conviction_scan_live_computed",
         tickers=len(tickers),
         eligible=len(eligible),
-        pullback_eligible=len(pullback_eligible_list),
-        pullback_total=len(pullback_all),
-        uptrend_eligible=len(uptrend_eligible_list),
         engine_cache_size=engine.cache_size,
         duration_ms=round(dur_ms, 2),
     )
@@ -345,4 +511,65 @@ def _signal_to_response(
             )
             for g in (s.gate_results or [])
         ],
+    )
+
+
+def _snapshot_to_signal_response(
+    snap: ConvictionSnapshot,
+    *,
+    is_watchlist: bool = False,
+    market_cap: float | None = None,
+    institutional_pct: float | None = None,
+    sector: str | None = None,
+) -> ConvictionSignalResponse:
+    """Convert a persisted ConvictionSnapshot to a ConvictionSignalResponse."""
+    gate_results: list[GateResultResponse] = []
+    if snap.gate_results_json:
+        try:
+            raw_gates = json.loads(snap.gate_results_json)
+            gate_results = [
+                GateResultResponse(
+                    gate=g.get("gate", ""),
+                    passed=g.get("passed", False),
+                    actual=g.get("actual", ""),
+                    threshold=g.get("threshold", ""),
+                    reason=g.get("reason", ""),
+                )
+                for g in raw_gates
+            ]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return ConvictionSignalResponse(
+        ticker=snap.ticker,
+        trend_state=snap.trend_state,
+        conviction_level=snap.conviction_level,
+        csp_eligible=snap.csp_eligible,
+        is_watchlist=is_watchlist,
+        last_close=round(snap.last_close, 2),
+        ema_8=round(snap.ema_8, 4),
+        ema_21=round(snap.ema_21, 4),
+        ema_8_slope=round(snap.ema_8_slope, 6),
+        ema_21_slope=round(snap.ema_21_slope, 6),
+        price_to_8ema_pct=round(snap.price_to_8ema_pct, 2),
+        price_to_21ema_pct=round(snap.price_to_21ema_pct, 2),
+        volume_declining_on_pullback=snap.volume_declining,
+        avg_volume_20d=snap.avg_volume_20d,
+        latest_volume=snap.latest_volume,
+        days_above_both_emas=snap.days_above_both_emas,
+        prior_streak=snap.prior_streak or 0,
+        as_of_date=snap.as_of_date.isoformat() if snap.as_of_date else None,
+        ema_50=round(snap.ema_50 or 0.0, 4),
+        ema_50_slope=round(snap.ema_50_slope or 0.0, 6),
+        rsi_14=round(snap.rsi_14 or 0.0, 2),
+        iv_rank=round(snap.iv_rank, 1) if snap.iv_rank is not None else None,
+        iv_percentile=round(snap.iv_percentile, 1) if snap.iv_percentile is not None else None,
+        atm_iv=round(snap.atm_iv, 4) if snap.atm_iv is not None else None,
+        vrp=round(snap.vrp, 4) if snap.vrp is not None else None,
+        conviction_score=round(snap.conviction_score or 0.0, 3),
+        csp_safety_prob=round(snap.csp_safety_prob, 4) if snap.csp_safety_prob is not None else None,
+        market_cap=market_cap if market_cap and market_cap > 0 else None,
+        institutional_pct=round(institutional_pct, 4) if institutional_pct is not None else None,
+        sector=sector,
+        gate_results=gate_results,
     )

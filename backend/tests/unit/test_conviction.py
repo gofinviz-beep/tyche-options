@@ -108,6 +108,40 @@ class TestConvictionEngine:
         assert signal.conviction_level == "none"
         assert signal.csp_eligible is False
 
+    def test_oversold_after_uptrend(self, engine):
+        """Stock that had a strong uptrend then suddenly dips below EMAs.
+
+        The key: a sharp, sudden drop (not gradual) keeps 21-EMA slope
+        near zero (EMA hasn't caught up), triggering oversold vs downtrend.
+        """
+        prices = _uptrend(65, start=100.0, gain=0.5)
+        peak = prices[-1]
+        for i in range(3):
+            prices.append(peak * (0.92 - i * 0.03))
+        signal = engine.analyze("DIP", _make_ohlcv(prices))
+        assert signal.trend_state in (
+            TrendState.OVERSOLD_21EMA,
+            TrendState.OVERSOLD_50EMA,
+        )
+        assert signal.prior_streak > 0
+        assert signal.price_to_50ema_pct < 0
+
+    def test_oversold_conviction_uses_prior_streak(self, engine):
+        """Oversold states use prior_streak for conviction assessment."""
+        prices = _uptrend(65, start=100.0, gain=0.5)
+        peak = prices[-1]
+        for i in range(3):
+            prices.append(peak * (0.90 - i * 0.03))
+        signal = engine.analyze("DEEP", _make_ohlcv(prices))
+        if signal.trend_state in (TrendState.OVERSOLD_21EMA, TrendState.OVERSOLD_50EMA):
+            assert signal.prior_streak > 0
+            assert signal.raw_conviction != "none"
+
+    def test_chronic_decline_stays_downtrend(self, engine):
+        """Chronic decliner (never in uptrend) should stay DOWNTREND, not oversold."""
+        signal = engine.analyze("DN", _make_ohlcv(_downtrend(80)))
+        assert signal.trend_state == TrendState.DOWNTREND
+
     def test_signal_fields(self, engine):
         signal = engine.analyze("F", _make_ohlcv(_uptrend(80)))
         assert signal.ticker == "F"
@@ -115,6 +149,7 @@ class TestConvictionEngine:
         assert isinstance(signal.ema_21_slope, float)
         assert signal.avg_volume_20d > 0
         assert signal.as_of_date is not None
+        assert isinstance(signal.price_to_50ema_pct, float)
 
     def test_raw_conviction_preserved_on_csp_override(self, engine):
         """raw_conviction keeps genuine assessment even when conviction_level is overridden."""
@@ -489,4 +524,7 @@ class TestTrendState:
             TrendState.CONSOLIDATION, TrendState.DOWNTREND,
             TrendState.INSUFFICIENT_DATA,
         }
-        assert len(eligible) + len(non_eligible) == len(TrendState)
+        oversold = {
+            TrendState.OVERSOLD_21EMA, TrendState.OVERSOLD_50EMA,
+        }
+        assert len(eligible) + len(non_eligible) + len(oversold) == len(TrendState)

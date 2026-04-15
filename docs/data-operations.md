@@ -18,6 +18,14 @@ All times are US/Eastern. Weekday-only jobs do not fire on weekends or market ho
 | 16:10 | Options Snapshot | `options_snapshot_enabled` | Tradier (120 RPM) | ~30 min |
 | 16:45 | **Bridge Tradier IV** | `bridge_tradier_iv_enabled` | None (reads snapshot) | ~60s |
 
+### Daily (Nightly, All Days)
+
+| Time ET | Job | Config Knob | API Cost | Runtime |
+|---------|-----|-------------|----------|---------|
+| 02:00 | **S3 Flatfile Options Ingest** | `flatfile_ingest_enabled` | Massive S3 (download) | ~10-30 min |
+
+The S3 flat file job runs every day (including weekends) to catch up on any missed days. It uses `--days-back 3` to cover weekends and the script's `completed_dates` check makes re-runs idempotent. Requires `TYCHE_MASSIVE_S3_ACCESS_KEY` and `TYCHE_MASSIVE_S3_SECRET_KEY` in `.env`.
+
 ### Intraday
 
 | Interval | Job | Config Knob | API Cost | Runtime |
@@ -55,6 +63,12 @@ Daily After Close:
   Options Snapshot (16:10)
     └─→ Bridge Tradier IV (16:45) — needs snapshot data written
 
+Nightly:
+  S3 Flatfile Options Ingest (02:00 AM)
+    → Downloads previous day's options flat file from Massive S3
+    → Extracts ATM IV → Recomputes IV Rank, VRP (DerivedMetricsStore)
+    → Feeds morning conviction scan (IV Rank, VRP columns)
+
 Monthly/ML:
   Correlation Refresh (28th)
     └─→ ML Retrain (1st) — uses correlation features in dataset
@@ -78,9 +92,11 @@ Quarterly:
 - Runs `run_conviction_batch()` across the full equity universe
 - Filters: market cap ≥ $500M (batch threshold), price ≥ $5, avg vol ≥ 500K
 - Computes EMA 8/21/50, RSI(14), trend state, conviction level/score
-- Upserts to `conviction.db` → `conviction_snapshots` table
+- Upserts to `conviction.db` → `conviction_snapshots` table (source of truth for all page loads)
 - Detects state transitions (e.g., uptrend → pullback) → `conviction_transitions` table
 - Persists signals to `data/conviction_signals.parquet`
+- Clears route-level caches (`invalidate_conviction_cache(clear_engine=False)`) — page loads now read fresh snapshots from DB
+- Frontend detects the version bump via `GET /conviction/version` polling and invalidates React Query caches
 
 ### Options Snapshot
 - Fetches live put chains from Tradier for all equity tickers with market cap ≥ $4B
@@ -265,9 +281,14 @@ curl http://localhost:8000/api/v1/system/scheduler/status
 ## Troubleshooting
 
 ### Conviction data is stale
-- **Check:** Look at the `as_of_date` on the Stocks Conviction page.
+- **Check:** Look at the `as_of_date` on the Stocks Conviction page, or `curl http://localhost:8000/api/v1/conviction/version`.
 - **Fix:** `curl -X POST http://localhost:8000/api/v1/stocks/conviction/refresh`
 - **Root cause:** The OHLCV refresh at 16:02 did NOT trigger conviction batch (now fixed with `conviction_batch_after_ohlcv` job at 16:08).
+
+### Conviction pages slow after backend restart
+- **Expected:** Sub-second if `conviction.db` has data (lazy deps skip heavy I/O).
+- **If slow:** Check that `conviction.db` exists and has recent snapshots. Run `sqlite3 db/conviction.db "SELECT COUNT(*), MAX(as_of_date) FROM conviction_snapshots;"`.
+- **Root cause (fixed):** Before April 2026, `ConvictionEngine` and `OHLCVStore` were eagerly resolved via FastAPI `Depends()`, blocking the event loop with 30-40s of Parquet I/O even when the DB had cached data. Now uses lazy dependency resolution — heavy objects only initialized if the DB path misses.
 
 ### CSP Safety shows "—"
 - **Check:** `curl http://localhost:8000/api/v1/system/ml/model-info`

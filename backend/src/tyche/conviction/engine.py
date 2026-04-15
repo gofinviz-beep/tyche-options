@@ -65,6 +65,7 @@ class ConvictionSignal:
 
     ema_50: float = 0.0
     ema_50_slope: float = 0.0
+    price_to_50ema_pct: float = 0.0
     rsi_14: float = 0.0
 
     iv_rank: float | None = None
@@ -102,6 +103,7 @@ class ConvictionSignal:
             "as_of_date": self.as_of_date.isoformat() if self.as_of_date else None,
             "ema_50": round(self.ema_50, 4),
             "ema_50_slope": round(self.ema_50_slope, 6),
+            "price_to_50ema_pct": round(self.price_to_50ema_pct, 2),
             "rsi_14": round(self.rsi_14, 2),
             "iv_rank": round(self.iv_rank, 1) if self.iv_rank is not None else None,
             "iv_percentile": round(self.iv_percentile, 1) if self.iv_percentile is not None else None,
@@ -134,6 +136,7 @@ def _feature_to_signal(feature: FeatureSignal, policy_result: dict) -> Convictio
         as_of_date=feature.as_of_date,
         ema_50=feature.ema_50,
         ema_50_slope=feature.ema_50_slope,
+        price_to_50ema_pct=feature.price_to_50ema_pct,
         rsi_14=feature.rsi_14,
         iv_rank=feature.iv_rank,
         iv_percentile=feature.iv_percentile,
@@ -173,6 +176,9 @@ class ConvictionEngine:
         signal_store: Any | None = None,
         derived_store: Any | None = None,
         csp_predictor: Any | None = None,
+        oversold_dip_pct_21ema: float = 5.0,
+        oversold_dip_pct_50ema: float = 5.0,
+        oversold_min_prior_uptrend: int = 10,
     ) -> None:
         self._feature_engine = ConvictionFeatureEngine(
             ema_fast=ema_fast,
@@ -181,6 +187,9 @@ class ConvictionEngine:
             min_bars=min_bars,
             signal_store=signal_store,
             derived_store=derived_store,
+            oversold_dip_pct_21ema=oversold_dip_pct_21ema,
+            oversold_dip_pct_50ema=oversold_dip_pct_50ema,
+            oversold_min_prior_uptrend=oversold_min_prior_uptrend,
         )
         self._csp_policy = CSPEligibilityPolicy(
             max_extension_pct=max_extension_pct,

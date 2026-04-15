@@ -476,12 +476,11 @@ class TestTickerGatesEndpoint:
 class TestRecommendationsEndpointUnit:
     @pytest.mark.asyncio
     @patch("tyche.api.routes.stocks.generate_recommendations_from_snapshots")
-    @patch("tyche.api.routes.stocks.filter_by_institutional_ownership", new_callable=AsyncMock)
+    @patch("tyche.api.routes.stocks.get_cached_ownership_batch", return_value={"AAPL": 0.75})
     @patch("tyche.api.routes.stocks.get_active_pullbacks", new_callable=AsyncMock)
-    async def test_returns_recs_from_db(self, mock_pullbacks, mock_inst, mock_gen):
+    async def test_returns_recs_from_db(self, mock_pullbacks, _mock_cached, mock_gen):
         snap = _make_snapshot_model()
         mock_pullbacks.return_value = [snap]
-        mock_inst.return_value = (["AAPL"], {"AAPL": 0.75})
 
         from tyche.workflow.stock_recommender import StockBuyRecommendation
 
@@ -513,7 +512,10 @@ class TestRecommendationsEndpointUnit:
         settings = MagicMock()
         settings.min_institutional_pct_stock_buy = 0.50
 
-        resp = await get_stock_recommendations_endpoint(settings)
+        meta_store = MagicMock()
+        meta_store.exists = False
+
+        resp = await get_stock_recommendations_endpoint(settings, meta_store)
         assert len(resp.recommendations) == 1
         assert resp.recommendations[0].ticker == "AAPL"
         mock_gen.assert_called_once()
@@ -528,7 +530,10 @@ class TestRecommendationsEndpointUnit:
         settings = MagicMock()
         settings.min_institutional_pct_stock_buy = 0.50
 
-        resp = await get_stock_recommendations_endpoint(settings)
+        meta_store = MagicMock()
+        meta_store.exists = False
+
+        resp = await get_stock_recommendations_endpoint(settings, meta_store)
         assert len(resp.recommendations) == 0
 
 
