@@ -232,6 +232,31 @@ class StockPositionRequest(BaseModel):
     pullback_type: str = "manual"
 
 
+class BulkPositionItem(BaseModel):
+    """Single position in a bulk import request."""
+
+    ticker: str
+    quantity: int
+    purchase_price: float
+    purchase_date: str | None = None
+    pullback_type: str = "manual"
+
+
+class BulkPositionRequest(BaseModel):
+    """Request to import multiple positions at once."""
+
+    positions: list[BulkPositionItem]
+    skip_duplicates: bool = True
+
+
+class BulkPositionResponse(BaseModel):
+    """Response from a bulk import."""
+
+    created: int
+    skipped: int
+    errors: list[str]
+
+
 class StockPositionResponse(BaseModel):
     """API response for a stock position."""
 

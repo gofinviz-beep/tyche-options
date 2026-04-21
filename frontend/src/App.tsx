@@ -8,6 +8,7 @@ import { Monitor } from "@/pages/Monitor";
 import { Intents } from "@/pages/Intents";
 import { Conviction } from "@/pages/Conviction";
 import { Explore } from "@/pages/Explore";
+import { CoveredCalls } from "@/pages/CoveredCalls";
 import { Settings } from "@/pages/Settings";
 import { ResearchHome } from "@/pages/research/ResearchHome";
 import { StocksDashboard } from "@/pages/stocks/Dashboard";
@@ -42,6 +43,7 @@ export default function App() {
             <Route path="/options/intents" element={<Intents />} />
             <Route path="/options/orders" element={<Orders />} />
             <Route path="/options/monitor" element={<Monitor />} />
+            <Route path="/options/covered-calls" element={<CoveredCalls />} />
 
             {/* Stocks module */}
             <Route path="/stocks" element={<StocksDashboard />} />

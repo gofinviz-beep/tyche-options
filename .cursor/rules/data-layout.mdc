@@ -1,0 +1,91 @@
+---
+description: Data directory layout — all persisted data lives under backend/data/, NOT at the repo root
+globs:
+  - "backend/**/*.py"
+  - "backend/scripts/*.py"
+alwaysApply: true
+---
+
+# Data Directory Layout
+
+**All persisted data lives under `backend/data/`**, NOT at the repo root `data/`.
+
+The `OHLCVStore`, `OptionsChainStore`, `OptionsHistoryStore`, `HistoricalIVStore`, `DerivedMetricsStore`, and all other data stores resolve paths relative to `backend/data/`.
+
+## Directory Map
+
+| Store | Path | Format |
+|-------|------|--------|
+| Daily OHLCV bars | `backend/data/ohlcv_daily/{TICKER}.parquet` | One Parquet per ticker |
+| Intraday 5-min bars | `backend/data/intraday_5min/{TICKER}.parquet` | One Parquet per ticker |
+| Ticker metadata | `backend/data/ticker_meta.parquet` | Single file (market cap, type, exchange, sector, SIC, institutional ownership) |
+| Options chain snapshots (Tradier) | `backend/data/options_chains/{TICKER}.parquet` | One Parquet per ticker |
+| Options history (S3 flat files) | `backend/data/options_history/{TICKER}.parquet` | One Parquet per ticker |
+| Historical IV (ATM put) | `backend/data/options_iv/{TICKER}.parquet` | One Parquet per ticker |
+| Derived metrics (IV Rank, VRP) | `backend/data/derived/{TICKER}.parquet` | One Parquet per ticker |
+| Conviction signals cache | `backend/data/conviction_signals.parquet` | Single file |
+| ETF constituents | `backend/data/etf_constituents.parquet` | Single file |
+| Correlations | `backend/data/correlations.parquet` | Pairwise top-N peers |
+| Betas | `backend/data/betas.parquet` | Per-ticker SPY/QQQ betas |
+| ML models | `backend/data/ml/models/` | XGBoost `.json` + `_meta.json` |
+| ML dataset | `backend/data/ml/dataset.parquet` | Training dataset |
+| News articles | `backend/data/news_articles/{TICKER}.parquet` | One Parquet per ticker |
+| 8-K filings | `backend/data/filings_8k/{TICKER}.parquet` | One Parquet per ticker |
+| Insider transactions | `backend/data/insider_transactions/{TICKER}.parquet` | One Parquet per ticker |
+
+## SQLite Databases
+
+| DB | Path | Purpose |
+|----|------|---------|
+| Config | `backend/db/config.db` | User-editable operational settings |
+| Conviction | `backend/db/conviction.db` | Conviction snapshots (source of truth for page loads) |
+| Positions | `backend/data/positions.db` | Stock positions (`StockPosition`) and exit signals (`ExitSignal`) |
+| Backtest | `backend/db/backtest.db` | Pullback events and ticker pullback profiles (simulation data only) |
+| Scans | `backend/db/scans.db` | Scanner results persistence |
+| Candidates | `backend/db/candidates.db` | CSP candidate persistence |
+| Analyses | `backend/db/analyses.db` | LLM analysis persistence |
+| News | `backend/db/news.db` | News/filing signals |
+
+## Python Access
+
+All scripts run from `backend/` as cwd: `cd backend && .venv/bin/python scripts/...`
+
+The `.venv` is at `backend/.venv/`. Use `backend/.venv/bin/python` (or activate the venv) to run scripts.
+
+When reading data programmatically in ad-hoc scripts, use the stores:
+
+```python
+from tyche.market_data.data_store import OHLCVStore
+store = OHLCVStore(data_dir='data')
+df = store.read_ticker('PL')
+```
+
+Other stores follow the same pattern:
+
+```python
+from tyche.market_data.options_history_store import OptionsHistoryStore
+from tyche.market_data.derived_store import DerivedMetricsStore
+from tyche.market_data.data_store import TickerMetaStore
+```
+
+## Key Ingestion Scripts
+
+| Script | Purpose | Example |
+|--------|---------|---------|
+| `ingest_data.py` | OHLCV daily bars from Polygon | `--from 2026-04-20 --to 2026-04-20 --no-conviction` |
+| `ingest_options_flatfiles.py` | Options history from Massive S3 flat files + IV/derived metrics | `--from-ohlcv --include-today --days-back 3` |
+| `bridge_tradier_iv.py` | Bridge Tradier snapshots to IV pipeline (same-day) | Run after `ingest_options.py` |
+
+## Tradier Client Setup
+
+```python
+from tyche.broker.tradier.client import TradierClient
+from tyche.config import get_settings
+
+settings = get_settings()
+client = TradierClient(
+    api_token=settings.tradier_api_token,
+    account_id=settings.tradier_account_id,
+    base_url=settings.tradier_base_url or 'https://api.tradier.com',
+)
+```

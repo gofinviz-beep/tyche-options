@@ -31,6 +31,7 @@ from tyche.persistence.database import (
     init_conviction_db,
     init_db,
     init_news_db,
+    init_positions_db,
     init_scanner_dbs,
 )
 from tyche.telemetry import configure_telemetry, shutdown_telemetry
@@ -810,7 +811,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_backtest_db(settings.db_dir)
     await create_tables_for_models(
         "backtest", PullbackEvent, TickerPullbackProfile,
-        StockPosition, ExitSignal,
+    )
+
+    init_positions_db(settings.db_dir)
+    await create_tables_for_models(
+        "positions", StockPosition, ExitSignal,
     )
 
     init_news_db(settings.db_dir)
@@ -938,6 +943,7 @@ def create_app() -> FastAPI:
     from tyche.api.routes import (
         account,
         conviction,
+        covered_calls,
         events,
         filings,
         intents,
@@ -964,6 +970,7 @@ def create_app() -> FastAPI:
     app.include_router(telemetry.router, prefix="/api/v1")
     app.include_router(news.router, prefix="/api/v1")
     app.include_router(filings.router, prefix="/api/v1")
+    app.include_router(covered_calls.router, prefix="/api/v1")
 
     @app.get("/health")
     async def health_check() -> dict[str, str]:

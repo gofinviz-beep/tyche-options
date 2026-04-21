@@ -615,3 +615,29 @@ export function useTriggerEdgarIngest() {
     },
   });
 }
+
+// --- Covered Calls ---
+
+export function useCCAnalysis() {
+  return useMutation({
+    mutationFn: ({
+      positions,
+      targetDte,
+    }: {
+      positions: import("@/types").CCPosition[];
+      targetDte?: number;
+    }) => api.coveredCalls.analyze(positions, targetDte),
+  });
+}
+
+export function useCCTickerAnalysis(
+  ticker: string | null,
+  params: { shares?: number; cost_basis?: number; target_dte?: number } = {},
+) {
+  return useQuery({
+    queryKey: ["coveredCalls", ticker, params],
+    queryFn: () => api.coveredCalls.analyzeTicker(ticker!, params),
+    enabled: !!ticker,
+    staleTime: 60_000,
+  });
+}

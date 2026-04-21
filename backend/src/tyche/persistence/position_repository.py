@@ -1,6 +1,8 @@
 """Repository for stock position tracking and exit signal persistence.
 
-Operates against backtest.db via the 'backtest' engine.
+Operates against positions.db via the 'positions' engine.
+Backtest profiles (TickerPullbackProfile) live in backtest.db — read
+cross-DB when setting exit targets.
 """
 
 from __future__ import annotations
@@ -16,7 +18,8 @@ from tyche.persistence.database import get_session
 
 logger = structlog.get_logger()
 
-DB_NAME = "backtest"
+DB_NAME = "positions"
+_BACKTEST_DB = "backtest"
 
 
 async def create_position(
@@ -33,7 +36,7 @@ async def create_position(
     target_exit_price: float | None = None
 
     try:
-        async with get_session(DB_NAME) as session:
+        async with get_session(_BACKTEST_DB) as session:
             result = await session.execute(
                 select(TickerPullbackProfile).where(
                     TickerPullbackProfile.ticker == ticker.upper(),

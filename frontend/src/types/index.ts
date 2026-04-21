@@ -932,3 +932,99 @@ export interface DeepDipScanResult {
   market_context: MarketContext | null;
   as_of_date: string;
 }
+
+// --- Covered Call Recommender ---
+
+export interface CCPosition {
+  ticker: string;
+  shares: number;
+  cost_basis: number;
+}
+
+export interface CCSignal {
+  ticker: string;
+  signal: "GO" | "WAIT" | "CAUTION";
+  signal_reason: string;
+  last_close: number;
+  ema_8: number;
+  ema_21: number;
+  ema_50: number;
+  extension_pct_8: number;
+  extension_pct_21: number;
+  rsi_14: number;
+  iv_rank: number | null;
+  vrp: number | null;
+  rv_20d: number | null;
+  suggested_strike: number;
+  suggested_otm_pct: number;
+  suggested_expiry_dte: number;
+  suggested_premium_est: number | null;
+  optimal_entry_day: string;
+  assignment_prob_1w: number;
+  assignment_prob_2w: number;
+  estimated_next_earnings: string | null;
+  earnings_in_window: boolean;
+  price_source: "ohlcv_close" | "live_tradier" | string;
+  live_price: number | null;
+  prev_close: number | null;
+}
+
+export interface CCDeepDive {
+  signal: CCSignal;
+  total_episodes: number;
+  episode_table: Record<string, unknown>[];
+  days_to_8ema: Record<string, number>;
+  days_to_21ema: Record<string, number>;
+  days_to_50ema: Record<string, number>;
+  drawdown_at_8ema: Record<string, number>;
+  drawdown_at_21ema: Record<string, number>;
+  forward_returns: Record<string, unknown>[];
+  dow_analysis: Record<string, unknown>[];
+  rally_peak_day_distribution: Record<string, number>;
+  call_candidates: Record<string, unknown>[] | null;
+  pnl_scenarios: Record<string, unknown>;
+  recommended_action: {
+    action: string;
+    instruction: string;
+    ticker: string;
+    contracts: number;
+    strike: number;
+    otm_pct: number;
+    expiration_date: string | null;
+    expiration_label: string | null;
+    actual_dte: number;
+    entry_timing: string;
+    premium_est_per_share: number | null;
+    total_premium_est: number | null;
+    net_premium_est: number | null;
+    assignment_prob: number;
+    pullback_prob_by_expiry: number;
+    safety_reasons: string[];
+    warnings: string[];
+    reason?: string;
+    premium_source?: "live_tradier" | "historical_estimate" | string;
+    live_bid?: number;
+    live_ask?: number;
+    live_mid?: number;
+    live_iv?: number;
+    live_volume?: number;
+    live_oi?: number;
+    live_delta?: number;
+    live_theta?: number;
+    option_symbol?: string;
+    price_source?: "live_tradier" | "ohlcv_close" | string;
+    live_price?: number;
+    prev_close?: number;
+  };
+}
+
+export interface CCPortfolioAnalysis {
+  analyses: CCDeepDive[];
+  portfolio_summary: {
+    total_premium_est: number;
+    positions_go: number;
+    positions_wait: number;
+    positions_caution: number;
+    total_positions: number;
+  };
+}

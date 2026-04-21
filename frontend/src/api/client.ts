@@ -278,6 +278,20 @@ export const api = {
       request<Record<string, string>>(`/stocks/positions/${id}`, {
         method: "DELETE",
       }),
+    bulkImportPositions: (
+      positions: { ticker: string; quantity: number; purchase_price: number; purchase_date?: string }[],
+      skipDuplicates = true,
+    ) =>
+      request<{ created: number; skipped: number; errors: string[] }>(
+        "/stocks/positions/bulk",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            positions,
+            skip_duplicates: skipDuplicates,
+          }),
+        },
+      ),
     checkExits: () =>
       request<import("@/types").ExitCheckResult>(
         "/stocks/positions/check-exits",
@@ -312,6 +326,27 @@ export const api = {
       request<{ status: string; message: string }>("/news/ingest", {
         method: "POST",
       }),
+  },
+
+  coveredCalls: {
+    analyze: (positions: import("@/types").CCPosition[], targetDte = 8) =>
+      request<import("@/types").CCPortfolioAnalysis>("/covered-calls/analyze", {
+        method: "POST",
+        body: JSON.stringify({ positions, target_dte: targetDte }),
+      }),
+    analyzeTicker: (
+      ticker: string,
+      params: { shares?: number; cost_basis?: number; target_dte?: number } = {},
+    ) => {
+      const qs = new URLSearchParams();
+      if (params.shares) qs.set("shares", String(params.shares));
+      if (params.cost_basis) qs.set("cost_basis", String(params.cost_basis));
+      if (params.target_dte) qs.set("target_dte", String(params.target_dte));
+      const q = qs.toString();
+      return request<import("@/types").CCDeepDive>(
+        `/covered-calls/analyze/${encodeURIComponent(ticker)}${q ? `?${q}` : ""}`,
+      );
+    },
   },
 
   filings: {

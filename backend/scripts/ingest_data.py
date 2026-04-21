@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import click
 import structlog
@@ -87,9 +87,32 @@ def _print_status(
     click.echo()
 
 
-def _last_trading_day(ref: date) -> date:
-    """Return the most recent weekday on or before ref (excluding today)."""
-    d = ref - timedelta(days=1)
+def _last_trading_day(ref: date | None = None) -> date:
+    """Return the most recent date for which market data should be available.
+
+    Uses the current time in US/Eastern to decide:
+    - After 4 PM ET on a weekday → that day's data is available (market closed).
+    - Before 4 PM ET → yesterday's data is the latest available.
+    - Weekends → rewinds to Friday.
+
+    The *ref* parameter is accepted for backward compat but ignored;
+    the decision is always based on the current ET clock.
+
+    Does not account for market holidays — if Polygon returns no data
+    for a holiday, the fetch loop handles it gracefully (zero bars).
+    """
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
+
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    today_et = now_et.date()
+
+    if today_et.weekday() < 5 and now_et.hour >= 16:
+        return today_et
+
+    d = today_et - timedelta(days=1)
     while d.weekday() >= 5:
         d -= timedelta(days=1)
     return d

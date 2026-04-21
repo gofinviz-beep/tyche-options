@@ -17,6 +17,7 @@ import {
   Newspaper,
   FileText,
   Users,
+  PhoneOutgoing,
 } from "lucide-react";
 
 export interface ModulePage {
@@ -47,6 +48,7 @@ export const modules: AppModule[] = [
       { path: "/intents", label: "Intents", icon: FileCheck },
       { path: "/orders", label: "Orders", icon: ShoppingCart },
       { path: "/monitor", label: "Monitor", icon: Activity },
+      { path: "/covered-calls", label: "Covered Calls", icon: PhoneOutgoing },
     ],
   },
   {

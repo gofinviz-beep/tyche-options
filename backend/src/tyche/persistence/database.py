@@ -100,6 +100,18 @@ def init_backtest_db(db_dir: str) -> None:
     register_engine("backtest", f"sqlite+aiosqlite:///{file_path}")
 
 
+def init_positions_db(db_dir: str) -> None:
+    """Register the positions-domain engine (stock positions + exit signals).
+
+    Stores user-tracked stock holdings and exit signals in a dedicated
+    SQLite file, separate from backtest simulation data.
+    """
+    db_path = Path(db_dir)
+    db_path.mkdir(parents=True, exist_ok=True)
+    file_path = db_path / "positions.db"
+    register_engine("positions", f"sqlite+aiosqlite:///{file_path}")
+
+
 @asynccontextmanager
 async def get_session(db: str = "default") -> AsyncGenerator[AsyncSession, None]:
     """Provide an async session as a context manager.

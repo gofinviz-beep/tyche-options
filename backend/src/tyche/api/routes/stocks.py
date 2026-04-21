@@ -25,6 +25,8 @@ from tyche.persistence.conviction_repository import (
     get_transitions,
 )
 from tyche.schemas.alerts import (
+    BulkPositionRequest,
+    BulkPositionResponse,
     CSPFallbackAlertResponse,
     DeepDipAlertResponse,
     DeepDipScanResponse,
@@ -974,6 +976,57 @@ async def create_position(
         pullback_type=req.pullback_type,
     )
     return StockPositionResponse(**position.to_dict())
+
+
+@router.post("/positions/bulk")
+async def bulk_import_positions(
+    req: BulkPositionRequest,
+) -> BulkPositionResponse:
+    """Import multiple stock positions at once (e.g., from localStorage migration)."""
+    from tyche.persistence.position_repository import (
+        create_position as repo_create,
+        get_active_positions,
+    )
+
+    existing = await get_active_positions()
+    existing_tickers = {p.ticker for p in existing}
+
+    created = 0
+    skipped = 0
+    errors: list[str] = []
+
+    for item in req.positions:
+        ticker = item.ticker.upper()
+
+        if req.skip_duplicates and ticker in existing_tickers:
+            skipped += 1
+            continue
+
+        try:
+            purchase_date_val = (
+                date.fromisoformat(item.purchase_date)
+                if item.purchase_date
+                else date.today()
+            )
+            await repo_create(
+                ticker=ticker,
+                purchase_price=item.purchase_price,
+                quantity=item.quantity,
+                purchase_date=purchase_date_val,
+                pullback_type=item.pullback_type,
+            )
+            existing_tickers.add(ticker)
+            created += 1
+        except Exception as exc:
+            errors.append(f"{ticker}: {exc}")
+
+    logger.info(
+        "bulk_positions_imported",
+        created=created,
+        skipped=skipped,
+        errors=len(errors),
+    )
+    return BulkPositionResponse(created=created, skipped=skipped, errors=errors)
 
 
 @router.get("/positions", response_model=list[StockPositionResponse])
