@@ -320,7 +320,7 @@ class TycheSettings(BaseModel):
 
     # --- Automated Data Pipelines ---
     flatfile_ingest_enabled: bool = True
-    flatfile_ingest_time: str = "02:00"
+    flatfile_ingest_time: str = "07:00"
     flatfile_ingest_min_market_cap: float = 1_000_000_000
     conviction_batch_after_ohlcv: bool = True
     bridge_tradier_iv_enabled: bool = True

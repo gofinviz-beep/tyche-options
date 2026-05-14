@@ -243,10 +243,10 @@ class WorkflowScheduler:
     def schedule_flatfile_ingest(
         self,
         func: Callable[..., Coroutine[Any, Any, Any]],
-        hour: int = 2,
+        hour: int = 7,
         minute: int = 0,
     ) -> None:
-        """Schedule nightly S3 flat file options ingest (default 2:00 AM ET).
+        """Schedule morning S3 flat file options ingest (default 7:00 AM ET).
 
         Downloads the previous trading day's options flat file from Massive S3,
         persists to OptionsHistoryStore, extracts ATM IV, and recomputes
