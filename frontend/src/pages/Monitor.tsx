@@ -93,7 +93,7 @@ export function Monitor() {
           <p className="text-sm text-gray-500">
             Track filled positions to monitor them in real time. Click{" "}
             <span className="font-medium text-blue-600">"Track Position"</span>{" "}
-            above to add a position you've executed (e.g., a short put on FSLY).
+            above to add a short put (CSP) or short call (covered call) you've executed.
           </p>
           <p className="mt-2 text-sm text-gray-400">
             The monitor will alert you when profit targets are hit, when the
@@ -123,6 +123,7 @@ function TrackPositionForm({
   const [entryPrice, setEntryPrice] = useState("");
   const [contracts, setContracts] = useState("");
   const [underlyingPrice, setUnderlyingPrice] = useState("");
+  const [positionType, setPositionType] = useState<"short_put" | "short_call">("short_put");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -133,14 +134,15 @@ function TrackPositionForm({
     if (!symbol || isNaN(s) || isNaN(ep) || isNaN(c) || !expiration || isNaN(up))
       return;
 
+    const typeChar = positionType === "short_put" ? "P" : "C";
     const oSym =
       optionSymbol ||
-      `${symbol.toUpperCase()}${expiration.replace(/-/g, "")}P${strike.replace(".", "")}`;
+      `${symbol.toUpperCase()}${expiration.replace(/-/g, "")}${typeChar}${strike.replace(".", "")}`;
 
     onSubmit({
       symbol: symbol.toUpperCase(),
       option_symbol: oSym,
-      position_type: "short_put",
+      position_type: positionType,
       strike: s,
       expiration,
       entry_price: ep,
@@ -152,6 +154,30 @@ function TrackPositionForm({
   return (
     <Card title="Track a Position">
       <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setPositionType("short_put")}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
+              positionType === "short_put"
+                ? "bg-blue-600 text-white"
+                : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+            }`}
+          >
+            Short Put (CSP)
+          </button>
+          <button
+            type="button"
+            onClick={() => setPositionType("short_call")}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
+              positionType === "short_call"
+                ? "bg-blue-600 text-white"
+                : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+            }`}
+          >
+            Short Call (CC)
+          </button>
+        </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <FormField
             label="Symbol"
@@ -167,13 +193,16 @@ function TrackPositionForm({
             placeholder="29.50"
             required
           />
-          <FormField
-            label="Expiration"
-            value={expiration}
-            onChange={setExpiration}
-            placeholder="2026-04-02"
-            required
-          />
+          <div>
+            <label className="text-xs text-gray-400">Expiration</label>
+            <input
+              type="date"
+              value={expiration}
+              onChange={(e) => setExpiration(e.target.value)}
+              required
+              className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
           <FormField
             label="Contracts"
             value={contracts}
@@ -201,7 +230,7 @@ function TrackPositionForm({
             label="Option Symbol (auto-generated)"
             value={optionSymbol}
             onChange={setOptionSymbol}
-            placeholder="FSLY260402P02950"
+            placeholder={`FSLY260402${positionType === "short_put" ? "P" : "C"}02950`}
           />
         </div>
         <div className="flex gap-3">
@@ -264,13 +293,17 @@ function PositionCard({
         </button>
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-5">
+      <div className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-6">
         <Stat label="Strike" value={`$${pos.strike.toFixed(2)}`} />
         <Stat label="Entry Premium" value={`$${pos.entry_price.toFixed(2)}`} />
         <Stat label="Contracts" value={String(pos.contracts)} />
         <Stat label="Expiration" value={pos.expiration} />
         <Stat
-          label="Underlying"
+          label="Entry Underlying"
+          value={`$${pos.underlying_at_entry.toFixed(2)}`}
+        />
+        <Stat
+          label="Current Price"
           value={`$${pos.underlying_price.toFixed(2)}`}
         />
       </div>

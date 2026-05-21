@@ -141,6 +141,7 @@ class StrategyEngine:
         ranking_weights: RankingWeights | None = None,
         pre_allocator_pool_size: int = 0,
         economic_calendar: EconomicCalendar | None = None,
+        target_expiration: str | None = None,
     ) -> tuple[list[ScoredCandidate], dict[str, int]]:
         """Scan the watchlist for CSP opportunities.
 
@@ -246,7 +247,9 @@ class StrategyEngine:
                     local_drops["no_expirations"] = 1
                     return scored_out, local_drops
 
-                if expiration_mode == "friday_target":
+                if target_expiration:
+                    target_exps = [target_expiration] if target_expiration in expirations else []
+                elif expiration_mode == "friday_target":
                     target_exps = target_expiration_dates(
                         expirations,
                         max_expirations=max_expirations,

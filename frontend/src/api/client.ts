@@ -57,10 +57,11 @@ export const api = {
   },
 
   scanner: {
-    triggerScan: (symbols?: string, topN = 5, enableLlm?: boolean) => {
+    triggerScan: (symbols?: string, topN = 5, enableLlm?: boolean, targetExpiration?: string) => {
       const params = new URLSearchParams({ top_n: String(topN) });
       if (symbols) params.set("symbols", symbols);
       if (enableLlm !== undefined) params.set("enable_llm", String(enableLlm));
+      if (targetExpiration) params.set("target_expiration", targetExpiration);
       return request<import("@/types").ScanResult>(`/scanner/scan?${params}`, {
         method: "POST",
       });
@@ -78,26 +79,6 @@ export const api = {
         { method: "POST" },
       );
     },
-  },
-
-  orders: {
-    getOpen: () => request<import("@/types").OpenOrder[]>("/orders/open"),
-    preview: (data: import("@/types").OrderPreviewRequest) =>
-      request<import("@/types").OrderPreviewResponse>("/orders/preview", {
-        method: "POST",
-        body: JSON.stringify(data),
-      }),
-    execute: (data: Record<string, unknown>) =>
-      request<Record<string, unknown>>("/orders/execute", {
-        method: "POST",
-        body: JSON.stringify(data),
-      }),
-    cancel: (orderId: string) =>
-      request<Record<string, string>>(`/orders/${orderId}`, {
-        method: "DELETE",
-      }),
-    monitor: () =>
-      request<import("@/types").OrderMonitorResult>("/orders/monitor"),
   },
 
   watchlist: {
@@ -131,52 +112,6 @@ export const api = {
     getSignal: (ticker: string) =>
       request<import("@/types").ConvictionSignal>(
         `/conviction/signal/${ticker}`,
-      ),
-  },
-
-  intents: {
-    list: (status?: string) => {
-      const params = new URLSearchParams();
-      if (status) params.set("status", status);
-      const qs = params.toString();
-      return request<import("@/types").OrderIntentList>(
-        `/intents${qs ? `?${qs}` : ""}`,
-      );
-    },
-    create: (data: import("@/types").CreateIntentRequest) =>
-      request<import("@/types").OrderIntent>("/intents", {
-        method: "POST",
-        body: JSON.stringify(data),
-      }),
-    get: (id: string) =>
-      request<import("@/types").OrderIntent>(`/intents/${id}`),
-    approve: (id: string, note?: string) =>
-      request<import("@/types").OrderIntent>(`/intents/${id}/approve`, {
-        method: "POST",
-        body: JSON.stringify({ user_note: note }),
-      }),
-    reject: (id: string, reason?: string) =>
-      request<import("@/types").OrderIntent>(`/intents/${id}/reject`, {
-        method: "POST",
-        body: JSON.stringify({ reason }),
-      }),
-    recordExecution: (
-      id: string,
-      data: {
-        fill_price: number;
-        quantity: number;
-        premium_received?: number;
-        broker_confirmation?: string;
-      },
-    ) =>
-      request<import("@/types").OrderIntent>(`/intents/${id}/execute`, {
-        method: "POST",
-        body: JSON.stringify(data),
-      }),
-    bulkExpire: (maxAgeHours = 48) =>
-      request<{ expired: number; cutoff: string }>(
-        `/intents/bulk-expire?max_age_hours=${maxAgeHours}`,
-        { method: "POST" },
       ),
   },
 

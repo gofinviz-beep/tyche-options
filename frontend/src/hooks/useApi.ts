@@ -18,13 +18,6 @@ export function usePositions() {
   });
 }
 
-export function useOpenOrders() {
-  return useQuery({
-    queryKey: ["orders", "open"],
-    queryFn: api.orders.getOpen,
-    refetchInterval: 15_000,
-  });
-}
 
 export function useLatestScan() {
   return useQuery({
@@ -42,11 +35,13 @@ export function useTriggerScan() {
       symbols,
       topN,
       enableLlm,
+      targetExpiration,
     }: {
       symbols?: string;
       topN?: number;
       enableLlm?: boolean;
-    }) => api.scanner.triggerScan(symbols, topN, enableLlm),
+      targetExpiration?: string;
+    }) => api.scanner.triggerScan(symbols, topN, enableLlm, targetExpiration),
     onSuccess: (data) => {
       queryClient.setQueryData(["scanner", "latest"], data);
       queryClient.invalidateQueries({ queryKey: ["scanner"] });
@@ -76,13 +71,6 @@ export function useScanById(scanId: string | null) {
   });
 }
 
-export function useOrderMonitor() {
-  return useQuery({
-    queryKey: ["orders", "monitor"],
-    queryFn: api.orders.monitor,
-    refetchInterval: 60_000,
-  });
-}
 
 export function useWatchlist() {
   return useQuery({
@@ -107,22 +95,6 @@ export function useUpdateConfig() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["system", "config"] });
     },
-  });
-}
-
-export function useCancelOrder() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (orderId: string) => api.orders.cancel(orderId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["orders"] });
-    },
-  });
-}
-
-export function usePreviewOrder() {
-  return useMutation({
-    mutationFn: api.orders.preview,
   });
 }
 
@@ -383,89 +355,6 @@ export function useUntrackPosition() {
       api.positionMonitor.untrack(optionSymbol),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["monitor"] });
-    },
-  });
-}
-
-// --- Order Intent hooks ---
-
-export function useOrderIntents(status?: string) {
-  return useQuery({
-    queryKey: ["intents", status],
-    queryFn: () => api.intents.list(status),
-    refetchInterval: 15_000,
-  });
-}
-
-export function useCreateIntent() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: import("@/types").CreateIntentRequest) =>
-      api.intents.create(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["intents"] });
-    },
-  });
-}
-
-export function useOrderIntent(id: string) {
-  return useQuery({
-    queryKey: ["intents", id],
-    queryFn: () => api.intents.get(id),
-    enabled: !!id,
-  });
-}
-
-export function useApproveIntent() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, note }: { id: string; note?: string }) =>
-      api.intents.approve(id, note),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["intents"] });
-    },
-  });
-}
-
-export function useRejectIntent() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, reason }: { id: string; reason?: string }) =>
-      api.intents.reject(id, reason),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["intents"] });
-    },
-  });
-}
-
-export function useRecordExecution() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      id,
-      data,
-    }: {
-      id: string;
-      data: {
-        fill_price: number;
-        quantity: number;
-        premium_received?: number;
-        broker_confirmation?: string;
-      };
-    }) => api.intents.recordExecution(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["intents"] });
-    },
-  });
-}
-
-export function useBulkExpireIntents() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (maxAgeHours?: number) =>
-      api.intents.bulkExpire(maxAgeHours),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["intents"] });
     },
   });
 }

@@ -57,6 +57,7 @@ export function Scanner() {
   const triggerScan = useTriggerScan();
   const [symbols, setSymbols] = useState("");
   const [enableLlm, setEnableLlm] = useState(false);
+  const [targetExpiration, setTargetExpiration] = useState("");
   const [selectedScanId, setSelectedScanId] = useState<string | null>(null);
   const { data: selectedScan } = useScanById(selectedScanId);
 
@@ -69,6 +70,7 @@ export function Scanner() {
       symbols: symbols || undefined,
       topN: TOP_N_LIMIT,
       enableLlm: enableLlm || undefined,
+      targetExpiration: targetExpiration || undefined,
     });
   };
 
@@ -152,6 +154,32 @@ export function Scanner() {
               />
             </button>
           </label>
+          <div className="relative flex items-center gap-1.5">
+            <CalendarCheck className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+            <input
+              type="date"
+              value={targetExpiration}
+              onChange={(e) => setTargetExpiration(e.target.value)}
+              min={new Date().toISOString().split("T")[0]}
+              disabled={triggerScan.isPending}
+              className={`w-[140px] rounded-lg border px-2.5 py-2.5 text-xs transition-colors focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 ${
+                targetExpiration
+                  ? "border-blue-400 bg-blue-50 text-blue-700"
+                  : "border-gray-200 bg-white text-gray-400"
+              }`}
+              title="Target expiration date — leave blank for default (14 DTE)"
+            />
+            {targetExpiration && (
+              <button
+                type="button"
+                onClick={() => setTargetExpiration("")}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-blue-400 hover:text-blue-600"
+                title="Clear expiration filter"
+              >
+                <XCircle className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
           <button
             onClick={handleScan}
             disabled={triggerScan.isPending}
@@ -484,17 +512,6 @@ function ScanResults({ scan }: { scan: ScanResult }) {
           </span>{" "}
           AI analyses
         </span>
-        {(scan.intents_created ?? 0) > 0 && (
-          <>
-            <span className="text-gray-300">·</span>
-            <span className="text-gray-500">
-              <span className="font-semibold text-amber-600">
-                {scan.intents_created}
-              </span>{" "}
-              intents created
-            </span>
-          </>
-        )}
       </div>
 
       {/* Entry timing guidance */}

@@ -55,9 +55,7 @@ async def _scheduled_morning_scan() -> None:
         get_strategy_engine,
         get_universe_builder,
     )
-    from tyche.persistence.database import get_session
     from tyche.persistence.scan_repository import cleanup_old_scans, save_scan
-    from tyche.workflow.intent_builder import create_intents_from_scan
     from tyche.workflow.morning_scan import run_morning_scan
 
     settings = dep_settings()
@@ -74,23 +72,8 @@ async def _scheduled_morning_scan() -> None:
         pullback_strike_offset_pct=settings.pullback_strike_offset_pct,
     )
 
-    intents_created = 0
-    if result.csp_analyses:
-        try:
-            async with get_session() as session:
-                intents = await create_intents_from_scan(
-                    session=session,
-                    scan_id=result.scan_id,
-                    csp_analyses=result.csp_analyses,
-                    csp_candidates=result.csp_candidates,
-                    conviction_signals=result.conviction_signals,
-                )
-                intents_created = len(intents)
-        except Exception:
-            logger.error("scheduled_intent_creation_failed", exc_info=True)
-
     try:
-        await save_scan(result, intents_created=intents_created, trigger="scheduled")
+        await save_scan(result, trigger="scheduled")
         await cleanup_old_scans(settings.scan_retention_count)
     except Exception:
         logger.error("scheduled_scan_persistence_failed", exc_info=True)
@@ -946,10 +929,8 @@ def create_app() -> FastAPI:
         covered_calls,
         events,
         filings,
-        intents,
         monitor,
         news,
-        orders,
         scanner,
         stocks,
         system,
@@ -960,12 +941,10 @@ def create_app() -> FastAPI:
     app.include_router(account.router, prefix="/api/v1")
     app.include_router(stocks.router, prefix="/api/v1")
     app.include_router(scanner.router, prefix="/api/v1")
-    app.include_router(orders.router, prefix="/api/v1")
     app.include_router(watchlist.router, prefix="/api/v1")
     app.include_router(events.router, prefix="/api/v1")
     app.include_router(system.router, prefix="/api/v1")
     app.include_router(conviction.router, prefix="/api/v1")
-    app.include_router(intents.router, prefix="/api/v1")
     app.include_router(monitor.router, prefix="/api/v1")
     app.include_router(telemetry.router, prefix="/api/v1")
     app.include_router(news.router, prefix="/api/v1")

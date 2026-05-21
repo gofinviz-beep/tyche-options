@@ -3,9 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Dashboard } from "@/pages/Dashboard";
 import { Scanner } from "@/pages/Scanner";
-import { Orders } from "@/pages/Orders";
 import { Monitor } from "@/pages/Monitor";
-import { Intents } from "@/pages/Intents";
 import { Conviction } from "@/pages/Conviction";
 import { Explore } from "@/pages/Explore";
 import { CoveredCalls } from "@/pages/CoveredCalls";
@@ -40,8 +38,6 @@ export default function App() {
             <Route path="/options/scanner" element={<Scanner />} />
             <Route path="/options/conviction" element={<Conviction />} />
             <Route path="/options/explore" element={<Explore />} />
-            <Route path="/options/intents" element={<Intents />} />
-            <Route path="/options/orders" element={<Orders />} />
             <Route path="/options/monitor" element={<Monitor />} />
             <Route path="/options/covered-calls" element={<CoveredCalls />} />
 
@@ -70,8 +66,6 @@ export default function App() {
             {/* Legacy redirects */}
             <Route path="/scanner" element={<Navigate to="/options/scanner" replace />} />
             <Route path="/conviction" element={<Navigate to="/options/conviction" replace />} />
-            <Route path="/intents" element={<Navigate to="/options/intents" replace />} />
-            <Route path="/orders" element={<Navigate to="/options/orders" replace />} />
             <Route path="/monitor" element={<Navigate to="/options/monitor" replace />} />
             <Route path="/options/settings" element={<Navigate to="/settings" replace />} />
             <Route path="/options/alerts" element={<Navigate to="/stocks" replace />} />

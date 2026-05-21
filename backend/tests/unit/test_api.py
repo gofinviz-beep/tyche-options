@@ -61,64 +61,6 @@ class TestAccountRoutes:
         assert data["cash_available_for_csp"] > 0
 
 
-class TestOrderRoutes:
-    def test_get_open_orders(self, client: TestClient) -> None:
-        resp = client.get("/api/v1/orders/open")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) >= 1
-        assert data[0]["symbol"] == "PL"
-
-    def test_preview_order(self, client: TestClient) -> None:
-        resp = client.post(
-            "/api/v1/orders/preview",
-            json={
-                "symbol": "PL",
-                "option_symbol": "PL260327P00023000",
-                "side": "sell_to_open",
-                "quantity": 10,
-                "limit_price": 1.50,
-                "intent": "income",
-            },
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "estimated_cost" in data
-        assert "risk_results" in data
-        assert isinstance(data["risk_results"], list)
-
-    def test_execute_order_blocked_by_preview_mode(self, client: TestClient) -> None:
-        """Orders are blocked when preview_only_mode is True (default)."""
-        resp = client.post(
-            "/api/v1/orders/execute",
-            json={
-                "symbol": "PL",
-                "option_symbol": "PL260327P00023000",
-                "side": "sell_to_open",
-                "quantity": 5,
-                "order_type": "limit",
-                "limit_price": 1.50,
-                "intent": "income",
-            },
-        )
-        assert resp.status_code == 403
-        data = resp.json()
-        assert "Risk rules blocked order" in str(data["detail"])
-
-    def test_cancel_order(self, client: TestClient) -> None:
-        resp = client.delete("/api/v1/orders/mock-1001")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "ok"
-
-    def test_monitor_orders(self, client: TestClient) -> None:
-        resp = client.get("/api/v1/orders/monitor")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["orders_checked"] >= 1
-        assert "alerts" in data
-
-
 class TestScannerRoutes:
     def test_trigger_scan(self, client: TestClient) -> None:
         resp = client.post("/api/v1/scanner/scan?symbols=PL,AAPL&top_n=3")

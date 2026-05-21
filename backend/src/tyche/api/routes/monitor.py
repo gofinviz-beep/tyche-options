@@ -55,10 +55,11 @@ async def track_position(
         underlying_at_entry=req.underlying_at_entry,
     )
     monitor.track_position(pos)
+    type_char = "C" if "call" in req.position_type else "P"
     return TrackPositionResponse(
         status="tracking",
         option_symbol=req.option_symbol,
-        message=f"Now tracking {req.symbol} {req.strike}P exp {req.expiration} x{req.contracts}",
+        message=f"Now tracking {req.symbol} {req.strike}{type_char} exp {req.expiration} x{req.contracts}",
     )
 
 

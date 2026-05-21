@@ -139,6 +139,7 @@ async def run_morning_scan(
     institutional_max_retries: int = 2,
     pre_allocator_pool_size: int = 0,
     economic_calendar: Any | None = None,
+    target_expiration: str | None = None,
 ) -> MorningScanResult:
     """Execute the full morning scan pipeline.
 
@@ -409,6 +410,13 @@ async def run_morning_scan(
     csp_diagnostics: dict[str, int] = {}
     csp_pool: list[ScoredCandidate] = []
     try:
+        if target_expiration:
+            logger.info(
+                "target_expiration_override",
+                target_expiration=target_expiration,
+                bypassing_dte_filters=True,
+            )
+
         csp_pool, csp_diagnostics = await strategy_engine.scan_csp_candidates(
             broker=broker,
             watchlist=screened_symbols,
@@ -431,6 +439,7 @@ async def run_morning_scan(
             target_dte_sweet_spot=target_dte_sweet_spot,
             pre_allocator_pool_size=pre_allocator_pool_size,
             economic_calendar=economic_calendar,
+            target_expiration=target_expiration,
         )
         result.csp_candidates = csp_pool[:top_n]
     except Exception as exc:

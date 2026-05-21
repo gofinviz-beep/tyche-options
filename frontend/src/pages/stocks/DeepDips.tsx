@@ -50,7 +50,13 @@ function buildColumns(): DataTableColumn<DeepDipAlert>[] {
     {
       key: "actionable",
       header: "Signal",
-      accessor: (r) => (r.recovery_signal?.actionable ? 1 : 0),
+      accessor: (r) => {
+        const sig = r.recovery_signal;
+        if (!sig) return 0;
+        if (sig.meets_all_thresholds) return 2;
+        if (sig.actionable) return 1;
+        return 0;
+      },
       render: (r) => {
         const sig = r.recovery_signal;
         if (!sig) return <span className="text-xs text-gray-400">—</span>;
@@ -79,10 +85,11 @@ function buildColumns(): DataTableColumn<DeepDipAlert>[] {
       },
       sortable: true,
       filter: {
-        type: "select",
+        type: "multiselect",
         options: [
-          { value: "1", label: "Actionable" },
-          { value: "0", label: "All" },
+          { value: "2", label: "BUY" },
+          { value: "1", label: "Watch" },
+          { value: "0", label: "Skip" },
         ],
       },
     },

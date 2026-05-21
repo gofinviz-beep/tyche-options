@@ -126,6 +126,7 @@ class PositionStatus:
             "expiration": self.position.expiration.isoformat(),
             "entry_price": self.position.entry_price,
             "contracts": self.position.contracts,
+            "underlying_at_entry": self.position.underlying_at_entry,
             "underlying_price": self.underlying_price,
             "option_bid": self.option_bid,
             "option_ask": self.option_ask,
@@ -256,6 +257,27 @@ class ActiveMonitor:
         dte = (pos.expiration - today).days
 
         if not contract:
+            if pos.strike > 0:
+                if pos.position_type == "short_put":
+                    fallback_distance = ((quote.last - pos.strike) / pos.strike) * 100
+                else:
+                    fallback_distance = ((pos.strike - quote.last) / pos.strike) * 100
+            else:
+                fallback_distance = 0.0
+
+            chain_empty = len(chain.contracts) == 0
+            if chain_empty:
+                msg = (
+                    "Options chain returned empty — market is likely closed. "
+                    "Live pricing will resume when market opens."
+                )
+            else:
+                msg = (
+                    f"No matching {put_or_call} contract at ${pos.strike:.2f} strike "
+                    f"in the {pos.expiration.isoformat()} chain. "
+                    "Verify strike and expiration are correct."
+                )
+
             return PositionStatus(
                 position=pos,
                 underlying_price=quote.last,
@@ -266,16 +288,14 @@ class ActiveMonitor:
                 theta=0.0,
                 pnl_per_contract=0.0,
                 total_pnl=0.0,
-                distance_to_strike_pct=(
-                    ((quote.last - pos.strike) / pos.strike) * 100
-                    if pos.strike > 0 else 0.0
-                ),
+                distance_to_strike_pct=fallback_distance,
                 dte=dte,
                 trend=trend,
                 alerts=[MonitorAlert(
                     severity=AlertSeverity.INFO,
                     alert_type="contract_not_found",
-                    message="Option contract not found in chain (market may be closed)",
+                    symbol=pos.symbol,
+                    message=msg,
                 )],
             )
 
@@ -353,16 +373,13 @@ class ActiveMonitor:
                 ],
             ))
 
-        # Stock approaching strike (for short puts: price dropping toward strike)
-        if pos.position_type == "short_put" and distance_pct < 2:
+        # Stock approaching strike
+        if distance_pct < 2:
             severity = AlertSeverity.CRITICAL if distance_pct < 0 else AlertSeverity.WARNING
-            itm_note = "IN THE MONEY" if distance_pct < 0 else f"only {distance_pct:.1f}% above strike"
-            alerts.append(MonitorAlert(
-                severity=severity,
-                alert_type="approaching_strike",
-                symbol=pos.symbol,
-                message=f"Stock at ${quote.last:.2f}, {itm_note} (strike ${pos.strike}).",
-                suggested_actions=[
+            itm_note = "IN THE MONEY" if distance_pct < 0 else f"only {distance_pct:.1f}% from strike"
+
+            if pos.position_type == "short_put":
+                actions = [
                     SuggestedAction(
                         action="roll_down_and_out",
                         reason="Roll to lower strike and later expiration to collect additional premium and reduce assignment risk.",
@@ -376,32 +393,56 @@ class ActiveMonitor:
                         action="accept_assignment",
                         reason=f"If assigned, cost basis = ${pos.strike - pos.entry_price:.2f}/share. Then sell covered calls.",
                     ),
-                ],
+                ]
+            else:
+                actions = [
+                    SuggestedAction(
+                        action="roll_up_and_out",
+                        reason="Roll to higher strike and later expiration to collect additional premium and avoid assignment.",
+                    ),
+                    SuggestedAction(
+                        action="buy_to_close",
+                        reason=f"Close at ${contract.ask:.2f} to avoid assignment. Cost: ${contract.ask * 100 * pos.contracts:,.0f}",
+                        details={"buy_at": contract.ask},
+                    ),
+                    SuggestedAction(
+                        action="accept_assignment",
+                        reason=f"If assigned, shares called away at ${pos.strike:.2f}/share. Net = strike + premium collected.",
+                    ),
+                ]
+
+            alerts.append(MonitorAlert(
+                severity=severity,
+                alert_type="approaching_strike",
+                symbol=pos.symbol,
+                message=f"Stock at ${quote.last:.2f}, {itm_note} (strike ${pos.strike}).",
+                suggested_actions=actions,
             ))
 
         # Adverse intraday trend
-        if pos.position_type == "short_put" and trend.direction == TrendDirection.DOWN:
-            if trend.price_change_pct < -1.5:
-                alerts.append(MonitorAlert(
-                    severity=AlertSeverity.WARNING,
-                    alert_type="adverse_trend",
-                    symbol=pos.symbol,
-                    message=f"Stock dropping {trend.price_change_pct:.1f}% (${trend.velocity_per_min:.2f}/min). Monitor closely.",
-                    data={
-                        "trend_direction": trend.direction.value,
-                        "velocity": trend.velocity_per_min,
-                        "change_pct": trend.price_change_pct,
-                    },
-                ))
+        adverse_put = pos.position_type == "short_put" and trend.direction == TrendDirection.DOWN and trend.price_change_pct < -1.5
+        adverse_call = pos.position_type == "short_call" and trend.direction == TrendDirection.UP and trend.price_change_pct > 1.5
+        if adverse_put or adverse_call:
+            if adverse_put:
+                msg = f"Stock dropping {trend.price_change_pct:.1f}% (${trend.velocity_per_min:.2f}/min). Monitor closely."
+            else:
+                msg = f"Stock rising +{trend.price_change_pct:.1f}% (+${trend.velocity_per_min:.2f}/min). Call strike at risk."
+            alerts.append(MonitorAlert(
+                severity=AlertSeverity.WARNING,
+                alert_type="adverse_trend",
+                symbol=pos.symbol,
+                message=msg,
+                data={
+                    "trend_direction": trend.direction.value,
+                    "velocity": trend.velocity_per_min,
+                    "change_pct": trend.price_change_pct,
+                },
+            ))
 
         # Position is losing money
         if profit_pct < -50:
-            alerts.append(MonitorAlert(
-                severity=AlertSeverity.CRITICAL,
-                alert_type="significant_loss",
-                symbol=pos.symbol,
-                message=f"Position down {abs(profit_pct):.0f}% from entry. Evaluate exit vs hold.",
-                suggested_actions=[
+            if pos.position_type == "short_put":
+                loss_actions = [
                     SuggestedAction(
                         action="roll_down_and_out",
                         reason="Roll to collect more premium and reduce cost basis if still bullish.",
@@ -410,7 +451,24 @@ class ActiveMonitor:
                         action="buy_to_close",
                         reason=f"Cut losses. Cost: ${contract.ask * 100 * pos.contracts:,.0f}",
                     ),
-                ],
+                ]
+            else:
+                loss_actions = [
+                    SuggestedAction(
+                        action="roll_up_and_out",
+                        reason="Roll to higher strike and later expiration to collect more premium.",
+                    ),
+                    SuggestedAction(
+                        action="buy_to_close",
+                        reason=f"Cut losses. Cost: ${contract.ask * 100 * pos.contracts:,.0f}",
+                    ),
+                ]
+            alerts.append(MonitorAlert(
+                severity=AlertSeverity.CRITICAL,
+                alert_type="significant_loss",
+                symbol=pos.symbol,
+                message=f"Position down {abs(profit_pct):.0f}% from entry. Evaluate exit vs hold.",
+                suggested_actions=loss_actions,
             ))
 
         return alerts
@@ -454,6 +512,7 @@ class ActiveMonitor:
                         alerts=[MonitorAlert(
                             severity=AlertSeverity.INFO,
                             alert_type="data_unavailable",
+                            symbol=pos.symbol,
                             message="Real-time data unavailable (market may be closed)",
                         )],
                     ))

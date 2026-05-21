@@ -210,6 +210,7 @@ The scanner enforces minimum quality thresholds to avoid penny-premium noise:
 - **`target_dte_sweet_spot = 14`** — prefer expirations closest to 14 DTE
 - **`max_expiration_dates = 2`** — consider up to 2 expiration dates per ticker
 - **`earliest_expiration_only = false`** — allow multiple expirations (was true)
+- **`target_expiration`** (optional, per-scan) — when set to a specific date (e.g. `2026-06-05`), bypasses `min_scan_dte` and `target_dte_sweet_spot`. Only that exact expiration is used; if unavailable for a symbol, the symbol is skipped. Exposed as a date picker on the Scanner page.
 - **`csp_min_bid = 0.50`** — reject bids below $0.50/share ($50/contract)
 - **`csp_min_premium_pct = 0.5`** — premium must be ≥ 0.5% of collateral
 - **`csp_min_volume = 10`** — require at least 10 daily volume

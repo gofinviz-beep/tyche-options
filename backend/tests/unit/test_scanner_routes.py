@@ -68,7 +68,6 @@ _MOCK_SCAN_RESULT = {
     "institutional_ownership": {},
     "allocation": None,
     "allocated_trades": [],
-    "intents_created": 0,
     "errors": [],
 }
 
@@ -81,7 +80,6 @@ _MOCK_HISTORY = [
         "csp_candidate_count": 5,
         "cc_candidate_count": 0,
         "llm_analysis_count": 2,
-        "intents_created": 1,
         "errors_count": 0,
     },
     {
@@ -92,7 +90,6 @@ _MOCK_HISTORY = [
         "csp_candidate_count": 36,
         "cc_candidate_count": 0,
         "llm_analysis_count": 5,
-        "intents_created": 3,
         "errors_count": 1,
     },
 ]
@@ -163,3 +160,21 @@ class TestScanEmptySymbols:
         resp = client.post("/api/v1/scanner/scan?symbols=")
         assert resp.status_code == 400
         assert "Empty symbols" in resp.json()["detail"]
+
+
+class TestTargetExpiration:
+    def test_past_date_returns_400(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/scanner/scan?target_expiration=2020-01-01")
+        assert resp.status_code == 400
+        assert "today or a future date" in resp.json()["detail"]
+
+    def test_bad_format_returns_400(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/scanner/scan?target_expiration=not-a-date")
+        assert resp.status_code == 400
+        assert "YYYY-MM-DD" in resp.json()["detail"]
+
+    def test_valid_date_accepted(self, client: TestClient) -> None:
+        from datetime import date, timedelta
+        future = (date.today() + timedelta(days=3)).isoformat()
+        resp = client.post(f"/api/v1/scanner/scan?symbols=AAPL&target_expiration={future}")
+        assert resp.status_code == 200

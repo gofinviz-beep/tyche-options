@@ -28,7 +28,6 @@ from tyche.conviction.engine import ConvictionEngine
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.earnings import EarningsCalendarClient
 from tyche.market_data.universe import UniverseBuilder
-from tyche.persistence.database import get_session
 from tyche.persistence.scan_repository import (
     cleanup_old_scans,
     load_history,
@@ -38,7 +37,6 @@ from tyche.persistence.scan_repository import (
 )
 from tyche.strategy.allocator import PortfolioAllocator
 from tyche.strategy.engine import StrategyEngine
-from tyche.workflow.intent_builder import create_intents_from_scan
 from tyche.workflow.morning_scan import MorningScanResult, run_morning_scan
 
 logger = structlog.get_logger()
@@ -203,6 +201,7 @@ async def trigger_scan(
     symbols: str | None = Query(default=None, description="Comma-separated symbols override"),
     force_refresh: bool = Query(default=False, description="Clear broker cache before scanning"),
     enable_llm: bool | None = Query(default=None, description="Override LLM analysis (null = use config)"),
+    target_expiration: str | None = Query(default=None, description="Target expiration date (YYYY-MM-DD). Bypasses min_scan_dte and target_dte_sweet_spot."),
     broker: BrokerClient = Depends(get_broker),
     strategy: StrategyEngine = Depends(get_strategy_engine),
     analysis: AnalysisAgent | None = Depends(get_analysis_agent),
@@ -223,6 +222,15 @@ async def trigger_scan(
 
     Pass ``force_refresh=true`` to clear the cache before scanning.
     """
+    if target_expiration is not None:
+        from datetime import date as _date
+        try:
+            exp_date = _date.fromisoformat(target_expiration)
+            if exp_date < _date.today():
+                raise HTTPException(status_code=400, detail="target_expiration must be today or a future date")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="target_expiration must be YYYY-MM-DD format")
+
     if force_refresh and hasattr(broker, "clear_cache"):
         broker.clear_cache()
     if symbols is not None:
@@ -275,23 +283,8 @@ async def trigger_scan(
         min_institutional_pct_stock_buy=settings.min_institutional_pct_stock_buy,
         notification_dispatcher=notification_dispatcher,
         economic_calendar=econ_calendar,
+        target_expiration=target_expiration,
     )
-
-    intents_created = 0
-    if result.csp_analyses:
-        try:
-            async with get_session() as session:
-                intents = await create_intents_from_scan(
-                    session=session,
-                    scan_id=result.scan_id,
-                    csp_analyses=result.csp_analyses,
-                    csp_candidates=result.csp_candidates,
-                    conviction_signals=result.conviction_signals,
-                )
-                intents_created = len(intents)
-        except Exception:
-            logger.error("intent_creation_failed", exc_info=True)
-            result.errors.append("Failed to persist trade intents")
 
     config_snapshot = {
         "top_n": top_n,
@@ -309,12 +302,12 @@ async def trigger_scan(
         "csp_min_volume": settings.csp_min_volume,
         "csp_min_oi": settings.csp_min_oi,
         "llm_enabled": llm_active,
+        "target_expiration": target_expiration,
     }
 
     try:
         await save_scan(
             result,
-            intents_created=intents_created,
             trigger="manual",
             config_snapshot=config_snapshot,
         )
@@ -325,7 +318,6 @@ async def trigger_scan(
         logger.error("scan_persistence_failed", exc_info=True)
 
     serialized = _serialize_scan_result(result)
-    serialized["intents_created"] = intents_created
     if hasattr(broker, "cache_stats"):
         serialized["broker_cache"] = broker.cache_stats
     return serialized
