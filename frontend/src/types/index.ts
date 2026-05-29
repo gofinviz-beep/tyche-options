@@ -128,6 +128,7 @@ export interface AllocationSummary {
   total_premium: number;
   capital_utilization_pct: number;
   solver_status: string;
+  available_capital?: number;
   trades?: number;
   total_collateral?: number;
   positions_used?: number;
@@ -826,6 +827,7 @@ export interface CCSignal {
   ema_8: number;
   ema_21: number;
   ema_50: number;
+  ema_21_slope: number;
   extension_pct_8: number;
   extension_pct_21: number;
   rsi_14: number;

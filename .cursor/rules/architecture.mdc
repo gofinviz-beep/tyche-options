@@ -66,10 +66,10 @@ All routes are mounted under `/api/v1`. Health endpoints are at the root.
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/api/v1/scanner/scan` | POST | Trigger full pipeline scan |
+| `/api/v1/scanner/scan` | POST | Trigger full pipeline scan. Query: `tickers` (optional), `top_n`, `enable_llm`, `target_expiration`, `available_capital` (per-scan deploy capital override) |
 | `/api/v1/scanner/latest` | GET | Latest scan result (200 + null if none) |
+| `/api/v1/covered-calls/analyze` | POST | Batch CC analysis for held positions |
 | `/api/v1/conviction/scan` | GET | EMA conviction scan (local Parquet, no network) |
-| `/api/v1/intents` | GET | List order intents by status |
 | `/api/v1/account/balances` | GET | Account balances from Tradier |
 | `/api/v1/system/config` | GET/PATCH | Read/update system configuration |
 | `/api/v1/telemetry/events` | POST | Ingest batched frontend telemetry |
@@ -90,10 +90,10 @@ All routes are mounted under `/api/v1`. Health endpoints are at the root.
 
 | | Conviction Scan (`GET /api/v1/conviction/scan`) | Scanner (`POST /api/v1/scanner/scan`) |
 |---|---|---|
-| Purpose | EMA trend analysis only (informational) | Full pipeline with intents (actionable) |
-| Data | Local Parquet (no network) | Tradier API + Gemini LLM |
+| Purpose | EMA trend analysis only (informational) | Full pipeline with scoring + MILP allocation |
+| Data | Local Parquet (no network) | Tradier API + optional Gemini LLM |
 | Speed | Sub-second | 30s-2min |
-| Creates intents? | No | Yes |
+| Universe | Optional ticker filter, or full screen | Blank input = full universe; watchlist is highlight-only |
 
 The Scanner calls Conviction Engine internally — no need to run conviction first.
 

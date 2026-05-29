@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 import structlog
 
+from tyche.conviction.features import compute_slope
+
 logger = structlog.get_logger()
 
 _DOW_NAMES = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri"}
@@ -36,6 +38,7 @@ class CCSignal:
     ema_8: float
     ema_21: float
     ema_50: float
+    ema_21_slope: float
     extension_pct_8: float
     extension_pct_21: float
     rsi_14: float
@@ -134,6 +137,7 @@ class CCAnalysisEngine:
         last_ema8 = ema_8.iloc[-1]
         last_ema21 = ema_21.iloc[-1]
         last_ema50 = ema_50.iloc[-1]
+        ema_21_slope = compute_slope(ema_21)
         ext_8 = ((last / last_ema8) - 1) * 100 if last_ema8 else 0
         ext_21 = ((last / last_ema21) - 1) * 100 if last_ema21 else 0
 
@@ -196,6 +200,7 @@ class CCAnalysisEngine:
             ema_8=round(last_ema8, 2),
             ema_21=round(last_ema21, 2),
             ema_50=round(last_ema50, 2),
+            ema_21_slope=round(ema_21_slope, 4),
             extension_pct_8=round(ext_8, 1),
             extension_pct_21=round(ext_21, 1),
             rsi_14=round(rsi, 1),
@@ -316,7 +321,7 @@ class CCAnalysisEngine:
                 ticker=ticker,
                 signal="WAIT",
                 signal_reason="Insufficient OHLCV data",
-                last_close=0, ema_8=0, ema_21=0, ema_50=0,
+                last_close=0, ema_8=0, ema_21=0, ema_50=0, ema_21_slope=0,
                 extension_pct_8=0, extension_pct_21=0, rsi_14=0,
             ),
         )

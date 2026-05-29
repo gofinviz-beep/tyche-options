@@ -65,7 +65,7 @@ async def _scheduled_morning_scan() -> None:
         analysis_agent=get_analysis_agent(None),
         earnings_client=get_earnings_client(settings),
         universe_builder=get_universe_builder(settings),
-        watchlist=settings.watchlist_symbols,
+        watchlist=[],  # full universe; settings watchlist is highlight-only
         conviction_engine=get_conviction_engine(settings),
         data_store=get_data_store(settings),
         top_n=5,

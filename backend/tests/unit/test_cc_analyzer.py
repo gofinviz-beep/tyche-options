@@ -107,6 +107,7 @@ class TestCCAnalysisEngine:
         assert result.signal.ema_8 > 0
         assert result.signal.ema_21 > 0
         assert result.signal.ema_50 > 0
+        assert isinstance(result.signal.ema_21_slope, float)
 
     def test_analyze_with_empty_data(self):
         store = MagicMock()
@@ -832,7 +833,7 @@ class TestOverlayLivePremium:
         """Build a minimal CCDeepDive for overlay testing."""
         sig = CCSignal(
             ticker="PL", signal="GO", signal_reason="test",
-            last_close=40.0, ema_8=35.0, ema_21=33.0, ema_50=30.0,
+            last_close=40.0, ema_8=35.0, ema_21=33.0, ema_50=30.0, ema_21_slope=0.5,
             extension_pct_8=14.3, extension_pct_21=21.2, rsi_14=65.0,
             suggested_strike=47.0, suggested_otm_pct=17.5,
             suggested_premium_est=5.00,

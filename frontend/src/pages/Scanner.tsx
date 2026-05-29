@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   Search,
   ChevronDown,
@@ -54,12 +54,21 @@ export function Scanner() {
   const { data: latestScan } = useLatestScan();
   const { data: scanHistory } = useScanHistory(5);
   const { data: convictionData } = useConvictionScan(undefined, true);
+  const { data: config } = useSystemConfig();
   const triggerScan = useTriggerScan();
   const [symbols, setSymbols] = useState("");
   const [enableLlm, setEnableLlm] = useState(false);
   const [targetExpiration, setTargetExpiration] = useState("");
+  const [deployCapital, setDeployCapital] = useState(100_000);
+  const capitalTouched = useRef(false);
   const [selectedScanId, setSelectedScanId] = useState<string | null>(null);
   const { data: selectedScan } = useScanById(selectedScanId);
+
+  useEffect(() => {
+    if (!capitalTouched.current && config?.available_capital != null) {
+      setDeployCapital(config.available_capital);
+    }
+  }, [config?.available_capital]);
 
   const scan: ScanResult | null | undefined =
     triggerScan.data ?? selectedScan ?? latestScan;
@@ -71,6 +80,7 @@ export function Scanner() {
       topN: TOP_N_LIMIT,
       enableLlm: enableLlm || undefined,
       targetExpiration: targetExpiration || undefined,
+      availableCapital: deployCapital > 0 ? deployCapital : undefined,
     });
   };
 
@@ -179,6 +189,26 @@ export function Scanner() {
                 <XCircle className="h-3.5 w-3.5" />
               </button>
             )}
+          </div>
+          <div className="relative flex items-center">
+            <DollarSign className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+            <input
+              type="number"
+              min={1000}
+              step={1000}
+              value={deployCapital}
+              onChange={(e) => {
+                capitalTouched.current = true;
+                setDeployCapital(Number(e.target.value));
+              }}
+              disabled={triggerScan.isPending}
+              className={`w-[120px] rounded-lg border py-2.5 pl-7 pr-2.5 text-xs transition-colors focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 ${
+                deployCapital !== (config?.available_capital ?? 100_000)
+                  ? "border-blue-400 bg-blue-50 text-blue-700"
+                  : "border-gray-200 bg-white text-gray-700"
+              }`}
+              title="Capital available for CSP collateral"
+            />
           </div>
           <button
             onClick={handleScan}
@@ -1122,7 +1152,7 @@ function AllocationSummaryCard({
   cspCandidates: CSPCandidate[];
 }) {
   const { data: config } = useSystemConfig();
-  const capitalCeiling = config?.available_capital ?? 0;
+  const capitalCeiling = allocation?.available_capital ?? config?.available_capital ?? 0;
   const [expanded, setExpanded] = useState(false);
   const [playgroundOpen, setPlaygroundOpen] = useState(false);
   const [pgTrades, setPgTrades] = useState<PlaygroundTrade[]>([]);

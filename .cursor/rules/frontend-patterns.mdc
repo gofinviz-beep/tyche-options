@@ -68,10 +68,10 @@ The frontend uses a **modular sidebar** with collapsible sections:
 - `PipelineFunnel` — Shows each filter stage (fundamental, market cap, conviction, institutional) with counts
 - `TickerGroupRow` — Groups CSP candidates by ticker with expand/collapse
 - `RecentScans` — Collapsible scan history selector, loads full scan details on selection
-- `AllocationSummaryCard` — Optimizer-selected trades with gross premium, commission ($0.65/contract), net premium, capital deployed. Includes collapsible trade detail table.
+- `AllocationSummaryCard` — Optimizer-selected trades with gross premium, commission ($0.65/contract), net premium, capital deployed. Includes collapsible trade detail table. Shows `available_capital` from the scan run.
 - `AllocationPlayground` — Interactive "what-if" tool inside AllocationSummaryCard:
   - Toggle trades on/off via checkboxes, adjust contract counts with +/- buttons
-  - Capital ceiling from `useSystemConfig().available_capital`; blocks increases that exceed limit
+  - Capital ceiling from scan `available_capital` (or Settings default when customizing); blocks increases that exceed limit
   - "Add from N other candidates" dropdown to pull in unselected CSP candidates
   - Side-by-side comparison grid: Recommended vs Your Selection (contracts, premium, commission, net, capital)
   - "Reset to Recommended" button restores optimizer defaults
@@ -79,6 +79,14 @@ The frontend uses a **modular sidebar** with collapsible sections:
 - `LlmAnalysesCard` — AI analyses sorted by assignment comfort desc, then confidence desc (safest trades first)
 - Scan results persist in SQLite — `GET /scanner/latest` returns 200 + null if no scan exists (not 404)
 - `useScanHistory(limit)` and `useScanById(scanId)` hooks for history navigation
+- **Deploy Capital** input — optional per-scan override passed as `available_capital` query param to `POST /scanner/scan`. Blank ticker field scans full universe (watchlist is highlight-only in Settings, not scan scope).
+
+## Covered Calls Page
+
+- Reads positions from `GET /stocks/positions/active` (shared with Stocks Dashboard)
+- `POST /covered-calls/analyze` batch analysis with optional live Tradier quote/premium overlay
+- `DeepDivePanel` includes `TechnicalContextCard` showing 8/21/50 EMAs and `ema_21_slope` with rising/flat/falling badge — informational only; sell signal still driven by extension above 8-EMA
+- `SignalBadge`: SELL (emerald), CONSIDER (amber), WAIT (gray), SKIP (red)
 
 ## Scanner Types
 

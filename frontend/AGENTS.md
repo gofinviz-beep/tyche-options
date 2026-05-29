@@ -5,6 +5,7 @@
 - React 18 + TypeScript, Vite, Tailwind CSS, @tanstack/react-query, react-router-dom, lucide-react
 - Light theme only — modern financial broker aesthetic
 - All API calls go through `api/client.ts` which prefixes `/api/v1`
+- Dev server binds `127.0.0.1:5173` (IPv4 only); API proxy → `127.0.0.1:8000`. Set `VITE_NO_HMR=1` to disable HMR.
 
 ## Architecture
 
@@ -16,20 +17,20 @@
 
 ## Navigation
 
-Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, Conviction, Intents, Orders, Monitor, Settings), Research. Hybrid collapsibility — opening one section auto-collapses others.
+Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, Conviction, Explore, Monitor, Settings), Stocks (Dashboard, Conviction, Deep Dips, Covered Calls), Intelligence, Research. Hybrid collapsibility — opening one section auto-collapses others.
 
 ## Pages
 
 | Page | Key Hooks |
 |---|---|
-| Scanner (Options) | `useTriggerScan` (accepts `enableLlm`), `useLatestScan`, `useScanHistory`, `useScanById` |
+| Scanner (Options) | `useTriggerScan` (accepts `enableLlm`, `availableCapital`), `useLatestScan`, `useScanHistory`, `useScanById` |
 | Conviction (Options) | `useConvictionScan`, `useTriggerConvictionScan` |
-| Intents | `useOrderIntents`, `useApproveIntent`, `useRejectIntent` |
-| Orders | `useOpenOrders`, `useOrderIntents("executed")` |
+| Covered Calls | `useActivePositions`, `useCCAnalysis` |
 | Monitor | `useTrackedPositions`, `useTrackPosition` |
 | Settings | `useSystemConfig`, `useUpdateConfig` |
 | Dashboard (Stocks) | `useActivePullbacks`, `useActivePositions`, `useCreatePosition`, `useExitPosition`, `useCheckExits`, `useRecentSignals` |
 | Conviction (Stocks) | `useConvictionSnapshots`, `useBacktestProfile` |
+| Deep Dips | `useDeepDips` |
 
 ## UI Conventions
 
@@ -38,14 +39,22 @@ Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, 
 - `StatusBadge` for labels, `PLValue` for P&L numbers, `Card` for sections
 - AllocationPlayground is client-side only — no backend call for what-if math
 - Commission hardcoded at $0.65/contract
+- Settings watchlist is **highlight-only** — blank Scanner scans full universe
 
 ## Scanner Components
 
 - `EntryTimingBanner` — day-of-week guidance (Tue/Wed=green, Thu/Fri=amber)
 - `PipelineFunnel` — filter stage visualization with counts
+- **Deploy Capital** input — per-scan `available_capital` override for MILP allocator
 - `AllocationSummaryCard` + `AllocationPlayground` — optimizer results + interactive customization
 - `LlmAnalysesCard` — sorted by assignment comfort desc, then confidence desc
 - LLM toggle switch (brain icon) next to "Run Scan" button — off by default to save time/cost
+
+## Covered Calls Page
+
+- Positions from `GET /stocks/positions/active` (shared with Stocks Dashboard)
+- `DeepDivePanel` shows `TechnicalContextCard` with EMAs and `ema_21_slope` badge (informational — sell signal still extension-based)
+- Live quote/premium overlay when Tradier broker available
 
 ## Error Handling
 

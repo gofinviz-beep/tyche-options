@@ -708,8 +708,11 @@ function WatchlistEditor({
     setEditing(false);
   };
 
-  return (
-    <Card title="Watchlist">
+    return (
+    <Card
+      title="Watchlist"
+      subtitle="Monitored tickers — highlighted on conviction pages and Stocks Dashboard. Does not limit universe scans."
+    >
       {editing ? (
         <div className="space-y-3">
           <div className="flex flex-wrap gap-2">

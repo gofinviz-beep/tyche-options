@@ -56,6 +56,7 @@ def _signal_to_response(sig) -> CCSignalResponse:
         ema_8=sig.ema_8,
         ema_21=sig.ema_21,
         ema_50=sig.ema_50,
+        ema_21_slope=sig.ema_21_slope,
         extension_pct_8=sig.extension_pct_8,
         extension_pct_21=sig.extension_pct_21,
         rsi_14=sig.rsi_14,

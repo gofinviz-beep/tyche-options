@@ -141,7 +141,7 @@ The `data/` directory contains raw market data (Parquet files only).
 
 | Env Var | Type | Default | Description |
 |---|---|---|---|
-| `TYCHE_WATCHLIST_SYMBOLS` | list[str] | `[]` | Comma-separated stock symbols. If empty, dynamic universe from Parquet data is used. |
+| `TYCHE_WATCHLIST_SYMBOLS` | list[str] | `[]` | Highlight-only symbols for UI badges. Does **not** limit blank Scanner or scheduled morning scans — those screen the full equity universe. Only explicit ticker input on the Scanner page narrows scope. |
 
 ## Example .env File
 

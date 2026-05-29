@@ -27,6 +27,9 @@
 
 - All API routes are mounted under `/api/v1`; health endpoints at root (`/health`, `/health/ready`)
 - LLM analysis is optional (off by default, toggle in Scanner UI), per-ticker parallel with semaphore control (`llm_concurrency` setting)
+- Blank Scanner / scheduled morning scan passes `watchlist=[]` — full equity universe. Settings `watchlist_symbols` is highlight-only for UI badges.
+- `POST /scanner/scan` accepts `available_capital` query param for per-scan deploy capital override (MILP allocator input).
+- `CCAnalysisEngine` exposes `ema_21_slope` on `CCSignal` for informational display — does not gate sell signal (extension-based).
 - Scanner pipeline has 10 timed stages — each records OTel histogram metrics
 - `PipelineStage.duration_ms` and `MorningScanResult.total_duration_ms` track performance
 - Error branches in workflows are swallowed with logging + OTel counter — pipeline continues

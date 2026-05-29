@@ -125,7 +125,7 @@ The script outputs four sections:
 ## Morning Scan (API)
 
 The same pipeline runs via the API endpoint `POST /scanner/scan`, orchestrated by `workflow/morning_scan.py`. The API version additionally:
-- Loads account balances from the broker (uses actual buying power)
+- Loads account balances from the broker (uses actual buying power when no `available_capital` override)
 - Applies institutional ownership filters
 - Fetches earnings dates
 - Runs **per-ticker parallel LLM analysis** (Gemini) with `llm_concurrency` semaphore — avoids token overflow for large universes
@@ -137,7 +137,7 @@ The same pipeline runs via the API endpoint `POST /scanner/scan`, orchestrated b
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/scanner/scan` | Trigger a new scan. Accepts `tickers` (optional), `top_n` (default 50). |
+| `POST` | `/scanner/scan` | Trigger a new scan. Query params: `tickers` (optional — omit for full universe), `top_n` (default 50), `enable_llm`, `target_expiration`, `available_capital` (optional per-scan deploy capital override; defaults to Settings). |
 | `GET` | `/scanner/latest` | Returns the most recent scan result, or `null` (200 OK) if none exists. |
 | `GET` | `/scanner/history?limit=5` | Returns summary metadata for the last N scans. |
 | `GET` | `/scanner/{scan_id}` | Returns full details for a specific scan by ID. |

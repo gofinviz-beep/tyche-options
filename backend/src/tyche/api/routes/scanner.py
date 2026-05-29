@@ -202,6 +202,7 @@ async def trigger_scan(
     force_refresh: bool = Query(default=False, description="Clear broker cache before scanning"),
     enable_llm: bool | None = Query(default=None, description="Override LLM analysis (null = use config)"),
     target_expiration: str | None = Query(default=None, description="Target expiration date (YYYY-MM-DD). Bypasses min_scan_dte and target_dte_sweet_spot."),
+    available_capital: float | None = Query(default=None, gt=0, description="Capital available for CSP collateral (defaults to settings)"),
     broker: BrokerClient = Depends(get_broker),
     strategy: StrategyEngine = Depends(get_strategy_engine),
     analysis: AnalysisAgent | None = Depends(get_analysis_agent),
@@ -241,10 +242,13 @@ async def trigger_scan(
                 detail="Empty symbols parameter. Omit ?symbols= for dynamic discovery.",
             )
     else:
-        watchlist = settings.watchlist_symbols
+        # Full-universe scan when no explicit symbols — settings watchlist is
+        # for UI highlighting only (conviction star, stocks dashboard panel).
+        watchlist = []
 
     llm_active = enable_llm if enable_llm is not None else settings.scanner_llm_enabled
     effective_analysis = analysis if llm_active else None
+    effective_capital = available_capital if available_capital is not None else settings.available_capital
 
     notification_dispatcher = None
     if settings.notification_pullback_alert_enabled:
@@ -263,7 +267,7 @@ async def trigger_scan(
         ticker_meta_store=meta_store,
         portfolio_allocator=allocator,
         top_n=top_n,
-        available_capital_override=settings.available_capital,
+        available_capital_override=effective_capital,
         min_institutional_pct=settings.min_institutional_pct,
         min_market_cap=settings.min_market_cap_millions * 1_000_000,
         max_expiration_dates=settings.max_expiration_dates,
@@ -303,6 +307,7 @@ async def trigger_scan(
         "csp_min_oi": settings.csp_min_oi,
         "llm_enabled": llm_active,
         "target_expiration": target_expiration,
+        "available_capital": effective_capital,
     }
 
     try:

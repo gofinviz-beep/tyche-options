@@ -68,6 +68,7 @@ class AllocationResult:
             "capital_utilization_pct": round(self.capital_utilization_pct, 1),
             "positions_used": self.positions_used,
             "solver_status": self.solver_status,
+            "available_capital": round(self.available_capital, 2),
         }
 
 

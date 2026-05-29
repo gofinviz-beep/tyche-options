@@ -36,12 +36,14 @@ export function useTriggerScan() {
       topN,
       enableLlm,
       targetExpiration,
+      availableCapital,
     }: {
       symbols?: string;
       topN?: number;
       enableLlm?: boolean;
       targetExpiration?: string;
-    }) => api.scanner.triggerScan(symbols, topN, enableLlm, targetExpiration),
+      availableCapital?: number;
+    }) => api.scanner.triggerScan(symbols, topN, enableLlm, targetExpiration, availableCapital),
     onSuccess: (data) => {
       queryClient.setQueryData(["scanner", "latest"], data);
       queryClient.invalidateQueries({ queryKey: ["scanner"] });

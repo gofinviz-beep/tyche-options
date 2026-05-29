@@ -178,3 +178,25 @@ class TestTargetExpiration:
         future = (date.today() + timedelta(days=3)).isoformat()
         resp = client.post(f"/api/v1/scanner/scan?symbols=AAPL&target_expiration={future}")
         assert resp.status_code == 200
+
+
+class TestAvailableCapital:
+    def test_zero_returns_422(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/scanner/scan?available_capital=0")
+        assert resp.status_code == 422
+
+    def test_negative_returns_422(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/scanner/scan?available_capital=-50000")
+        assert resp.status_code == 422
+
+    @patch("tyche.api.routes.scanner.save_scan", new_callable=AsyncMock)
+    @patch("tyche.api.routes.scanner.run_morning_scan", new_callable=AsyncMock)
+    def test_passes_capital_override(
+        self, mock_scan: AsyncMock, mock_save: AsyncMock, client: TestClient
+    ) -> None:
+        from tyche.workflow.morning_scan import MorningScanResult
+
+        mock_scan.return_value = MorningScanResult()
+        resp = client.post("/api/v1/scanner/scan?symbols=AAPL&available_capital=250000")
+        assert resp.status_code == 200
+        assert mock_scan.call_args.kwargs["available_capital_override"] == 250_000.0

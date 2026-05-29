@@ -249,29 +249,28 @@ These are two distinct scans that serve different purposes in the pipeline:
 - Computes 8/21 EMAs and classifies trend states
 - Returns CSP-eligible tickers with conviction levels
 - Fast (sub-second for full universe of 13K+ tickers)
-- Input: watchlist symbols, or blank for full universe screen
+- Input: optional ticker filter, or blank for full universe screen (watchlist in Settings is highlight-only)
 - Output: trend state, conviction level, EMA values, eligibility flag
 
 **When to use:** To check which stocks currently have strong technicals before deciding what to scan with the full Scanner.
 
 ### Scanner (`POST /scanner/scan`)
 
-**Purpose:** Full end-to-end scan pipeline — broker calls, options chains, LLM analysis, intent creation.
+**Purpose:** Full end-to-end scan pipeline — broker calls, options chains, optional LLM analysis, MILP allocation.
 
 - Calls Tradier API for live quotes and options chains (network-dependent)
 - Runs the conviction engine internally as a filter
 - Fetches real option contracts with bid/ask/greeks
 - Filters option strikes to within `strike_range_pct` (default 15%) below the 8-EMA
 - Limits to `max_expiration_dates` (default 2) nearest valid expirations
-- Sends candidates to LLM (Gemini) for thesis/risk analysis — **per-ticker parallel** with configurable concurrency
-- Runs the intent risk pipeline (deterministic risk gate)
-- Creates OrderIntent records in the database
+- Sends candidates to LLM (Gemini) for thesis/risk analysis when enabled — **per-ticker parallel** with configurable concurrency
+- Runs the portfolio MILP allocator with deploy capital from query param `available_capital` or Settings default
 - **Persists all results** to distributed SQLite (scan runs, candidates, analyses) — survives restarts
 - Slow (30s–2min depending on universe size and API latency)
-- Input: watchlist symbols, or blank for dynamic universe discovery
-- Output: scored candidates, LLM analyses, created intents, scan history
+- Input: optional ticker filter, or blank for full universe (watchlist is highlight-only, not scan scope)
+- Output: scored candidates, optional LLM analyses, allocation summary, scan history
 
-**When to use:** To generate actionable trade recommendations with real pricing that you can approve/reject on the Intents page.
+**When to use:** To generate actionable CSP recommendations with real pricing and an optimized portfolio allocation.
 
 ### Options Explorer (`POST /scanner/explore`)
 

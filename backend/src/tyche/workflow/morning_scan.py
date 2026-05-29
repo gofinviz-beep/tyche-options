@@ -145,7 +145,7 @@ async def run_morning_scan(
 
     Steps:
     1. Load account state (balances, positions, open orders)
-    2. Screen watchlist through fundamental gates
+    2. Screen universe (explicit ``watchlist`` arg if non-empty, else full OHLCV universe)
     3. Run conviction engine (8/21 EMA) if data store available
     4. Fetch earnings dates
     5. Scan for CSP candidates (deterministic) - only CSP-eligible stocks

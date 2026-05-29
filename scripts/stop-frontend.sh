@@ -9,8 +9,8 @@ if [ -z "$PIDS" ]; then
   exit 0
 fi
 
-echo "Stopping frontend (port $PORT, PIDs: $PIDS)..."
-echo "$PIDS" | xargs kill -9 2>/dev/null || true
+echo "Stopping frontend (port $PORT, PIDs: $(echo "$PIDS" | tr '\n' ' '))..."
+kill -9 $PIDS 2>/dev/null || true
 sleep 1
 
 if lsof -ti ":$PORT" >/dev/null 2>&1; then

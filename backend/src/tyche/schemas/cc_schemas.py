@@ -30,6 +30,7 @@ class CCSignalResponse(BaseModel):
     ema_8: float
     ema_21: float
     ema_50: float
+    ema_21_slope: float = 0.0
     extension_pct_8: float
     extension_pct_21: float
     rsi_14: float

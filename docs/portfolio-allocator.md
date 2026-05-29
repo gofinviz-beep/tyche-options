@@ -167,16 +167,19 @@ Each `AllocatedTrade` includes:
 
 The allocator is used in three places:
 
-1. **Morning scan** (`workflow/morning_scan.py`): After CSP and CC candidates are identified, the allocator produces the optimal portfolio. Results are included in the `MorningScanResult`.
+1. **Morning scan** (`workflow/morning_scan.py`): After CSP and CC candidates are identified, the allocator produces the optimal portfolio. Results are included in the `MorningScanResult`. Scheduled scan uses full universe (`watchlist=[]`).
 
-2. **Live scan script** (`scripts/live_scan.py`): Standalone CLI tool that runs the full pipeline and displays the optimal allocation.
+2. **Scanner API** (`POST /scanner/scan`): Accepts optional `available_capital` query param to override Settings for that run. Frontend "Deploy Capital" input maps to this param.
 
-3. **Capital-aware backtest** (`scripts/backtest_ema.py`): The `run_capital_simulation()` function uses a sub-allocator per day to simulate realistic portfolio-level performance.
+3. **Live scan script** (`scripts/live_scan.py`): Standalone CLI tool that runs the full pipeline and displays the optimal allocation.
+
+4. **Capital-aware backtest** (`scripts/backtest_ema.py`): The `run_capital_simulation()` function uses a sub-allocator per day to simulate realistic portfolio-level performance.
 
 ## Configuration
 
 | Setting | Env Var | Default |
 |---|---|---|
+| Available capital | `TYCHE_AVAILABLE_CAPITAL` | $100,000 |
 | Max positions | `TYCHE_MAX_OPEN_POSITIONS` | 8 |
 | Max contracts per position | `TYCHE_MAX_CONTRACTS_PER_POSITION` | 40 |
 | Max concentration per ticker | `TYCHE_MAX_CONCENTRATION_PER_TICKER_PCT` | 25.0% |

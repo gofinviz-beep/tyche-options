@@ -57,11 +57,12 @@ export const api = {
   },
 
   scanner: {
-    triggerScan: (symbols?: string, topN = 5, enableLlm?: boolean, targetExpiration?: string) => {
+    triggerScan: (symbols?: string, topN = 5, enableLlm?: boolean, targetExpiration?: string, availableCapital?: number) => {
       const params = new URLSearchParams({ top_n: String(topN) });
       if (symbols) params.set("symbols", symbols);
       if (enableLlm !== undefined) params.set("enable_llm", String(enableLlm));
       if (targetExpiration) params.set("target_expiration", targetExpiration);
+      if (availableCapital !== undefined) params.set("available_capital", String(availableCapital));
       return request<import("@/types").ScanResult>(`/scanner/scan?${params}`, {
         method: "POST",
       });

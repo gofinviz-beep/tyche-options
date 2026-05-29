@@ -7,7 +7,7 @@ import {
   useDeletePosition,
 } from "@/hooks/useApi";
 import { api } from "@/api/client";
-import type { CCPosition, CCDeepDive, CCPortfolioAnalysis, StockPosition } from "@/types";
+import type { CCPosition, CCDeepDive, CCPortfolioAnalysis, CCSignal, StockPosition } from "@/types";
 import {
   ChevronDown,
   ChevronRight,
@@ -608,6 +608,67 @@ function RecommendedActionCard({
   );
 }
 
+function Ema21SlopeBadge({ slope }: { slope: number }) {
+  const rising = slope > 0;
+  const flat = slope === 0;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded ${
+        flat
+          ? "bg-gray-100 text-gray-600"
+          : rising
+            ? "bg-emerald-100 text-emerald-700"
+            : "bg-red-100 text-red-700"
+      }`}
+    >
+      {flat ? "Flat" : rising ? "Rising" : "Falling"}
+    </span>
+  );
+}
+
+function TechnicalContextCard({ sig }: { sig: CCSignal }) {
+  const slope = sig.ema_21_slope ?? 0;
+  return (
+    <div className="rounded-lg border border-gray-200 p-3 bg-white">
+      <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">
+        Trend Context (informational)
+      </h4>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+        <div>
+          <span className="text-gray-500 text-xs block">21-EMA</span>
+          <span className="font-mono font-semibold">${sig.ema_21.toFixed(2)}</span>
+        </div>
+        <div>
+          <span className="text-gray-500 text-xs block">21-EMA slope</span>
+          <span className="font-mono font-semibold">
+            {slope >= 0 ? "+" : ""}
+            {slope.toFixed(2)}/day
+          </span>
+        </div>
+        <div>
+          <span className="text-gray-500 text-xs block">Direction</span>
+          <Ema21SlopeBadge slope={slope} />
+        </div>
+        <div>
+          <span className="text-gray-500 text-xs block">Price vs 21-EMA</span>
+          <span
+            className={`font-mono font-semibold ${
+              sig.extension_pct_21 >= 0 ? "text-emerald-600" : "text-red-600"
+            }`}
+          >
+            {sig.extension_pct_21 >= 0 ? "+" : ""}
+            {sig.extension_pct_21.toFixed(1)}%
+          </span>
+        </div>
+      </div>
+      <p className="text-xs text-gray-400 mt-2">
+        Same 3-day linear regression slope as conviction. Not a sell gate — context
+        for recovery CC timing after assignment.
+      </p>
+    </div>
+  );
+}
+
 function DeepDivePanel({
   dd,
   pos,
@@ -619,6 +680,8 @@ function DeepDivePanel({
     <div className="bg-gray-50 border-t border-gray-200 px-6 py-4 space-y-4">
       {/* Recommended Action — the actionable punchline */}
       <RecommendedActionCard rec={dd.recommended_action} />
+
+      <TechnicalContextCard sig={dd.signal} />
 
       {/* EMA Reversion Timing */}
       <div className="grid grid-cols-3 gap-3">
