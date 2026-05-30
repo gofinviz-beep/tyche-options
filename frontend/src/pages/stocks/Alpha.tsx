@@ -37,6 +37,36 @@ function pct(v: number | null | undefined, digits = 1): string {
   return `${(v * 100).toFixed(digits)}%`;
 }
 
+// Target magnitude per horizon (matches BIG_MOVE_SPECS in ml/labels.py).
+const HORIZON_TARGET_PCT: Record<string, number> = {
+  swing: 25,
+  trend: 40,
+  thematic: 60,
+};
+
+function horizonProb(r: AlphaSignal): number | null {
+  switch (r.horizon) {
+    case "swing":
+      return r.breakout_prob_swing;
+    case "trend":
+      return r.breakout_prob_trend;
+    case "thematic":
+      return r.breakout_prob_thematic;
+    default:
+      return null;
+  }
+}
+
+// Expected move % for the row's horizon = P(move) × target magnitude.
+// This is the expected-value (return-maximizing) ranking key — sort by this
+// desc, filtered to Strong Buy + a single horizon, to get the top names.
+function expectedMovePct(r: AlphaSignal): number | null {
+  const target = HORIZON_TARGET_PCT[r.horizon];
+  const p = horizonProb(r);
+  if (target == null || p == null) return null;
+  return target * p;
+}
+
 const MARKET_CAP_PRESETS: { value: number; label: string }[] = [
   { value: 250, label: "$250M+" },
   { value: 500, label: "$500M+" },
@@ -85,13 +115,16 @@ function buildColumns(): DataTableColumn<AlphaSignal>[] {
         const m = SIGNAL_META[r.signal] ?? SIGNAL_META.avoid;
         return <StatusBadge label={m.label} variant={m.variant} />;
       },
+      sortable: true,
       filter: {
         type: "multiselect",
+        // Values must match the numeric accessor above (rank), not the string
+        // signal — the multiselect compares String(accessor) to these values.
         options: [
-          { value: "strong_buy", label: "Strong Buy" },
-          { value: "buy", label: "Buy" },
-          { value: "watch", label: "Watch" },
-          { value: "avoid", label: "Avoid" },
+          { value: "3", label: "Strong Buy" },
+          { value: "2", label: "Buy" },
+          { value: "1", label: "Watch" },
+          { value: "0", label: "Avoid" },
         ],
       },
     },
@@ -175,6 +208,26 @@ function buildColumns(): DataTableColumn<AlphaSignal>[] {
           <span className={`flex items-center justify-end gap-1 tabular-nums ${color}`}>
             <Brain className="h-3 w-3" />
             {pct(best, 0)}
+          </span>
+        );
+      },
+    },
+    {
+      key: "expected_move",
+      header: "Exp. Move",
+      align: "right",
+      sortable: true,
+      accessor: (r) => expectedMovePct(r) ?? null,
+      render: (r) => {
+        const v = expectedMovePct(r);
+        if (v == null) return <span className="text-xs text-gray-400">—</span>;
+        const m = HORIZON_META[r.horizon] ?? HORIZON_META.none;
+        return (
+          <span
+            className="font-semibold tabular-nums text-emerald-700"
+            title={`P(move) × ${HORIZON_TARGET_PCT[r.horizon]}% target (${m.label})`}
+          >
+            +{v.toFixed(1)}%
           </span>
         );
       },
