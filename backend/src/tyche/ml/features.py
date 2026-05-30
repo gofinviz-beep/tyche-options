@@ -99,6 +99,42 @@ MARKET_CONTEXT_COLS: list[str] = [
     "market_dip_breadth",
 ]
 
+# Directional momentum / trend-acceleration features for the Alpha engine.
+# Computed per ticker in extract_ticker_features(). This is an OPT-IN group:
+# it is NOT part of the default get_feature_columns() output, so the deployed
+# CSP model's feature set is unchanged.
+MOMENTUM_FEATURE_COLS: list[str] = [
+    "return_63d",
+    "return_126d",
+    "return_252d",
+    "ema_200",
+    "ema_200_slope",
+    "price_to_200ema_pct",
+    "ema_stack_score",
+    "pct_off_52w_high",
+    "pct_above_52w_low",
+    "breakout_20d",
+    "breakout_63d",
+    "volume_thrust_ratio",
+    "slope_accel",
+]
+
+# Relative-strength features (cross-sectional vs SPY). Added by
+# add_relative_strength_features(). Part of the opt-in momentum group.
+RS_FEATURE_COLS: list[str] = [
+    "rs_63d",
+    "rs_126d",
+    "rs_252d",
+]
+
+# NOTE: A MACD-histogram + multi-timeframe (weekly/monthly/quarterly) trend-
+# alignment feature group was prototyped and walk-forward validated against the
+# big-move targets (see scripts/train_alpha.py ablation, May 2026). It produced
+# only noise-level AUC lift on top of the existing momentum/EMA-stack features
+# (+0.0003 to +0.0005), i.e. redundant. It was dropped to keep the nightly
+# feature pipeline lean. Re-evaluate if/when fundamental or analyst partner
+# data is added, since the interaction may differ.
+
 
 def _ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
@@ -306,6 +342,38 @@ def extract_ticker_features(
 
     log_returns = np.log(close / close.shift(1))
     df["volatility_20d"] = log_returns.rolling(20).std() * np.sqrt(252)
+
+    # --- Momentum / trend-acceleration (opt-in MOMENTUM_FEATURE_COLS) ---
+    df["return_63d"] = close.pct_change(63)
+    df["return_126d"] = close.pct_change(126)
+    df["return_252d"] = close.pct_change(252)
+
+    ema_200 = _ema(close, 200)
+    df["ema_200"] = ema_200
+    df["ema_200_slope"] = _slope_series(ema_200, 5)
+    df["price_to_200ema_pct"] = (close - ema_200) / ema_200.replace(0, np.nan) * 100
+
+    df["ema_stack_score"] = (
+        (ema_8 > ema_21).astype(int)
+        + (ema_21 > ema_50).astype(int)
+        + (ema_50 > ema_200).astype(int)
+    )
+
+    roll_max_252 = close.rolling(252, min_periods=60).max()
+    roll_min_252 = close.rolling(252, min_periods=60).min()
+    df["pct_off_52w_high"] = (close - roll_max_252) / roll_max_252 * 100
+    df["pct_above_52w_low"] = (close - roll_min_252) / roll_min_252.replace(0, np.nan) * 100
+
+    prior_max_20 = close.shift(1).rolling(20, min_periods=20).max()
+    prior_max_63 = close.shift(1).rolling(63, min_periods=63).max()
+    df["breakout_20d"] = (close >= prior_max_20).astype(int)
+    df["breakout_63d"] = (close >= prior_max_63).astype(int)
+
+    vol_5 = volume.rolling(5, min_periods=1).mean()
+    vol_50 = volume.rolling(50, min_periods=10).mean()
+    df["volume_thrust_ratio"] = vol_5 / vol_50.replace(0, np.nan)
+
+    df["slope_accel"] = df["ema_8_slope"] - df["ema_21_slope"]
 
     if derived is not None and not derived.empty:
         derived_clean = derived.copy()
@@ -520,6 +588,54 @@ def add_market_context_features(
         for col in ["spy_return_5d", "spy_return_10d", "spy_drawdown_from_high", "spy_rsi_14"]:
             if col not in df.columns:
                 df[col] = np.nan
+
+    return df
+
+
+def add_relative_strength_features(
+    all_features: pd.DataFrame,
+    spy_ohlcv: pd.DataFrame | None = None,
+    date_col: str = "date",
+) -> pd.DataFrame:
+    """Add relative-strength features: ticker return minus SPY return.
+
+    Relative strength is one of the strongest directional signals — names
+    that outperform the benchmark over 3/6/12 months tend to continue. Excess
+    return is computed per date against SPY's same-window return.
+
+    Requires ``return_63d``/``return_126d``/``return_252d`` (from the momentum
+    feature group). Defaults to NaN when SPY data is unavailable.
+    """
+    if all_features.empty:
+        for col in RS_FEATURE_COLS:
+            if col not in all_features.columns:
+                all_features[col] = np.nan
+        return all_features
+
+    df = all_features.copy()
+
+    if spy_ohlcv is None or spy_ohlcv.empty or "return_63d" not in df.columns:
+        for col in RS_FEATURE_COLS:
+            if col not in df.columns:
+                df[col] = np.nan
+        return df
+
+    spy = spy_ohlcv.copy().sort_values("date").reset_index(drop=True)
+    spy_close = spy["close"].astype(float)
+    spy["spy_ret_63"] = spy_close.pct_change(63)
+    spy["spy_ret_126"] = spy_close.pct_change(126)
+    spy["spy_ret_252"] = spy_close.pct_change(252)
+    spy["date_key"] = pd.to_datetime(spy["date"]).dt.date
+
+    df["date_key"] = pd.to_datetime(df[date_col]).dt.date
+    sub = spy[["date_key", "spy_ret_63", "spy_ret_126", "spy_ret_252"]].drop_duplicates("date_key")
+    df = df.merge(sub, on="date_key", how="left")
+
+    df["rs_63d"] = df["return_63d"] - df["spy_ret_63"]
+    df["rs_126d"] = df["return_126d"] - df["spy_ret_126"]
+    df["rs_252d"] = df["return_252d"] - df["spy_ret_252"]
+
+    df.drop(columns=["date_key", "spy_ret_63", "spy_ret_126", "spy_ret_252"], inplace=True)
 
     return df
 

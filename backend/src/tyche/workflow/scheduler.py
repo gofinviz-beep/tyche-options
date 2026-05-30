@@ -289,6 +289,28 @@ class WorkflowScheduler:
         self._jobs["conviction_batch"] = job.id
         logger.info("scheduled_conviction_batch", time=f"{hour:02d}:{minute:02d} ET")
 
+    def schedule_alpha_batch(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 16,
+        minute: int = 20,
+    ) -> None:
+        """Schedule directional alpha batch after OHLCV refresh (default 4:20 PM ET)."""
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="alpha_batch",
+            replace_existing=True,
+            name="Directional Alpha Batch",
+        )
+        self._jobs["alpha_batch"] = job.id
+        logger.info("scheduled_alpha_batch", time=f"{hour:02d}:{minute:02d} ET")
+
     def schedule_bridge_tradier_iv(
         self,
         func: Callable[..., Coroutine[Any, Any, Any]],

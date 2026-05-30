@@ -12,10 +12,11 @@ All times are US/Eastern. Weekday-only jobs do not fire on weekends or market ho
 |---------|-----|-------------|----------|---------|
 | 09:35 | Morning Scan | always on | Tradier (options chains) | ~30s |
 | 16:00 | Daily Digest | `daily_digest_enabled` | None | <1s |
-| 16:02 | OHLCV Refresh | always on | Polygon (grouped bars) | ~10s |
+| 16:02 | OHLCV Refresh (+ market-cap reprice) | always on | Polygon (grouped bars) | ~10s |
 | 16:05 | Exit Monitor | always on | None (reads OHLCV) | <5s |
 | 16:08 | **Conviction Batch** | `conviction_batch_after_ohlcv` | None (reads OHLCV) | ~30-60s |
 | 16:10 | Options Snapshot | `options_snapshot_enabled` | Tradier (120 RPM) | ~30 min |
+| 16:20 | **Directional Alpha Batch** | `alpha_batch_enabled` | None (reads OHLCV) | ~1-3 min |
 | 16:45 | **Bridge Tradier IV** | `bridge_tradier_iv_enabled` | None (reads snapshot) | ~60s |
 
 ### Daily (Nightly, All Days)
@@ -87,6 +88,14 @@ Quarterly:
 - Fetches last 5 days of daily bars from Polygon grouped endpoint
 - Writes to `data/ohlcv/*.parquet`
 - Foundation for all conviction and ML pipelines
+- **Then reprices market caps:** `recompute_market_caps_from_shares()` sets `market_cap = shares_outstanding × latest close` in `ticker_meta.parquet` (no extra API calls — uses the close just fetched). This keeps market cap price-current daily; see "Live Market Cap" below.
+
+### Directional Alpha Batch
+- Runs `run_alpha_batch()` across the equity universe (common-stock only, build-net floor `alpha_min_market_cap_millions`, default $250M)
+- `AlphaScoreEngine` composites momentum / relative-strength / trend-quality / breakout / volume-thrust factors + the `BreakoutPredictor` ML big-move probabilities into a 0–100 Alpha score with a horizon tag (Swing/Trend/Thematic)
+- Persists to `data/alpha_signals.parquet` (`AlphaSignalStore`)
+- Serves the Directional Alpha page (`GET /alpha/scan`); the page applies its own market-cap floor (default $1B) at read time
+- Gracefully degrades to rules-only scoring when no big-move model artifacts exist
 
 ### Conviction Batch
 - Runs `run_conviction_batch()` across the full equity universe
@@ -144,9 +153,16 @@ Quarterly:
 
 ### Ticker Meta Refresh (Weekly)
 - Fetches active common stock reference data from Polygon (`/v3/reference/tickers`)
-- Updates `data/ticker_meta.parquet` with type, market cap, exchange info
-- Backfills missing market caps via per-ticker Polygon snapshot API
+- Updates `data/ticker_meta.parquet` with type, exchange info, and **shares outstanding** (`weighted_shares_outstanding`)
+- Refreshes shares outstanding (slow-moving — buybacks/issuance) so the daily `shares × close` reprice stays accurate, then reprices caps
+- Polygon's static `market_cap` is kept only as a fallback for names with no OHLCV to reprice; the dedicated market-cap backfill is **no longer run here** (superseded by the daily reprice)
 - Ensures newly-listed stocks appear in the universe
+
+### Live Market Cap (shares × close)
+- **Problem:** Polygon's `market_cap` reference field lags by *months* (it is not re-priced as the stock moves), so refreshing it weekly just re-pulls a stale number. Example: MU read $413B while its live cap was >$1T.
+- **Fix:** store `shares_outstanding` and derive `market_cap = shares × latest daily close`. Shares barely change, so the daily close drives freshness — effectively daily/intraday-grade caps with zero extra API calls.
+- The derived cap is written back into `ticker_meta.parquet`'s `market_cap`, so every consumer (conviction, scanner, deep-dips, alpha, and the $4B/$1B floors) reads the current value with no downstream changes.
+- One-time / manual backfill of shares + caps for the whole universe: `python scripts/backfill_shares_caps.py` (or `--tickers MU,NVDA`).
 
 ### Quarterly Meta Refresh
 - SIC/sector data: backfills sector codes from Polygon ticker details API
@@ -182,6 +198,12 @@ python scripts/ingest_data.py --correlations
 # Ticker metadata
 python scripts/ingest_data.py --meta
 
+# Shares outstanding + live market-cap reprice (shares × close)
+python scripts/backfill_shares_caps.py
+
+# Directional alpha — train big-move models (walk-forward + save)
+python scripts/train_alpha.py --save-model
+
 # Institutional ownership
 python scripts/ingest_data.py --institutional --no-conviction
 
@@ -212,6 +234,9 @@ curl -X POST http://localhost:8000/api/v1/stocks/conviction/refresh
 
 # Trigger ML retrain
 curl -X POST http://localhost:8000/api/v1/system/ml/retrain
+
+# Recompute directional alpha signals
+curl -X POST http://localhost:8000/api/v1/alpha/recompute
 
 # Check ML model info
 curl http://localhost:8000/api/v1/system/ml/model-info
@@ -323,6 +348,15 @@ curl http://localhost:8000/api/v1/system/scheduler/status
 - **Config:** `weekly_meta_refresh_enabled` must be `true` (default).
 - **Check:** Requires `TYCHE_POLYGON_API_KEY` in `.env`.
 
+### Market cap looks stale / wrong (e.g. $413B vs $1T)
+- **Root cause:** Polygon's `market_cap` field lags by months; the derived `shares × close` reprice needs `shares_outstanding` present.
+- **Check:** `python -c "import sys; sys.path.insert(0,'src'); from tyche.market_data.data_store import TickerMetaStore; s=TickerMetaStore('data'); print(s.get_shares_outstanding(['MU']))"` — empty means shares were never backfilled.
+- **Fix:** `python scripts/backfill_shares_caps.py` (populates shares + reprices). Thereafter the daily OHLCV refresh keeps caps current automatically.
+
+### Directional Alpha page empty
+- **Check:** `data/alpha_signals.parquet` exists and the page's Min Mkt Cap floor isn't above the build-net floor (`alpha_min_market_cap_millions`, $250M).
+- **Fix:** `curl -X POST http://localhost:8000/api/v1/alpha/recompute` (background). Big-move ML probabilities require trained artifacts (`python scripts/train_alpha.py --save-model`); without them the page runs rules-only.
+
 ## Cost Summary
 
 | API Provider | Jobs Using It | Billing |
@@ -342,6 +376,8 @@ All config knobs are editable via the Settings UI (`PATCH /api/v1/system/config`
 | Setting | Default | Purpose |
 |---------|---------|---------|
 | `conviction_batch_after_ohlcv` | `true` | Run conviction batch after daily OHLCV refresh |
+| `alpha_batch_enabled` | `true` | Run the directional alpha batch (16:20 ET) |
+| `alpha_min_market_cap_millions` | `250.0` | Build-net market-cap floor for the alpha universe ($M) |
 | `bridge_tradier_iv_enabled` | `true` | Bridge Tradier snapshots into IV/derived pipeline |
 | `correlation_refresh_enabled` | `true` | Monthly 60d correlation matrix refresh |
 | `etf_refresh_enabled` | `true` | Quarterly ETF constituent list refresh |

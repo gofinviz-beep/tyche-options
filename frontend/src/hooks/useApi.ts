@@ -313,6 +313,32 @@ export function useTickerGates(ticker: string | null) {
   });
 }
 
+export function useAlphaScan(params?: {
+  signal?: string;
+  horizon?: string;
+  minScore?: number;
+  minMarketCapMillions?: number;
+  limit?: number;
+}) {
+  return useQuery({
+    queryKey: ["alpha", "scan", params],
+    queryFn: () => api.alpha.scan(params),
+    staleTime: Infinity,
+    gcTime: 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useRecomputeAlpha() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (maxTickers?: number) => api.alpha.recompute(maxTickers),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["alpha"] });
+    },
+  });
+}
+
 export function useBacktestProfiles() {
   return useQuery({
     queryKey: ["stocks", "backtest-profiles"],

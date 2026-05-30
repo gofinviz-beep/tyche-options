@@ -237,6 +237,38 @@ export const api = {
       request<import("@/types").ExitSignal[]>("/stocks/positions/signals"),
   },
 
+  alpha: {
+    scan: (params?: {
+      signal?: string;
+      horizon?: string;
+      minScore?: number;
+      minMarketCapMillions?: number;
+      limit?: number;
+    }) => {
+      const q = new URLSearchParams();
+      if (params?.signal) q.set("signal", params.signal);
+      if (params?.horizon) q.set("horizon", params.horizon);
+      if (params?.minScore) q.set("min_score", String(params.minScore));
+      if (params?.minMarketCapMillions != null)
+        q.set("min_market_cap_millions", String(params.minMarketCapMillions));
+      if (params?.limit) q.set("limit", String(params.limit));
+      const qs = q.toString();
+      return request<import("@/types").AlphaScanResult>(
+        `/alpha/scan${qs ? `?${qs}` : ""}`,
+      );
+    },
+    getSignal: (ticker: string) =>
+      request<import("@/types").AlphaSignal>(
+        `/alpha/signal/${encodeURIComponent(ticker)}`,
+      ),
+    recompute: (maxTickers?: number) => {
+      const qs = maxTickers ? `?max_tickers=${maxTickers}` : "";
+      return request<import("@/types").AlphaBatchResult>(`/alpha/recompute${qs}`, {
+        method: "POST",
+      });
+    },
+  },
+
   system: {
     getConfig: () => request<import("@/types").SystemConfig>("/system/config"),
     updateConfig: (data: import("@/types").ConfigUpdateRequest) =>

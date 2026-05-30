@@ -61,6 +61,10 @@ TICKER_META_SCHEMA = pa.schema(
         ("sic_code", pa.string()),
         ("sic_description", pa.string()),
         ("sector", pa.string()),
+        # Shares outstanding (Polygon weighted_shares_outstanding). Used to
+        # derive a live market cap = shares x latest daily close, so market cap
+        # tracks price daily instead of Polygon's months-stale market_cap field.
+        ("shares_outstanding", pa.float64()),
     ]
 )
 
@@ -69,6 +73,7 @@ _META_MIGRATE_COLS = {
     "sic_code": pd.NA,
     "sic_description": pd.NA,
     "sector": pd.NA,
+    "shares_outstanding": 0.0,
 }
 
 
@@ -545,6 +550,7 @@ class TickerMetaStore:
                     "sic_code": None,
                     "sic_description": None,
                     "sector": None,
+                    "shares_outstanding": 0.0,
                 }
                 for t in tickers
             ]
@@ -582,6 +588,15 @@ class TickerMetaStore:
                     ["ticker", "sector"]
                 ].values
             )
+            shares_map = (
+                dict(
+                    existing_df[existing_df["shares_outstanding"] > 0][
+                        ["ticker", "shares_outstanding"]
+                    ].values
+                )
+                if "shares_outstanding" in existing_df.columns
+                else {}
+            )
 
             combined = pd.concat([existing_df, new_df], ignore_index=True)
             combined = combined.drop_duplicates(subset=["ticker"], keep="last")
@@ -601,6 +616,11 @@ class TickerMetaStore:
             for ticker, sec in sector_map.items():
                 mask = (combined["ticker"] == ticker) & combined["sector"].isna()
                 combined.loc[mask, "sector"] = sec
+            for ticker, sh in shares_map.items():
+                mask = (combined["ticker"] == ticker) & (
+                    combined["shares_outstanding"] <= 0
+                )
+                combined.loc[mask, "shares_outstanding"] = sh
         else:
             combined = new_df.drop_duplicates(subset=["ticker"], keep="last")
 
@@ -610,6 +630,9 @@ class TickerMetaStore:
             combined["institutional_pct"] = pd.to_numeric(
                 combined["institutional_pct"], errors="coerce"
             )
+        combined["shares_outstanding"] = pd.to_numeric(
+            combined.get("shares_outstanding"), errors="coerce"
+        ).fillna(0.0)
 
         table = pa.Table.from_pandas(combined, schema=TICKER_META_SCHEMA)
         pq.write_table(table, self._parquet_path, compression="snappy")
@@ -628,7 +651,7 @@ class TickerMetaStore:
                 columns=[
                     "ticker", "name", "market_cap", "exchange", "type",
                     "last_updated", "institutional_pct",
-                    "sic_code", "sic_description", "sector",
+                    "sic_code", "sic_description", "sector", "shares_outstanding",
                 ]
             )
         df = pd.read_parquet(self._parquet_path)
@@ -647,6 +670,49 @@ class TickerMetaStore:
         if tickers:
             df = df[df["ticker"].isin(tickers)]
         return dict(zip(df["ticker"], df["market_cap"]))
+
+    def get_shares_outstanding(
+        self, tickers: list[str] | None = None
+    ) -> dict[str, float]:
+        """Return a ticker -> shares_outstanding mapping (only positive values)."""
+        if not self.exists:
+            return {}
+        try:
+            df = pd.read_parquet(
+                self._parquet_path, columns=["ticker", "shares_outstanding"]
+            )
+        except (ValueError, KeyError):
+            return {}
+        if tickers:
+            df = df[df["ticker"].isin(tickers)]
+        df = df[df["shares_outstanding"] > 0]
+        return dict(zip(df["ticker"], df["shares_outstanding"]))
+
+    def update_shares_outstanding(self, shares: dict[str, float]) -> int:
+        """Bulk-update shares outstanding for existing tickers.
+
+        Returns the number of tickers updated.
+        """
+        if not self.exists or not shares:
+            return 0
+
+        df = pd.read_parquet(self._parquet_path)
+        df = _auto_migrate_meta_columns(df)
+        updated = 0
+        for ticker, sh in shares.items():
+            if sh is None or sh <= 0:
+                continue
+            mask = df["ticker"] == ticker
+            if mask.any():
+                df.loc[mask, "shares_outstanding"] = float(sh)
+                updated += 1
+
+        df["last_updated"] = pd.to_datetime(df["last_updated"]).dt.date
+        table = pa.Table.from_pandas(df, schema=TICKER_META_SCHEMA)
+        pq.write_table(table, self._parquet_path, compression="snappy")
+
+        logger.info("ticker_meta_shares_updated", updated=updated, total=len(shares))
+        return updated
 
     def get_exchanges(self, tickers: list[str] | None = None) -> dict[str, str]:
         """Return a ticker -> exchange mapping."""
@@ -1632,6 +1698,52 @@ async def _backfill_sic_data(
         sic_updated=updated,
         caps_updated=len(cap_updates),
         still_missing=len(missing) - len(sic_data),
+    )
+    return updated
+
+
+def recompute_market_caps_from_shares(
+    meta_store: TickerMetaStore,
+    ohlcv_store: "OHLCVStore",
+    tickers: list[str] | None = None,
+) -> int:
+    """Derive a live market cap = shares_outstanding x latest daily close.
+
+    Writes the result back into ticker_meta's ``market_cap`` so every consumer
+    (conviction, scanner, alpha) reads a price-current value without code
+    changes. Tickers with no stored shares are left untouched (they keep their
+    prior Polygon market cap as a fallback). No network calls — uses local
+    shares (refreshed weekly) and the already-daily OHLCV close.
+
+    Returns the number of tickers updated.
+    """
+    shares = meta_store.get_shares_outstanding(tickers)
+    if not shares:
+        logger.info("market_cap_recompute_skipped", reason="no_shares_data")
+        return 0
+
+    cap_updates: dict[str, float] = {}
+    for ticker, sh in shares.items():
+        if sh is None or sh <= 0:
+            continue
+        try:
+            df = ohlcv_store.read_ticker(ticker)
+        except Exception:
+            continue
+        if df is None or df.empty or "close" not in df.columns:
+            continue
+        try:
+            close = float(df.sort_values("date")["close"].iloc[-1])
+        except (IndexError, ValueError, TypeError):
+            continue
+        if close > 0:
+            cap_updates[ticker] = sh * close
+
+    updated = meta_store.update_market_caps(cap_updates) if cap_updates else 0
+    logger.info(
+        "market_cap_recompute_complete",
+        updated=updated,
+        tickers_with_shares=len(shares),
     )
     return updated
 

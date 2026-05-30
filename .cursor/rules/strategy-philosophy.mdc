@@ -202,6 +202,17 @@ Validated on 176K deep dip rows (2015–2026, $1B+ cap, 60%+ institutional owner
 
 If assigned on a pullback CSP, the stock was bought at 5% below a rising EMA on a quality large-cap name — exactly where we'd want to own it anyway. Enter the wheel: sell covered calls on the assigned shares.
 
+## Directional Alpha (Big-Move Buys)
+
+The "other engine" — instead of harvesting premium, find quality names poised for **large upside moves** (the AMD / Micron / space-stock runs). Complements, does not replace, the CSP/CC income engine.
+
+- **Three horizons** (label specs in `ml/labels.py`): Swing (+25% / ~40d), Trend (+40% / ~60d), Thematic (+60% / ~120d).
+- **Edge sources:** multi-horizon momentum, relative strength vs SPY, EMA-stack alignment + 200-EMA slope, proximity to 52-week high, breakout flags, volume thrust — plus an XGBoost big-move probability per horizon (`BreakoutPredictor`).
+- **AlphaScore (0–100):** deterministic factor composite × ML probability, in `strategy/alpha_engine.py`. Maps to a signal: strong_buy / buy / watch / avoid, with a horizon tag.
+- **Universe:** common stock only, build-net floor $250M (`alpha_min_market_cap_millions`); the page filters upward (default $1B). Market cap shown is the live `shares × close` value.
+- **What was tested and dropped:** MACD-histogram + multi-timeframe (weekly/monthly/quarterly) trend alignment added only noise-level lift (+0.0003–0.0005 AUC) on top of momentum/EMA-stack and was removed to keep the nightly pipeline lean.
+- **Full reference:** `docs/directional-alpha.md`.
+
 ## CSP Scanner Quality Controls
 
 The scanner enforces minimum quality thresholds to avoid penny-premium noise:

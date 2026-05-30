@@ -33,6 +33,17 @@ CSP_DTE_LIST: list[int] = [5, 14]
 CSP_STRIKE_OFFSET: float = 0.05
 RECOVERY_MAGNITUDE_HORIZONS: list[int] = [10, 20, 40, 60]
 
+# Directional "big move" labels for the Alpha engine. Each entry is
+# (horizon_trading_days, min_gain_pct). A label fires (1) when the maximum
+# close-to-close gain within the forward horizon meets/exceeds the threshold.
+# These are intentionally additive — they do not alter any existing label.
+BIG_MOVE_SPECS: list[tuple[int, float]] = [
+    (40, 25.0),
+    (60, 40.0),
+    (120, 60.0),
+]
+BIG_MOVE_MAGNITUDE_HORIZONS: list[int] = [40, 60, 120]
+
 
 def _forward_min_low(
     lows: pd.Series,
@@ -56,6 +67,29 @@ def _forward_max_close(
 ) -> pd.Series:
     """Rolling max of close prices looking forward by *horizon* bars."""
     return closes[::-1].rolling(horizon, min_periods=horizon).max()[::-1]
+
+
+def _add_big_move_labels(labels: pd.DataFrame, close: pd.Series) -> None:
+    """Add directional big-move classification + magnitude labels in place.
+
+    For each (horizon, min_gain_pct) in ``BIG_MOVE_SPECS`` produces a binary
+    ``big_move_up_{pct}pct_{horizon}d`` label that is 1 when the maximum
+    close-to-close gain over the forward window meets the threshold. Also
+    emits ``max_gain_pct_{horizon}d`` regression targets. NaN where the
+    forward window is incomplete (so those rows are excluded at train time).
+    """
+    for horizon, min_gain_pct in BIG_MOVE_SPECS:
+        fwd_max = _forward_max_close(close, horizon)
+        max_gain_pct = (fwd_max - close) / close * 100
+        col = f"big_move_up_{int(min_gain_pct)}pct_{horizon}d"
+        labels[col] = (max_gain_pct >= min_gain_pct).astype(float)
+        labels.loc[fwd_max.isna(), col] = np.nan
+
+    for horizon in BIG_MOVE_MAGNITUDE_HORIZONS:
+        col = f"max_gain_pct_{horizon}d"
+        if col not in labels.columns:
+            fwd_max = _forward_max_close(close, horizon)
+            labels[col] = (fwd_max - close) / close * 100
 
 
 def compute_labels(
@@ -144,6 +178,8 @@ def compute_labels(
                 break
     labels["days_to_ema_recovery"] = first_above
 
+    _add_big_move_labels(labels, close)
+
     return labels
 
 
@@ -220,5 +256,7 @@ def compute_labels_vectorized(
                 first_above.iloc[i] = float(j)
                 break
     labels["days_to_ema_recovery"] = first_above
+
+    _add_big_move_labels(labels, close)
 
     return labels

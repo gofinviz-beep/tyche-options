@@ -52,6 +52,25 @@
 - **Results (3.39M rows, 8,192 tickers):** single model = 88.0% acc / 0.915 AUC, neighbor model = 87.6% acc / 0.910 AUC → single model deployed (neighbor features don't help). Top feature: `price_to_21ema_pct` (51.3%). Relational features (ETF + correlation) contribute 8.1% of importance; SPY/QQQ betas rank 12th/14th.
 - `compute_rolling_correlations()` auto-injects SPY/QQQ into the ticker list — they are ETFs excluded by `filter_equity_only()` but required for beta computation
 
+## Directional Alpha Engine (10X / Big-Move Signals)
+
+Complements (does not replace) the CSP/CC income engine — finds large upside moves to buy.
+
+- **Labels** (`ml/labels.py`): `BIG_MOVE_SPECS` — `big_move_up_25pct_40d` (swing), `big_move_up_40pct_60d` (trend), `big_move_up_60pct_120d` (thematic), plus magnitude regression targets. Built from raw OHLCV only.
+- **Features** (`ml/features.py`): `MOMENTUM_FEATURE_COLS` + `RS_FEATURE_COLS` — multi-horizon returns, EMA-200 + slope, EMA-stack score, % off 52w high / above 52w low, breakout flags, volume thrust, slope accel, and relative strength vs SPY. Opt-in via `get_feature_columns(include_momentum=True)`. NOTE: a MACD-histogram + multi-timeframe trend group was ablation-tested (May 2026) and dropped — noise-level lift (+0.0003–0.0005 AUC).
+- **Model** (`ml/breakout.py`): `BreakoutPredictor` mirrors `CSPSafetyPredictor` — loads the big-move XGBoost artifacts, exposes per-horizon probabilities. Graceful degradation when no artifact.
+- **Engine** (`strategy/alpha_engine.py`): `AlphaScoreEngine` composites deterministic factors (momentum, relative strength, trend quality, breakout, volume thrust) + ML probabilities into a 0–100 `AlphaScore` with a `horizon` tag and `signal` (strong_buy/buy/watch/avoid). `AlphaSignal` carries `market_cap` + `institutional_pct`.
+- **Persistence** (`market_data/alpha_store.py`): `AlphaSignalStore` → `data/alpha_signals.parquet`.
+- **Batch** (`workflow/alpha_batch.py`): `run_alpha_batch()` — nightly compute over the universe. Build-net floor `alpha_min_market_cap_millions` (default $250M, common-stock only). Scheduled 16:20 ET (`alpha_batch_enabled`).
+- **Route** (`api/routes/alpha.py`): `GET /alpha/scan` (read-time `min_market_cap_millions` floor + common-stock filter + meta enrichment), `GET /alpha/signal/{ticker}`, `POST /alpha/recompute`.
+- **Training CLI:** `python scripts/train_alpha.py` (walk-forward ablation + `--save-model`).
+
+## Live Market Cap (shares × close)
+
+- Polygon's `market_cap` reference field lags by **months** (not re-priced daily). Do NOT trust it as current.
+- `ticker_meta.parquet` stores `shares_outstanding` (Polygon `weighted_shares_outstanding`). `recompute_market_caps_from_shares(meta_store, ohlcv_store)` derives `market_cap = shares × latest close` and writes it back into `market_cap`, so all `get_market_caps()` consumers are price-current with no code changes.
+- Daily reprice runs after the OHLCV refresh (free — uses today's close). Shares are refreshed weekly (slow-moving). One-time/manual: `python scripts/backfill_shares_caps.py`.
+
 ## ETF Constituents & Correlation (Pre-GNN Relational Features)
 
 - `market_data/etf_constituents.py`: static curated lists for 10 key ETFs (SPY, QQQ, DIA, XLK, XLF, XLE, XLV, SMH, SOXX, XLI)
@@ -69,11 +88,11 @@
 
 All data operations are automated via APScheduler. Full runbook: `docs/data-operations.md`.
 
-- **Daily after close:** OHLCV refresh (16:02) → conviction batch (16:08) → exit monitor (16:05), options snapshot (16:10) → bridge Tradier IV (16:45)
-- **Weekly:** Ticker meta refresh (Sundays 02:00 ET) — Polygon reference data + market cap backfill
+- **Daily after close:** OHLCV refresh (16:02, then reprices market caps from shares × close) → conviction batch (16:08) → exit monitor (16:05), alpha batch (16:20), options snapshot (16:10) → bridge Tradier IV (16:45)
+- **Weekly:** Ticker meta refresh (Sundays 02:00 ET) — Polygon reference data + shares-outstanding refresh + live cap reprice (the separate Polygon market-cap backfill is no longer run here — superseded by the daily shares × close reprice)
 - **Monthly:** Correlation refresh (28th, 22:00 ET) → ML retrain (1st, 02:00 ET, includes ETF + correlation features)
 - **Quarterly (Mar/Jun/Sep/Dec):** ETF constituents (1st, 03:00) → sector/SIC + institutional ownership (1st, 03:30)
-- **Config knobs:** `conviction_batch_after_ohlcv`, `bridge_tradier_iv_enabled`, `correlation_refresh_enabled`, `etf_refresh_enabled`, `quarterly_meta_refresh_enabled`, `weekly_meta_refresh_enabled` — all default `true`
+- **Config knobs:** `conviction_batch_after_ohlcv`, `alpha_batch_enabled`, `bridge_tradier_iv_enabled`, `correlation_refresh_enabled`, `etf_refresh_enabled`, `quarterly_meta_refresh_enabled`, `weekly_meta_refresh_enabled` — all default `true`
 - Handler functions in `app.py`, scheduler methods in `workflow/scheduler.py`
 
 ## Testing

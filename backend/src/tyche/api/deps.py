@@ -68,6 +68,8 @@ _conviction_signal_store: ConvictionSignalStore | None = None
 _derived_store: DerivedMetricsStore | None = None
 _portfolio_allocator: PortfolioAllocator | None = None
 _csp_predictor: Any | None = None
+_breakout_predictor: Any | None = None
+_alpha_engine: Any | None = None
 
 
 def get_broker(settings: TycheSettings = Depends(get_settings)) -> BrokerClient:
@@ -349,6 +351,39 @@ def get_csp_safety_predictor(
     return _csp_predictor
 
 
+def get_breakout_predictor(
+    settings: TycheSettings = Depends(get_settings),
+) -> Any:
+    """Provide the XGBoost big-move predictor (None if no model artifacts)."""
+    global _breakout_predictor
+    if _breakout_predictor is None:
+        try:
+            from tyche.ml.breakout import BreakoutPredictor
+
+            predictor = BreakoutPredictor(data_dir=settings.data_dir)
+            if predictor.is_available:
+                _breakout_predictor = predictor
+                logger.info("breakout_predictor_initialized", targets=predictor.targets)
+            else:
+                logger.info("breakout_predictor_unavailable", reason="no_model_artifact")
+        except ImportError:
+            logger.info("breakout_predictor_unavailable", reason="ml_deps_not_installed")
+    return _breakout_predictor
+
+
+def get_alpha_engine(
+    settings: TycheSettings = Depends(get_settings),
+) -> Any:
+    """Provide the directional AlphaScoreEngine singleton."""
+    global _alpha_engine
+    if _alpha_engine is None:
+        from tyche.strategy.alpha_engine import AlphaScoreEngine
+
+        _alpha_engine = AlphaScoreEngine()
+        logger.info("alpha_engine_initialized")
+    return _alpha_engine
+
+
 def get_conviction_engine(
     settings: TycheSettings = Depends(get_settings),
 ) -> ConvictionEngine:
@@ -529,10 +564,13 @@ def reset_all() -> None:
     global _derived_store, _economic_calendar
     global _news_article_store, _finnhub_client, _news_classifier
     global _edgar_client, _filing_8k_store, _insider_tx_store
-    global _csp_predictor
+    global _csp_predictor, _breakout_predictor, _alpha_engine
 
     from tyche.api.routes.conviction import invalidate_conviction_cache
     invalidate_conviction_cache(clear_engine=True)
+
+    _breakout_predictor = None
+    _alpha_engine = None
 
     if _feature_engine is not None and _conviction_engine is None:
         _feature_engine.invalidate_cache()

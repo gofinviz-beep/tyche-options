@@ -143,3 +143,5 @@ Comprehensive documentation lives in the `docs/` folder:
 - [Live Scan](../docs/live-scan.md) — Live scanning workflow and output format
 - [Backtest](../docs/backtest.md) — Simulation methodology and metrics
 - [Configuration](../docs/configuration.md) — Complete TYCHE_* environment variable reference
+- [Data Operations](../docs/data-operations.md) — Scheduled jobs, manual commands, troubleshooting
+- [Directional Alpha](../docs/directional-alpha.md) — Big-move ("10X") buy signal engine

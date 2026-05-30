@@ -22,6 +22,7 @@ from tyche.ml.features import (
     add_etf_features,
     add_market_context_features,
     add_neighbor_features,
+    add_relative_strength_features,
     build_sector_map,
     extract_ticker_features,
 )
@@ -42,6 +43,7 @@ def build_dataset(
     include_etf: bool = True,
     include_correlation: bool = True,
     include_market_context: bool = True,
+    include_momentum: bool = True,
     max_tickers: int | None = None,
 ) -> pd.DataFrame:
     """Build the full tabular dataset from on-disk stores.
@@ -134,6 +136,52 @@ def build_dataset(
 
     dataset = pd.concat(frames, ignore_index=True)
 
+    dataset = apply_relational_features(
+        dataset,
+        ohlcv_store=ohlcv_store,
+        data_dir=data_dir,
+        start_date=start_date,
+        end_date=end_date,
+        include_neighbors=include_neighbors,
+        include_etf=include_etf,
+        include_correlation=include_correlation,
+        include_market_context=include_market_context,
+        include_momentum=include_momentum,
+    )
+
+    elapsed = time.time() - t0
+    logger.info(
+        "dataset_built",
+        rows=len(dataset),
+        tickers=dataset["ticker"].nunique(),
+        skipped=skipped,
+        elapsed_s=round(elapsed, 1),
+    )
+
+    return dataset
+
+
+def apply_relational_features(
+    dataset: pd.DataFrame,
+    *,
+    ohlcv_store: OHLCVStore,
+    data_dir: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    include_neighbors: bool = True,
+    include_etf: bool = True,
+    include_correlation: bool = True,
+    include_market_context: bool = True,
+    include_momentum: bool = True,
+) -> pd.DataFrame:
+    """Apply cross-sectional / relational feature augmentations in place.
+
+    Shared by ``build_dataset`` (training) and the live alpha batch
+    (inference) so feature definitions stay identical across train/serve.
+    """
+    if dataset.empty:
+        return dataset
+
     if include_neighbors and "sector_encoded" in dataset.columns:
         dataset = add_neighbor_features(dataset)
 
@@ -172,36 +220,131 @@ def build_dataset(
             spy_ohlcv = ohlcv_store.read_ticker(
                 "SPY", start_date=start_date, end_date=end_date,
             )
-            dataset = add_market_context_features(
-                dataset, spy_ohlcv=spy_ohlcv,
-            )
+            dataset = add_market_context_features(dataset, spy_ohlcv=spy_ohlcv)
             logger.info("market_context_features_added")
         except Exception:
             logger.warning("market_context_features_failed", exc_info=True)
             dataset = add_market_context_features(dataset, spy_ohlcv=None)
 
-    elapsed = time.time() - t0
-    logger.info(
-        "dataset_built",
-        rows=len(dataset),
-        tickers=dataset["ticker"].nunique(),
-        skipped=skipped,
-        elapsed_s=round(elapsed, 1),
-    )
+    if include_momentum:
+        try:
+            spy_ohlcv = ohlcv_store.read_ticker(
+                "SPY", start_date=start_date, end_date=end_date,
+            )
+            dataset = add_relative_strength_features(dataset, spy_ohlcv=spy_ohlcv)
+            logger.info("relative_strength_features_added")
+        except Exception:
+            logger.warning("relative_strength_features_failed", exc_info=True)
+            dataset = add_relative_strength_features(dataset, spy_ohlcv=None)
 
     return dataset
+
+
+def build_latest_features(
+    data_dir: str = "data",
+    min_market_cap: float = MIN_MARKET_CAP,
+    tickers: list[str] | None = None,
+    max_tickers: int | None = None,
+) -> pd.DataFrame:
+    """Build the latest-date feature row per ticker for live alpha inference.
+
+    Mirrors ``build_dataset`` feature extraction (including all relational
+    augmentations) but keeps only the most recent row per ticker and skips
+    label construction. Used by the nightly alpha batch and on-demand scans.
+    """
+    ohlcv_store = OHLCVStore(data_dir=data_dir)
+    derived_store = DerivedMetricsStore(data_dir=data_dir)
+    meta_store = TickerMetaStore(data_dir=data_dir)
+
+    market_caps = meta_store.get_market_caps()
+    sectors = meta_store.get_sectors()
+    inst_pcts = meta_store.get_institutional_pcts()
+    sector_map = build_sector_map(sectors)
+
+    if tickers is None:
+        all_tickers = ohlcv_store.get_all_tickers()
+        candidates = _filter_equity(
+            all_tickers,
+            market_caps,
+            min_market_cap,
+            meta_store=meta_store,
+            equity_only=True,
+            require_cap=True,
+        )
+    else:
+        candidates = [t.upper() for t in tickers]
+    if max_tickers:
+        candidates = candidates[:max_tickers]
+
+    frames: list[pd.DataFrame] = []
+    for ticker in candidates:
+        try:
+            ohlcv = ohlcv_store.read_ticker(ticker)
+            if len(ohlcv) < MIN_BARS:
+                continue
+            derived = derived_store.read_ticker(ticker)
+            features = extract_ticker_features(
+                ohlcv=ohlcv,
+                derived=derived,
+                market_cap=market_caps.get(ticker),
+                institutional_pct=inst_pcts.get(ticker),
+                sector=sectors.get(ticker),
+                sector_map=sector_map,
+                min_bars=MIN_BARS,
+            )
+            if features.empty:
+                continue
+            last = features.iloc[[-1]].copy()
+            last["ticker"] = ticker
+            frames.append(last)
+        except Exception:
+            logger.warning("latest_features_ticker_failed", ticker=ticker, exc_info=True)
+
+    if not frames:
+        return pd.DataFrame()
+
+    latest = pd.concat(frames, ignore_index=True)
+    latest = apply_relational_features(
+        latest,
+        ohlcv_store=ohlcv_store,
+        data_dir=data_dir,
+    )
+    return latest
 
 
 def _filter_equity(
     tickers: list[str],
     market_caps: dict[str, float],
     min_market_cap: float,
+    *,
+    meta_store: TickerMetaStore | None = None,
+    equity_only: bool = False,
+    require_cap: bool = False,
 ) -> list[str]:
-    """Filter tickers by market cap, passing those with no data."""
+    """Filter tickers by market cap and (optionally) security type.
+
+    Args:
+        min_market_cap: Minimum market cap floor (USD).
+        meta_store: Required when ``equity_only`` is set, to resolve types.
+        equity_only: Keep only common stock (type 'CS') — drops warrants,
+            units, ADRs, ETFs and anything missing from the meta store.
+        require_cap: Exclude tickers with no market-cap data (so unknown-cap
+            names cannot slip past the floor). When False, missing-cap tickers
+            pass (legacy training behavior).
+    """
+    eligible: set[str] | None = None
+    if equity_only and meta_store is not None:
+        eligible = set(meta_store.filter_equity_only(tickers))
+
     result = []
     for t in tickers:
+        if eligible is not None and t not in eligible:
+            continue
         cap = market_caps.get(t)
-        if cap is not None and cap < min_market_cap:
+        if cap is None:
+            if require_cap:
+                continue
+        elif cap < min_market_cap:
             continue
         result.append(t)
     return result

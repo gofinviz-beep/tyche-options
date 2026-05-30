@@ -907,3 +907,57 @@ export interface CCPortfolioAnalysis {
     total_positions: number;
   };
 }
+
+// ── Directional Alpha ───────────────────────────────────────────────────
+
+export interface AlphaFactorScores {
+  momentum: number;
+  relative_strength: number;
+  trend_quality: number;
+  breakout: number;
+  volume_thrust: number;
+}
+
+export interface AlphaSignal {
+  ticker: string;
+  alpha_score: number;
+  signal: "strong_buy" | "buy" | "watch" | "avoid";
+  horizon: "swing" | "trend" | "thematic" | "none";
+  factors: AlphaFactorScores;
+  breakout_prob_swing: number | null;
+  breakout_prob_trend: number | null;
+  breakout_prob_thematic: number | null;
+  last_close: number;
+  return_63d: number | null;
+  return_126d: number | null;
+  return_252d: number | null;
+  rs_126d: number | null;
+  pct_off_52w_high: number | null;
+  ema_stack_score: number;
+  volume_thrust_ratio: number | null;
+  as_of_date: string | null;
+  market_cap: number | null;
+  institutional_pct: number | null;
+  sector: string | null;
+  is_watchlist: boolean;
+}
+
+export interface AlphaScanResult {
+  scanned_at: string;
+  as_of_date: string | null;
+  computed_at: string | null;
+  ml_available: boolean;
+  total: number;
+  strong_buy_count: number;
+  buy_count: number;
+  signals: AlphaSignal[];
+}
+
+export interface AlphaBatchResult {
+  status: string;
+  signals: number;
+  buy_signals: number;
+  ml_available: boolean;
+  as_of_date: string | null;
+  elapsed_s: number | null;
+}

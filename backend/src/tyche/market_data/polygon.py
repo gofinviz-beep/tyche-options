@@ -924,12 +924,18 @@ class PolygonClient:
                     cap = float(data.get("market_cap", 0) or 0)
                     sic_code = str(data.get("sic_code", "") or "").strip()
                     sic_desc = str(data.get("sic_description", "") or "").strip()
+                    shares = float(
+                        data.get("weighted_shares_outstanding", 0)
+                        or data.get("share_class_shares_outstanding", 0)
+                        or 0
+                    )
 
-                    if cap > 0 or sic_code:
+                    if cap > 0 or sic_code or shares > 0:
                         result[ticker] = {
                             "market_cap": cap if cap > 0 else 0,
                             "sic_code": sic_code or None,
                             "sic_description": sic_desc or None,
+                            "shares_outstanding": shares if shares > 0 else 0,
                         }
                 except Exception:
                     failed += 1

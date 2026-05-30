@@ -47,7 +47,9 @@ from tyche.ml.features import (
     ETF_FEATURE_COLS,
     FEATURE_COLS,
     MARKET_CONTEXT_COLS,
+    MOMENTUM_FEATURE_COLS,
     NEIGHBOR_FEATURE_COLS,
+    RS_FEATURE_COLS,
 )
 
 _DEFAULT_XGB_PARAMS: dict = {
@@ -106,31 +108,33 @@ class BaselineReport:
     def mean_accuracy(self) -> float:
         if not self.windows:
             return 0.0
-        return np.mean([w.accuracy for w in self.windows])
+        return float(np.nanmean([w.accuracy for w in self.windows]))
 
     @property
     def mean_auc(self) -> float:
         if not self.windows:
             return 0.0
-        return np.mean([w.auc for w in self.windows])
+        # Single-class test windows yield NaN AUC (rare targets); ignore them.
+        vals = [w.auc for w in self.windows if not np.isnan(w.auc)]
+        return float(np.mean(vals)) if vals else 0.0
 
     @property
     def mean_precision(self) -> float:
         if not self.windows:
             return 0.0
-        return np.mean([w.precision for w in self.windows])
+        return float(np.nanmean([w.precision for w in self.windows]))
 
     @property
     def mean_recall(self) -> float:
         if not self.windows:
             return 0.0
-        return np.mean([w.recall for w in self.windows])
+        return float(np.nanmean([w.recall for w in self.windows]))
 
     @property
     def mean_f1(self) -> float:
         if not self.windows:
             return 0.0
-        return np.mean([w.f1 for w in self.windows])
+        return float(np.nanmean([w.f1 for w in self.windows]))
 
     @property
     def std_accuracy(self) -> float:
@@ -222,8 +226,13 @@ def get_feature_columns(
     include_etf: bool = True,
     include_correlation: bool = True,
     include_market_context: bool = True,
+    include_momentum: bool = False,
 ) -> list[str]:
-    """Return the feature column list for the specified model variant."""
+    """Return the feature column list for the specified model variant.
+
+    ``include_momentum`` is opt-in (default False) so the CSP model's feature
+    set is unchanged. The Alpha BreakoutPredictor passes ``include_momentum=True``.
+    """
     cols = list(FEATURE_COLS)
     if include_neighbors:
         cols.extend(NEIGHBOR_FEATURE_COLS)
@@ -233,6 +242,9 @@ def get_feature_columns(
         cols.extend(CORRELATION_FEATURE_COLS)
     if include_market_context:
         cols.extend(MARKET_CONTEXT_COLS)
+    if include_momentum:
+        cols.extend(MOMENTUM_FEATURE_COLS)
+        cols.extend(RS_FEATURE_COLS)
     return cols
 
 
@@ -532,6 +544,78 @@ def run_all_baselines(
                 test_days=test_days,
                 model_name=model_name,
             )
+            report.print_report()
+            reports.append(report)
+
+    if output_dir:
+        _save_reports(reports, output_dir)
+
+    return reports
+
+
+ALPHA_TARGETS: list[str] = [
+    "big_move_up_25pct_40d",
+    "big_move_up_40pct_60d",
+    "big_move_up_60pct_120d",
+]
+
+
+def run_alpha_baselines(
+    dataset: pd.DataFrame,
+    targets: list[str] | None = None,
+    train_days: int = 252,
+    test_days: int = 63,
+    output_dir: str | Path | None = None,
+) -> list[BaselineReport]:
+    """Walk-forward evaluation for the directional big-move targets.
+
+    Runs each target twice — without momentum features (baseline) and with
+    them (momentum) — so the incremental lift of the Alpha feature group can
+    be measured directly. Longer default train window (252d ~ 1yr) because the
+    big-move horizons are longer than the CSP/pullback targets.
+
+    Returns:
+        List of BaselineReport objects (baseline + momentum per target).
+    """
+    if targets is None:
+        targets = ALPHA_TARGETS
+
+    available_targets = [t for t in targets if t in dataset.columns]
+    if not available_targets:
+        logger.error(
+            "no_valid_alpha_targets",
+            requested=targets,
+            columns=[c for c in dataset.columns if c.startswith("big_move")],
+        )
+        return []
+
+    base_cols = get_feature_columns(include_momentum=False)
+    momentum_cols = get_feature_columns(include_momentum=True)
+
+    reports: list[BaselineReport] = []
+
+    for target in available_targets:
+        for use_momentum in [False, True]:
+            variant = "momentum" if use_momentum else "baseline"
+            feature_cols = momentum_cols if use_momentum else base_cols
+            model_name = f"alpha_{variant}_{target}"
+
+            logger.info(
+                "alpha_baseline_starting",
+                model=model_name,
+                target=target,
+                feature_set=variant,
+            )
+
+            report = walk_forward_evaluate(
+                dataset=dataset,
+                target=target,
+                feature_cols=feature_cols,
+                train_days=train_days,
+                test_days=test_days,
+                model_name=model_name,
+            )
+            report.feature_set = variant
             report.print_report()
             reports.append(report)
 

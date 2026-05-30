@@ -17,7 +17,7 @@
 
 ## Navigation
 
-Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, Conviction, Explore, Monitor, Settings), Stocks (Dashboard, Conviction, Deep Dips, Covered Calls), Intelligence, Research. Hybrid collapsibility — opening one section auto-collapses others.
+Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, Conviction, Explore, Monitor, Settings), Stocks (Dashboard, Conviction, Deep Dips, Covered Calls, Directional Alpha), Intelligence, Research. Hybrid collapsibility — opening one section auto-collapses others.
 
 ## Pages
 
@@ -31,6 +31,7 @@ Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, 
 | Dashboard (Stocks) | `useActivePullbacks`, `useActivePositions`, `useCreatePosition`, `useExitPosition`, `useCheckExits`, `useRecentSignals` |
 | Conviction (Stocks) | `useConvictionSnapshots`, `useBacktestProfile` |
 | Deep Dips | `useDeepDips` |
+| Directional Alpha | `useAlphaScan`, `useRecomputeAlpha` |
 
 ## UI Conventions
 
@@ -55,6 +56,15 @@ Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, 
 - Positions from `GET /stocks/positions/active` (shared with Stocks Dashboard)
 - `DeepDivePanel` shows `TechnicalContextCard` with EMAs and `ema_21_slope` badge (informational — sell signal still extension-based)
 - Live quote/premium overlay when Tradier broker available
+
+## Directional Alpha Page (`pages/stocks/Alpha.tsx`)
+
+- Big-move buy signals — Alpha score (0–100), horizon tag (Swing/Trend/Thematic), ML move probability, momentum/RS/return columns, market cap + institutional ownership.
+- **Min Mkt Cap** selector (presets $250M–$10B) persisted to `localStorage` (`tyche_alpha_min_market_cap_m`, default $1B) and passed to `useAlphaScan({ minMarketCapMillions })`.
+- Sortable columns: Alpha, Move Prob, RS vs SPY (6m), Return (6m), Off 52w High, Price, Mkt Cap, Inst Own (nulls sort last).
+- **Horizon** uses a `multiselect` filter (empty = All; toggle any of Swing/Trend/Thematic). Signal uses `multiselect` too.
+- Expandable row shows per-factor breakdown bars + per-horizon ML probabilities.
+- `useRecomputeAlpha` triggers `POST /alpha/recompute` (background batch).
 
 ## Error Handling
 

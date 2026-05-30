@@ -323,6 +323,12 @@ class TycheSettings(BaseModel):
     flatfile_ingest_time: str = "07:00"
     flatfile_ingest_min_market_cap: float = 1_000_000_000
     conviction_batch_after_ohlcv: bool = True
+    alpha_batch_enabled: bool = True
+    # Directional Alpha BUILD net: the widest market-cap floor the nightly batch
+    # computes, so the page control can explore down to here. Common-stock only
+    # (no warrants/units/ADRs). The page defaults to a $1B view and can filter
+    # upward; set this lower only to widen what the page can reveal.
+    alpha_min_market_cap_millions: float = 250.0
     bridge_tradier_iv_enabled: bool = True
     correlation_refresh_enabled: bool = True
     etf_refresh_enabled: bool = True

@@ -93,10 +93,15 @@ async def _scheduled_ohlcv_refresh() -> None:
     Invalidates conviction caches so the subsequent conviction batch
     (scheduled ~6 minutes later) writes fresh data.
     """
-    from tyche.api.deps import get_data_store, get_polygon
+    import asyncio
+
+    from tyche.api.deps import get_data_store, get_polygon, get_ticker_meta_store
     from tyche.api.routes.conviction import invalidate_conviction_cache
     from tyche.config import get_settings as _gs
-    from tyche.market_data.data_store import bootstrap_ohlcv
+    from tyche.market_data.data_store import (
+        bootstrap_ohlcv,
+        recompute_market_caps_from_shares,
+    )
 
     settings = _gs()
     try:
@@ -108,8 +113,18 @@ async def _scheduled_ohlcv_refresh() -> None:
         result = await bootstrap_ohlcv(
             polygon, store, days=5, include_today=True,
         )
+        # Re-price market cap from stored shares x today's close so every
+        # consumer (conviction, scanner, alpha) reads a price-current cap.
+        meta_store = get_ticker_meta_store(settings)
+        caps_updated = await asyncio.to_thread(
+            recompute_market_caps_from_shares, meta_store, store
+        )
         invalidate_conviction_cache()
-        logger.info("scheduled_ohlcv_refresh_complete", **result)
+        logger.info(
+            "scheduled_ohlcv_refresh_complete",
+            market_caps_repriced=caps_updated,
+            **result,
+        )
     except Exception:
         logger.error("scheduled_ohlcv_refresh_failed", exc_info=True)
 
@@ -368,6 +383,35 @@ async def _scheduled_conviction_batch() -> None:
         )
     except Exception:
         logger.error("scheduled_conviction_batch_failed", exc_info=True)
+
+
+async def _scheduled_alpha_batch() -> None:
+    """Run the directional alpha batch after daily OHLCV refresh.
+
+    Computes big-move ML probabilities + factor scores for the universe and
+    persists the ranked snapshot to alpha_signals.parquet. Runs in a worker
+    thread to avoid blocking the event loop (CPU-bound feature build).
+    """
+    import asyncio
+
+    from tyche.api.deps import get_alpha_engine, get_breakout_predictor
+    from tyche.config import get_settings as _gs
+    from tyche.workflow.alpha_batch import run_alpha_batch
+
+    settings = _gs()
+    try:
+        engine = get_alpha_engine(settings)
+        predictor = get_breakout_predictor(settings)
+        result = await asyncio.to_thread(
+            run_alpha_batch,
+            data_dir=settings.data_dir,
+            min_market_cap=settings.alpha_min_market_cap_millions * 1_000_000,
+            engine=engine,
+            predictor=predictor,
+        )
+        logger.info("scheduled_alpha_batch_complete", **{k: v for k, v in result.items() if k != "status"})
+    except Exception:
+        logger.error("scheduled_alpha_batch_failed", exc_info=True)
 
 
 async def _scheduled_bridge_tradier_iv() -> None:
@@ -651,7 +695,11 @@ async def _scheduled_weekly_meta() -> None:
     """Weekly ticker metadata refresh from Polygon."""
     from tyche.api.deps import get_polygon
     from tyche.config import get_settings as _gs
-    from tyche.market_data.data_store import TickerMetaStore, _backfill_market_caps
+    from tyche.market_data.data_store import (
+        OHLCVStore,
+        TickerMetaStore,
+        recompute_market_caps_from_shares,
+    )
 
     settings = _gs()
     try:
@@ -669,12 +717,43 @@ async def _scheduled_weekly_meta() -> None:
             count = meta_store.write_meta(ticker_infos)
             logger.info("weekly_meta_tickers_written", count=count)
 
-            updated = await _backfill_market_caps(
-                polygon, meta_store,
-                concurrency=settings.polygon_market_cap_concurrency,
-                rate_limit_rpm=settings.polygon_rate_limit_rpm,
-            )
-            logger.info("weekly_meta_caps_updated", count=updated)
+        # A single details fetch returns both shares outstanding (slow-moving:
+        # buybacks/issuance) and Polygon's static market_cap. We refresh shares
+        # to keep the daily reprice (shares x latest close) accurate; Polygon's
+        # cap is kept only as a fallback for names we can't reprice (no OHLCV).
+        # The dedicated market-cap backfill is intentionally NOT run here — it is
+        # superseded by the daily shares x close reprice and would be a second,
+        # redundant set of Polygon calls.
+        ohlcv = OHLCVStore(data_dir=settings.data_dir)
+        equity = meta_store.filter_equity_only(ohlcv.get_all_tickers())
+        details = await polygon.get_batch_ticker_details_concurrent(
+            equity,
+            concurrency=settings.polygon_market_cap_concurrency,
+            rate_limit_rpm=settings.polygon_rate_limit_rpm,
+        )
+        shares = {
+            t: info["shares_outstanding"]
+            for t, info in details.items()
+            if info.get("shares_outstanding", 0) > 0
+        }
+        fallback_caps = {
+            t: info["market_cap"]
+            for t, info in details.items()
+            if info.get("market_cap", 0) > 0
+        }
+        if fallback_caps:
+            meta_store.update_market_caps(fallback_caps)
+        if shares:
+            meta_store.update_shares_outstanding(shares)
+        # Reprice everything we can from shares x close (overrides the Polygon
+        # fallback wherever a daily close exists).
+        repriced = recompute_market_caps_from_shares(meta_store, ohlcv)
+        logger.info(
+            "weekly_meta_shares_updated",
+            shares=len(shares),
+            fallback_caps=len(fallback_caps),
+            repriced=repriced,
+        )
 
     except Exception:
         logger.error("scheduled_weekly_meta_failed", exc_info=True)
@@ -861,6 +940,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.conviction_batch_after_ohlcv:
         scheduler.schedule_conviction_batch(_scheduled_conviction_batch)
 
+    if getattr(settings, "alpha_batch_enabled", True):
+        scheduler.schedule_alpha_batch(_scheduled_alpha_batch)
+
     if settings.bridge_tradier_iv_enabled and settings.tradier_api_token:
         scheduler.schedule_bridge_tradier_iv(_scheduled_bridge_tradier_iv)
 
@@ -925,6 +1007,7 @@ def create_app() -> FastAPI:
 
     from tyche.api.routes import (
         account,
+        alpha,
         conviction,
         covered_calls,
         events,
@@ -950,6 +1033,7 @@ def create_app() -> FastAPI:
     app.include_router(news.router, prefix="/api/v1")
     app.include_router(filings.router, prefix="/api/v1")
     app.include_router(covered_calls.router, prefix="/api/v1")
+    app.include_router(alpha.router, prefix="/api/v1")
 
     @app.get("/health")
     async def health_check() -> dict[str, str]:

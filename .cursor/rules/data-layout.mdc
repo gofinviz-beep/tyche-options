@@ -18,7 +18,8 @@ The `OHLCVStore`, `OptionsChainStore`, `OptionsHistoryStore`, `HistoricalIVStore
 |-------|------|--------|
 | Daily OHLCV bars | `backend/data/ohlcv_daily/{TICKER}.parquet` | One Parquet per ticker |
 | Intraday 5-min bars | `backend/data/intraday_5min/{TICKER}.parquet` | One Parquet per ticker |
-| Ticker metadata | `backend/data/ticker_meta.parquet` | Single file (market cap, type, exchange, sector, SIC, institutional ownership) |
+| Ticker metadata | `backend/data/ticker_meta.parquet` | Single file (market cap, shares outstanding, type, exchange, sector, SIC, institutional ownership). `market_cap` is derived daily as `shares_outstanding × latest close` (Polygon's static field lags months). |
+| Directional alpha signals | `backend/data/alpha_signals.parquet` | Single file (big-move buy signals: alpha score, horizon, ML probabilities, factors) |
 | Options chain snapshots (Tradier) | `backend/data/options_chains/{TICKER}.parquet` | One Parquet per ticker |
 | Options history (S3 flat files) | `backend/data/options_history/{TICKER}.parquet` | One Parquet per ticker |
 | Historical IV (ATM put) | `backend/data/options_iv/{TICKER}.parquet` | One Parquet per ticker |
@@ -75,6 +76,8 @@ from tyche.market_data.data_store import TickerMetaStore
 | `ingest_data.py` | OHLCV daily bars from Polygon | `--from 2026-04-20 --to 2026-04-20 --no-conviction` |
 | `ingest_options_flatfiles.py` | Options history from Massive S3 flat files + IV/derived metrics | `--from-ohlcv --include-today --days-back 3` |
 | `bridge_tradier_iv.py` | Bridge Tradier snapshots to IV pipeline (same-day) | Run after `ingest_options.py` |
+| `backfill_shares_caps.py` | Fetch shares outstanding + reprice market cap (`shares × close`) | `--tickers MU,NVDA` (default: full universe) |
+| `train_alpha.py` | Train/evaluate directional big-move models (walk-forward) | `--save-model` |
 
 ## Tradier Client Setup
 
