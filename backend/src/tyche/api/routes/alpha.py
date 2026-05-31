@@ -26,6 +26,7 @@ from tyche.market_data.alpha_store import AlphaSignalStore
 from tyche.market_data.data_store import TickerMetaStore
 from tyche.schemas.alpha import (
     AlphaBatchResponse,
+    AlphaDemandDimensions,
     AlphaFactorScores,
     AlphaScanResponse,
     AlphaSignalResponse,
@@ -35,6 +36,7 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/alpha", tags=["alpha"])
 
 _VALID_SIGNALS = {"strong_buy", "buy", "watch", "avoid"}
+_VALID_VARIANTS = {"peak", "sustained"}
 
 
 @router.get("/scan", response_model=AlphaScanResponse)
@@ -47,18 +49,30 @@ async def scan_alpha(
         ge=0.0,
         description="Min market cap ($M) floor. Defaults to alpha_min_market_cap_millions config.",
     ),
+    variant: str = Query(
+        default="sustained",
+        description="Model variant: 'sustained' (held-to-horizon, default) or 'peak' (legacy). Falls back to peak when the sustained snapshot is absent.",
+    ),
     limit: int = Query(default=200, ge=1, le=1000),
     settings: TycheSettings = Depends(get_settings),
     meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
 ) -> AlphaScanResponse:
     """Return ranked directional alpha signals from the latest batch snapshot."""
-    store = AlphaSignalStore(data_dir=settings.data_dir)
+    requested = variant if variant in _VALID_VARIANTS else "peak"
+    store = AlphaSignalStore(data_dir=settings.data_dir, variant=requested)
+    # Graceful fallback: if the requested variant's snapshot hasn't been
+    # produced yet (e.g. sustained disabled or never run), serve peak so the
+    # page is never blank, and report which variant is actually shown.
+    if not store.exists and requested != "peak":
+        store = AlphaSignalStore(data_dir=settings.data_dir, variant="peak")
+    served_variant = store.variant
     records, as_of, computed_at = store.read_latest()
 
     if not records:
         return AlphaScanResponse(
             scanned_at=datetime.now(timezone.utc).isoformat(),
             ml_available=False,
+            variant=served_variant,
             total=0,
             signals=[],
         )
@@ -120,6 +134,7 @@ async def scan_alpha(
         as_of_date=as_of,
         computed_at=computed_at,
         ml_available=ml_available,
+        variant=served_variant,
         total=len(records),
         strong_buy_count=strong_buy,
         buy_count=buy,
@@ -177,12 +192,14 @@ async def recompute_alpha(
     from tyche.workflow.alpha_batch import run_alpha_batch
 
     alpha_floor = settings.alpha_min_market_cap_millions * 1_000_000
+    variants = ["peak", "sustained"] if settings.alpha_sustained_enabled else ["peak"]
 
     if sync:
         result = run_alpha_batch(
             data_dir=settings.data_dir,
             min_market_cap=alpha_floor,
             max_tickers=max_tickers,
+            variants=variants,
         )
         return AlphaBatchResponse(**result)
 
@@ -191,6 +208,7 @@ async def recompute_alpha(
         data_dir=settings.data_dir,
         min_market_cap=alpha_floor,
         max_tickers=max_tickers,
+        variants=variants,
     )
     return AlphaBatchResponse(status="started")
 
@@ -204,6 +222,7 @@ def _record_to_response(
     is_watchlist: bool = False,
 ) -> AlphaSignalResponse:
     factors = r.get("factors") or {}
+    demand = r.get("demand") or {}
     return AlphaSignalResponse(
         ticker=r.get("ticker", ""),
         alpha_score=r.get("alpha_score", 0.0) or 0.0,
@@ -228,6 +247,20 @@ def _record_to_response(
         ema_stack_score=int(r.get("ema_stack_score", 0) or 0),
         volume_thrust_ratio=r.get("volume_thrust_ratio"),
         as_of_date=r.get("as_of_date"),
+        regime=r.get("regime", "narrative") or "narrative",
+        demand=AlphaDemandDimensions(
+            fund=demand.get("fund"),
+            est=demand.get("est"),
+            catalyst=demand.get("catalyst"),
+            policy=demand.get("policy"),
+            squeeze=demand.get("squeeze"),
+            net=demand.get("net"),
+        )
+        if demand
+        else None,
+        demand_multiplier=r.get("demand_multiplier"),
+        overextension_score=r.get("overextension_score"),
+        overextension_penalty=r.get("overextension_penalty"),
         market_cap=market_cap if market_cap and market_cap > 0 else None,
         institutional_pct=(
             institutional_pct if institutional_pct and institutional_pct > 0 else None

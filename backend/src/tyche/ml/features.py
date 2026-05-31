@@ -9,6 +9,9 @@ The output is a single DataFrame suitable for XGBoost training.
 
 from __future__ import annotations
 
+import math
+import warnings
+
 import numpy as np
 import pandas as pd
 import structlog
@@ -16,6 +19,11 @@ import structlog
 from tyche.conviction.features import TrendState
 
 logger = structlog.get_logger()
+
+# Catalyst recency-weighting (mirrors CatalystSignalStore.aggregate).
+_LN2 = math.log(2)
+_HALF_LIFE_DAYS = 30.0
+_CATALYST_LOOKBACK_DAYS = 180
 
 _TREND_STATE_ORD: dict[str, int] = {
     TrendState.DOWNTREND.value: 0,
@@ -125,6 +133,81 @@ RS_FEATURE_COLS: list[str] = [
     "rs_63d",
     "rs_126d",
     "rs_252d",
+]
+
+# --- Demand Conviction (Directional Alpha v2) feature groups --------------
+# All opt-in; absent from the default get_feature_columns() output so the
+# deployed CSP model is unchanged. Each group degrades to NaN/0 defaults when
+# its source store is unavailable.
+
+# Anti-chase / over-extension (D-TECH). Computed in extract_ticker_features()
+# from OHLCV only — no external data needed. Higher overextension_score = more
+# stretched (the engine penalises it, so we don't chase parabolic names).
+ANTI_CHASE_FEATURE_COLS: list[str] = [
+    "overextension_score",
+    "rsi_overbought",
+    "parabolic_21d",
+    "dist_above_200ema_capped",
+]
+
+# Fundamentals (D-FUND). Point-in-time quarterly growth/margins/cash/dilution.
+# Added by add_fundamental_features() from FundamentalsStore (merge_asof on
+# filing_date — leakage-safe).
+FUNDAMENTAL_FEATURE_COLS: list[str] = [
+    "f_rev_growth_yoy",
+    "f_rev_growth_qoq",
+    "f_rev_accel",
+    "f_gross_margin",
+    "f_gross_margin_trend",
+    "f_operating_margin",
+    "f_eps_growth_yoy",
+    "f_fcf_margin",
+    "f_fcf_positive",
+    "f_share_growth_yoy",
+    "f_quarters_since_filing",
+]
+
+# Estimates / revisions / surprises (D-EST). Point-in-time analyst consensus.
+# Added by add_estimate_features() from EstimatesStore.
+ESTIMATE_FEATURE_COLS: list[str] = [
+    "e_eps_revision_90d",
+    "e_rev_revision_90d",
+    "e_rec_score",
+    "e_rec_score_trend_90d",
+    "e_eps_surprise_last",
+    "e_eps_surprise_avg4",
+    "e_price_target_upside",
+]
+
+# Short interest / squeeze pressure (D-TECH). Added by
+# add_short_interest_features() from ShortInterestStore.
+SHORT_INTEREST_FEATURE_COLS: list[str] = [
+    "si_days_to_cover",
+    "si_ratio",
+    "si_pct_float",
+    "si_change_pct",
+]
+
+# Demand catalysts + policy (D-CAT / D-POL). Added by add_catalyst_features()
+# from CatalystSignalStore (news/8-K-derived) blended with the structural
+# PolicyEventCalendar. All default to 0 when no signal exists.
+CATALYST_FEATURE_COLS: list[str] = [
+    "cat_demand_score",
+    "cat_policy_score",
+    "cat_count_90d",
+    "cat_recency_days",
+]
+
+# Supply-chain demand propagation (D-GRAPH). Added by add_graph_features() from
+# the curated SupplyChainGraph — for each supplier, the (same-date) demand of
+# its upstream customers is the leading indicator. All default to 0 when the
+# ticker has no upstream customers in the graph.
+GRAPH_FEATURE_COLS: list[str] = [
+    "graph_customer_mom",
+    "graph_customer_catalyst",
+    "graph_customer_est_rev",
+    "graph_demand_propagation",
+    "graph_customer_count",
 ]
 
 # NOTE: A MACD-histogram + multi-timeframe (weekly/monthly/quarterly) trend-
@@ -374,6 +457,23 @@ def extract_ticker_features(
     df["volume_thrust_ratio"] = vol_5 / vol_50.replace(0, np.nan)
 
     df["slope_accel"] = df["ema_8_slope"] - df["ema_21_slope"]
+
+    # --- Anti-chase / over-extension (ANTI_CHASE_FEATURE_COLS) ----------
+    # These flag parabolic, already-run setups so the engine can penalise them
+    # rather than chase. RSI overbought ramps 70->100; distance above the
+    # 200-EMA is capped (a stock 200% above its 200-EMA is extreme); the 21d
+    # run captures recent parabolic acceleration.
+    df["rsi_overbought"] = ((df["rsi_14"] - 70.0).clip(lower=0.0) / 30.0).clip(upper=1.0)
+    df["parabolic_21d"] = close.pct_change(21)
+    dist_200 = df["price_to_200ema_pct"].clip(lower=0.0)
+    df["dist_above_200ema_capped"] = (dist_200 / 100.0).clip(upper=2.0)
+    # Composite 0..1 over-extension score: blends the three. ~0.6 weight on the
+    # parabolic run, the dominant tell of an unsustainable spike.
+    parabolic_ramp = (df["parabolic_21d"] / 0.50).clip(lower=0.0, upper=1.0)
+    dist_ramp = (df["dist_above_200ema_capped"] / 1.0).clip(lower=0.0, upper=1.0)
+    df["overextension_score"] = (
+        0.5 * parabolic_ramp + 0.3 * df["rsi_overbought"] + 0.2 * dist_ramp
+    ).clip(lower=0.0, upper=1.0)
 
     if derived is not None and not derived.empty:
         derived_clean = derived.copy()
@@ -685,4 +785,530 @@ def add_neighbor_features(
     df = df.merge(aggs, on=[date_col, sector_col], how="left")
     df.drop(columns=["_above_8", "_above_21"], inplace=True)
 
+    return df
+
+
+def _safe_growth(curr: pd.Series, prev: pd.Series) -> pd.Series:
+    """YoY/QoQ growth ratio, NaN when the prior base is non-positive."""
+    base = prev.where(prev > 0)
+    return curr / base - 1.0
+
+
+def _fill_defaults(df: pd.DataFrame, cols: list[str], value=np.nan) -> pd.DataFrame:
+    for col in cols:
+        if col not in df.columns:
+            df[col] = value
+    return df
+
+
+def add_fundamental_features(
+    all_features: pd.DataFrame,
+    fundamentals_store=None,
+    date_col: str = "date",
+) -> pd.DataFrame:
+    """Augment feature rows with point-in-time quarterly fundamentals (D-FUND).
+
+    For each ticker, builds quarterly growth/margin/dilution series from
+    ``FundamentalsStore`` and joins them onto each feature date with
+    ``merge_asof`` keyed on ``filing_date`` (so only already-filed statements
+    are visible — leakage-safe). Defaults to NaN when no data exists.
+    """
+    if all_features.empty or fundamentals_store is None or "ticker" not in all_features.columns:
+        return _fill_defaults(all_features.copy(), FUNDAMENTAL_FEATURE_COLS)
+
+    df = all_features.copy()
+    df["_date"] = pd.to_datetime(df[date_col])
+
+    out: list[pd.DataFrame] = []
+    for ticker, group in df.groupby("ticker", sort=False):
+        group = group.sort_values("_date")
+        fund = fundamentals_store.read_ticker(ticker, timeframe="quarterly")
+        if fund is None or fund.empty:
+            out.append(_fill_defaults(group, FUNDAMENTAL_FEATURE_COLS))
+            continue
+
+        f = fund.sort_values("period_end").reset_index(drop=True)
+        f["filing_dt"] = pd.to_datetime(f["filing_date"])
+        rev = f["revenue"]
+        eps = f["eps_diluted"]
+        shares = f["shares_diluted"]
+
+        derived = pd.DataFrame({"filing_dt": f["filing_dt"]})
+        derived["f_rev_growth_yoy"] = _safe_growth(rev, rev.shift(4))
+        derived["f_rev_growth_qoq"] = _safe_growth(rev, rev.shift(1))
+        prior_yoy = _safe_growth(rev.shift(1), rev.shift(5))
+        derived["f_rev_accel"] = derived["f_rev_growth_yoy"] - prior_yoy
+        derived["f_gross_margin"] = f["gross_margin"]
+        derived["f_gross_margin_trend"] = f["gross_margin"] - f["gross_margin"].shift(4)
+        derived["f_operating_margin"] = f["operating_margin"]
+        derived["f_eps_growth_yoy"] = _safe_growth(eps, eps.shift(4))
+        derived["f_fcf_margin"] = np.where(
+            rev > 0, f["free_cash_flow"] / rev * 100.0, np.nan
+        )
+        derived["f_fcf_positive"] = (f["free_cash_flow"] > 0).astype(float)
+        derived["f_share_growth_yoy"] = _safe_growth(shares, shares.shift(4))
+        derived = derived.dropna(subset=["filing_dt"]).sort_values("filing_dt")
+
+        merged = pd.merge_asof(
+            group,
+            derived,
+            left_on="_date",
+            right_on="filing_dt",
+            direction="backward",
+        )
+        merged["f_quarters_since_filing"] = (
+            (merged["_date"] - merged["filing_dt"]).dt.days / 91.0
+        )
+        merged.drop(columns=["filing_dt"], inplace=True, errors="ignore")
+        out.append(merged)
+
+    result = pd.concat(out, ignore_index=True)
+    result.drop(columns=["_date"], inplace=True, errors="ignore")
+    return _fill_defaults(result, FUNDAMENTAL_FEATURE_COLS)
+
+
+def _rec_score_from_counts(row: pd.Series) -> float:
+    """Weighted analyst recommendation score in [-1, 1] (NaN if no coverage)."""
+    sb = row.get("rec_strong_buy", 0) or 0
+    b = row.get("rec_buy", 0) or 0
+    h = row.get("rec_hold", 0) or 0
+    s = row.get("rec_sell", 0) or 0
+    ss = row.get("rec_strong_sell", 0) or 0
+    total = sb + b + h + s + ss
+    if total <= 0:
+        return np.nan
+    return (2 * sb + b - s - 2 * ss) / (2 * total)
+
+
+def add_estimate_features(
+    all_features: pd.DataFrame,
+    estimates_store=None,
+    date_col: str = "date",
+) -> pd.DataFrame:
+    """Augment feature rows with analyst estimate/revision/surprise demand (D-EST).
+
+    Uses ``EstimatesStore`` (tidy long format). For each (ticker, feature date)
+    computes consensus revisions (front-period EPS/revenue change over ~90d),
+    recommendation score + its 90d trend, the latest and 4-quarter-average EPS
+    surprise, and price-target upside. All point-in-time (snapshot_date <= date).
+    """
+    if all_features.empty or estimates_store is None or "ticker" not in all_features.columns:
+        return _fill_defaults(all_features.copy(), ESTIMATE_FEATURE_COLS)
+
+    df = all_features.copy()
+    df["_date"] = pd.to_datetime(df[date_col])
+
+    out: list[pd.DataFrame] = []
+    for ticker, group in df.groupby("ticker", sort=False):
+        group = group.sort_values("_date").copy()
+        raw = estimates_store.read_ticker(ticker)
+        if raw is None or raw.empty:
+            out.append(_fill_defaults(group, ESTIMATE_FEATURE_COLS))
+            continue
+
+        raw = raw.copy()
+        raw["snap_dt"] = pd.to_datetime(raw["snapshot_date"])
+
+        # Build a per-snapshot-date time series of the metrics we diff/score.
+        front_eps = _front_period_series(raw, "eps_est_avg")
+        front_rev = _front_period_series(raw, "rev_est_avg")
+        rec_series = _recommendation_score_series(raw)
+        pt_mean = _front_period_series(raw, "price_target_mean", use_period=False)
+        surprise = (
+            raw[raw["metric"] == "eps_surprise_pct"][["snap_dt", "value"]]
+            .sort_values("snap_dt")
+        )
+
+        # Vectorised point-in-time lookups (backward as-of) for every feature
+        # date at once — replaces the previous O(dates × metrics) Python loop.
+        dates = group["_date"]
+        dates_90 = dates - pd.Timedelta(days=90)
+
+        eps_now = _asof_col(front_eps, dates)
+        eps_90 = _asof_col(front_eps, dates_90)
+        rev_now = _asof_col(front_rev, dates)
+        rev_90 = _asof_col(front_rev, dates_90)
+        rec_now = _asof_col(rec_series, dates)
+        rec_90 = _asof_col(rec_series, dates_90)
+        pt = _asof_col(pt_mean, dates)
+
+        # Surprise: latest + trailing-4 mean as of each date. Pre-computing the
+        # rolling-4 mean per surprise row, then taking the as-of row, equals the
+        # old "last 4 surprises with snap_dt <= d" mean.
+        if not surprise.empty:
+            surp = surprise.copy()
+            surp_last_series = surp[["snap_dt", "value"]]
+            surp_avg4_series = surp.assign(
+                value=surp["value"].rolling(4, min_periods=1).mean()
+            )[["snap_dt", "value"]]
+            surp_last = _asof_col(surp_last_series, dates)
+            surp_avg4 = _asof_col(surp_avg4_series, dates)
+        else:
+            surp_last = np.full(len(group), np.nan)
+            surp_avg4 = np.full(len(group), np.nan)
+
+        if "close" in group.columns:
+            close = pd.to_numeric(group["close"], errors="coerce").to_numpy()
+        else:
+            close = np.full(len(group), np.nan)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pt_upside = np.where(
+                (~np.isnan(pt)) & (close > 0), (pt / close - 1.0) * 100.0, np.nan
+            )
+
+        group["e_eps_revision_90d"] = _pct_change_arr(eps_now, eps_90)
+        group["e_rev_revision_90d"] = _pct_change_arr(rev_now, rev_90)
+        group["e_rec_score"] = rec_now
+        group["e_rec_score_trend_90d"] = rec_now - rec_90
+        group["e_eps_surprise_last"] = surp_last
+        group["e_eps_surprise_avg4"] = surp_avg4
+        group["e_price_target_upside"] = pt_upside
+        out.append(group)
+
+    result = pd.concat(out, ignore_index=True)
+    result.drop(columns=["_date"], inplace=True, errors="ignore")
+    return _fill_defaults(result, ESTIMATE_FEATURE_COLS)
+
+
+def _asof_col(series_df: pd.DataFrame, when: pd.Series) -> np.ndarray:
+    """Backward as-of lookup of a ``(snap_dt, value)`` frame for each timestamp
+    in *when*. Returns a float array aligned to *when*'s original order
+    (``NaN`` where no snapshot is at/before the timestamp)."""
+    n = len(when)
+    if series_df is None or series_df.empty:
+        return np.full(n, np.nan)
+    # Normalise both keys to ns resolution — merge_asof requires identical units.
+    left_k = pd.to_datetime(when).to_numpy().astype("datetime64[ns]")
+    left = pd.DataFrame({"_k": left_k, "_ord": np.arange(n)}).sort_values(
+        "_k", kind="stable"
+    )
+    right = series_df[["snap_dt", "value"]].rename(columns={"snap_dt": "_k"}).copy()
+    right["_k"] = pd.to_datetime(right["_k"]).to_numpy().astype("datetime64[ns]")
+    right = right.dropna(subset=["_k"]).sort_values("_k", kind="stable")
+    merged = pd.merge_asof(left, right, on="_k", direction="backward")
+    merged = merged.sort_values("_ord")
+    return pd.to_numeric(merged["value"], errors="coerce").to_numpy()
+
+
+def _pct_change_arr(curr: np.ndarray, prev: np.ndarray) -> np.ndarray:
+    """Vectorised percent change (curr vs prev), ``NaN`` when prev is 0/NaN."""
+    curr = np.asarray(curr, dtype=float)
+    prev = np.asarray(prev, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        res = (curr - prev) / np.abs(prev) * 100.0
+    res[(prev == 0) | np.isnan(prev) | np.isnan(curr)] = np.nan
+    return res
+
+
+def _front_period_series(
+    raw: pd.DataFrame, metric: str, use_period: bool = True
+) -> pd.DataFrame:
+    """Time series (snap_dt -> value) for the nearest-period estimate metric."""
+    sub = raw[raw["metric"] == metric].copy()
+    if sub.empty:
+        return pd.DataFrame(columns=["snap_dt", "value"])
+    if use_period:
+        # For each snapshot, take the earliest (front) period's estimate.
+        sub = sub.sort_values(["snap_dt", "period"])
+        sub = sub.groupby("snap_dt", as_index=False).first()
+    else:
+        sub = sub.sort_values("snap_dt").groupby("snap_dt", as_index=False).last()
+    return sub[["snap_dt", "value"]].sort_values("snap_dt")
+
+
+def _recommendation_score_series(raw: pd.DataFrame) -> pd.DataFrame:
+    """Per-snapshot weighted recommendation score series."""
+    rec_metrics = ["rec_strong_buy", "rec_buy", "rec_hold", "rec_sell", "rec_strong_sell"]
+    sub = raw[raw["metric"].isin(rec_metrics)]
+    if sub.empty:
+        return pd.DataFrame(columns=["snap_dt", "value"])
+    pivot = sub.pivot_table(
+        index="snap_dt", columns="metric", values="value", aggfunc="last"
+    ).fillna(0.0)
+    scores = pivot.apply(_rec_score_from_counts, axis=1)
+    return pd.DataFrame({"snap_dt": scores.index, "value": scores.values}).sort_values("snap_dt")
+
+
+def _asof_value(series_df: pd.DataFrame, when: pd.Timestamp) -> float | None:
+    """Latest value at/before *when* from a (snap_dt, value) frame."""
+    if series_df is None or series_df.empty:
+        return None
+    sub = series_df[series_df["snap_dt"] <= when]
+    if sub.empty:
+        return None
+    val = sub["value"].iloc[-1]
+    return None if pd.isna(val) else float(val)
+
+
+def _pct_change(curr: float | None, prev: float | None) -> float:
+    if curr is None or prev is None or prev == 0:
+        return np.nan
+    return (curr - prev) / abs(prev) * 100.0
+
+
+def add_short_interest_features(
+    all_features: pd.DataFrame,
+    short_interest_store=None,
+    date_col: str = "date",
+) -> pd.DataFrame:
+    """Augment feature rows with point-in-time short interest (D-TECH)."""
+    if all_features.empty or short_interest_store is None or "ticker" not in all_features.columns:
+        return _fill_defaults(all_features.copy(), SHORT_INTEREST_FEATURE_COLS)
+
+    df = all_features.copy()
+    df["_date"] = pd.to_datetime(df[date_col])
+
+    out: list[pd.DataFrame] = []
+    for ticker, group in df.groupby("ticker", sort=False):
+        group = group.sort_values("_date")
+        si = short_interest_store.read_ticker(ticker)
+        if si is None or si.empty:
+            out.append(_fill_defaults(group, SHORT_INTEREST_FEATURE_COLS))
+            continue
+
+        s = si.sort_values("settlement_date").reset_index(drop=True)
+        s["settle_dt"] = pd.to_datetime(s["settlement_date"])
+        s["si_change_pct"] = s["short_interest"].pct_change() * 100.0
+        cols = pd.DataFrame(
+            {
+                "settle_dt": s["settle_dt"],
+                "si_days_to_cover": s["days_to_cover"],
+                "si_ratio": s["short_interest_ratio"],
+                "si_pct_float": s["short_pct_float"],
+                "si_change_pct": s["si_change_pct"],
+            }
+        ).sort_values("settle_dt")
+
+        merged = pd.merge_asof(
+            group, cols, left_on="_date", right_on="settle_dt", direction="backward"
+        )
+        merged.drop(columns=["settle_dt"], inplace=True, errors="ignore")
+        out.append(merged)
+
+    result = pd.concat(out, ignore_index=True)
+    result.drop(columns=["_date"], inplace=True, errors="ignore")
+    return _fill_defaults(result, SHORT_INTEREST_FEATURE_COLS)
+
+
+def add_catalyst_features(
+    all_features: pd.DataFrame,
+    catalyst_store=None,
+    policy_calendar=None,
+    sectors: dict[str, str] | None = None,
+    date_col: str = "date",
+) -> pd.DataFrame:
+    """Augment feature rows with demand-catalyst + policy signals (D-CAT/D-POL).
+
+    Blends news/8-K-derived catalysts (``CatalystSignalStore``, recency-
+    weighted, point-in-time) with the structural ``PolicyEventCalendar``
+    tailwind score. Defaults to 0 when no source is available.
+    """
+    if all_features.empty or "ticker" not in all_features.columns:
+        out = _fill_defaults(all_features.copy(), CATALYST_FEATURE_COLS)
+        out["cat_demand_score"] = out["cat_demand_score"].fillna(0.0)
+        out["cat_policy_score"] = out["cat_policy_score"].fillna(0.0)
+        out["cat_count_90d"] = out["cat_count_90d"].fillna(0.0)
+        return out
+
+    df = all_features.copy()
+    df["_date"] = pd.to_datetime(df[date_col])
+    sectors = sectors or {}
+
+    # Defaults — overwritten per ticker below. Vectorised per-ticker numpy
+    # broadcast replaces the previous O(rows) per-row ``aggregate()`` calls
+    # (which re-read each ticker's Parquet for every feature date).
+    df["cat_demand_score"] = 0.0
+    df["cat_policy_score"] = 0.0
+    df["cat_count_90d"] = 0.0
+    df["cat_recency_days"] = np.nan
+
+    cat_tickers = (
+        set(catalyst_store.get_all_tickers()) if catalyst_store is not None else set()
+    )
+
+    for ticker, group in df.groupby("ticker", sort=False):
+        idx = group.index
+        sd = group["_date"].to_numpy().astype("datetime64[D]")
+        tkr = str(ticker).upper()
+
+        # ── News/8-K catalyst aggregates (recency-weighted, point-in-time) ──
+        if tkr in cat_tickers:
+            try:
+                ev = catalyst_store.read_ticker(ticker)
+            except Exception:
+                ev = None
+            if ev is not None and not ev.empty:
+                ed = pd.to_datetime(ev["event_date"]).to_numpy().astype("datetime64[D]")
+                impact = pd.to_numeric(ev["signed_impact"], errors="coerce").to_numpy()
+                is_demand = (ev["kind"].to_numpy() == "demand")
+                is_policy = (ev["kind"].to_numpy() == "policy")
+                # age[d, e] in days; valid within [0, 180]; exp-decay weight.
+                age = (sd[:, None] - ed[None, :]) / np.timedelta64(1, "D")
+                valid = (age >= 0) & (age <= _CATALYST_LOOKBACK_DAYS)
+                w = np.where(valid, np.exp(-_LN2 * np.clip(age, 0, None) / _HALF_LIFE_DAYS), 0.0)
+
+                wd = w * is_demand[None, :]
+                dsum = wd.sum(axis=1)
+                dnum = (wd * impact[None, :]).sum(axis=1)
+                df.loc[idx, "cat_demand_score"] = np.where(
+                    dsum > 0, dnum / np.where(dsum > 0, dsum, 1.0), 0.0
+                )
+                df.loc[idx, "cat_count_90d"] = (
+                    ((age >= 0) & (age <= 90) & is_demand[None, :]).sum(axis=1).astype(float)
+                )
+                dage = np.where(valid & is_demand[None, :], age, np.nan)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    recency = np.nanmin(dage, axis=1)
+                df.loc[idx, "cat_recency_days"] = recency
+
+                wp = w * is_policy[None, :]
+                psum = wp.sum(axis=1)
+                pnum = (wp * impact[None, :]).sum(axis=1)
+                df.loc[idx, "cat_policy_score"] = np.where(
+                    psum > 0, pnum / np.where(psum > 0, psum, 1.0), 0.0
+                )
+
+        # ── Structural policy tailwind (strongest signed wins vs news) ──────
+        if policy_calendar is not None:
+            cal_pol = _policy_score_vec(policy_calendar, tkr, sectors.get(ticker), sd)
+            cur = df.loc[idx, "cat_policy_score"].to_numpy()
+            df.loc[idx, "cat_policy_score"] = np.where(
+                np.abs(cal_pol) > np.abs(cur), cal_pol, cur
+            )
+
+    df.drop(columns=["_date"], inplace=True, errors="ignore")
+    df["cat_demand_score"] = df["cat_demand_score"].fillna(0.0)
+    df["cat_policy_score"] = df["cat_policy_score"].fillna(0.0)
+    df["cat_count_90d"] = df["cat_count_90d"].fillna(0.0)
+    return df
+
+
+def _policy_score_vec(
+    policy_calendar, ticker_upper: str, sector: str | None, dates_np: np.ndarray
+) -> np.ndarray:
+    """Vectorised ``PolicyEventCalendar.policy_score`` over a date array for one
+    ticker. Mirrors the scalar logic: explicit ticker match weights full,
+    sector-only match weights half, strongest signed contribution wins."""
+    from tyche.analysis.catalyst_taxonomy import policy_polarity
+
+    best = np.zeros(len(dates_np))
+    for tw in policy_calendar.tailwinds:
+        pol = policy_polarity(tw.policy_tag)
+        if pol == 0.0:
+            continue
+        if ticker_upper in {t.upper() for t in tw.tickers}:
+            contrib = pol * tw.strength
+        elif sector and sector in tw.sectors:
+            contrib = pol * tw.strength * 0.5
+        else:
+            continue
+        active = (dates_np >= np.datetime64(tw.start, "D")) & (
+            dates_np <= np.datetime64(tw.end, "D")
+        )
+        cand = np.where(active, contrib, 0.0)
+        best = np.where(np.abs(cand) > np.abs(best), cand, best)
+    return np.clip(best, -1.0, 1.0)
+
+
+def add_graph_features(
+    all_features: pd.DataFrame,
+    graph=None,
+    date_col: str = "date",
+) -> pd.DataFrame:
+    """Augment rows with upstream-customer demand propagation (D-GRAPH).
+
+    For each supplier row, look up its upstream customers in the curated
+    ``SupplyChainGraph`` and aggregate those customers' *same-date* demand
+    reads (3m momentum, demand-catalyst score, EPS revision) weighted by edge
+    strength. This cascade is the leading indicator — a hyperscaler's capex /
+    a chip vendor's demand shows up upstream before the supplier confirms.
+
+    Strictly cross-sectional (same date) — no forward look, no leakage.
+    """
+    cols = GRAPH_FEATURE_COLS
+    if all_features.empty or "ticker" not in all_features.columns or graph is None:
+        out = all_features.copy()
+        for c in cols:
+            if c not in out.columns:
+                out[c] = 0.0
+            out[c] = out[c].fillna(0.0)
+        return out
+
+    df = all_features.copy()
+    df["_date"] = pd.to_datetime(df[date_col]).dt.normalize()
+    df["_tkr_u"] = df["ticker"].astype(str).str.upper()
+
+    mom_col = "return_63d" if "return_63d" in df.columns else None
+    cat_col = "cat_demand_score" if "cat_demand_score" in df.columns else None
+    est_col = "e_eps_revision_90d" if "e_eps_revision_90d" in df.columns else None
+
+    # Defaults — only supplier rows (tickers with curated customers) get
+    # nonzero values, so the rest are filled vectorised without iteration.
+    df["graph_customer_mom"] = 0.0
+    df["graph_customer_catalyst"] = 0.0
+    df["graph_customer_est_rev"] = 0.0
+    df["graph_demand_propagation"] = 0.0
+    df["graph_customer_count"] = 0.0
+
+    suppliers = {e.supplier.upper() for e in graph.edges}
+    customers_all = {e.customer.upper() for e in graph.edges}
+
+    # Per-customer date-indexed reads (small: ~dozens of customer tickers).
+    cust_reads: dict[str, pd.DataFrame] = {}
+    cmask = df["_tkr_u"].isin(customers_all)
+    if cmask.any():
+        sub = df.loc[cmask, ["_tkr_u", "_date"]].copy()
+        sub["mom"] = df.loc[cmask, mom_col] if mom_col else np.nan
+        sub["cat"] = df.loc[cmask, cat_col] if cat_col else np.nan
+        sub["est"] = df.loc[cmask, est_col] if est_col else np.nan
+        sub["_present"] = 1.0
+        for cust, g in sub.groupby("_tkr_u", sort=False):
+            cust_reads[cust] = (
+                g.drop_duplicates(subset="_date", keep="last")
+                .set_index("_date")[["mom", "cat", "est", "_present"]]
+            )
+
+    for tkr, group in df.groupby("_tkr_u", sort=False):
+        if tkr not in suppliers:
+            continue
+        customers = graph.customers_of(tkr)
+        if not customers:
+            continue
+        idx = group.index
+        sd = pd.DatetimeIndex(group["_date"].to_numpy())
+        n = len(idx)
+        acc = {k: np.zeros(n) for k in ("mom", "cat", "est")}
+        wpres = {k: np.zeros(n) for k in ("mom", "cat", "est")}
+        n_present = np.zeros(n)
+
+        for cust, w in customers:
+            creads = cust_reads.get(cust)
+            if creads is None:
+                continue
+            aligned = creads.reindex(sd)
+            present_mask = ~np.isnan(aligned["_present"].to_numpy())
+            n_present += present_mask.astype(float)
+            for k in ("mom", "cat", "est"):
+                vals = aligned[k].to_numpy()
+                ok = ~np.isnan(vals)
+                acc[k][ok] += vals[ok] * w
+                wpres[k][ok] += w
+
+        mom = np.where(wpres["mom"] > 0, acc["mom"] / np.where(wpres["mom"] > 0, wpres["mom"], 1.0), 0.0)
+        cat = np.where(wpres["cat"] > 0, acc["cat"] / np.where(wpres["cat"] > 0, wpres["cat"], 1.0), 0.0)
+        est = np.where(wpres["est"] > 0, acc["est"] / np.where(wpres["est"] > 0, wpres["est"], 1.0), 0.0)
+        mom_ramp = np.clip(mom / 0.30, 0.0, 1.0)
+        cat_pos = np.clip(cat, 0.0, 1.0)
+        est_ramp = np.clip(est / 0.10, 0.0, 1.0)
+        prop = np.minimum(1.0, 0.45 * mom_ramp + 0.35 * cat_pos + 0.20 * est_ramp)
+
+        df.loc[idx, "graph_customer_mom"] = np.round(mom, 4)
+        df.loc[idx, "graph_customer_catalyst"] = np.round(cat, 4)
+        df.loc[idx, "graph_customer_est_rev"] = np.round(est, 4)
+        df.loc[idx, "graph_demand_propagation"] = np.round(prop, 4)
+        df.loc[idx, "graph_customer_count"] = n_present
+
+    df.drop(columns=["_date", "_tkr_u"], inplace=True, errors="ignore")
     return df

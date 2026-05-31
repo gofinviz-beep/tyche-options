@@ -70,6 +70,12 @@ _portfolio_allocator: PortfolioAllocator | None = None
 _csp_predictor: Any | None = None
 _breakout_predictor: Any | None = None
 _alpha_engine: Any | None = None
+_fundamentals_store: Any | None = None
+_estimates_store: Any | None = None
+_short_interest_store: Any | None = None
+_catalyst_store: Any | None = None
+_policy_calendar: Any | None = None
+_supply_chain_graph: Any | None = None
 
 
 def get_broker(settings: TycheSettings = Depends(get_settings)) -> BrokerClient:
@@ -284,6 +290,98 @@ def get_derived_store(
             path=str(_derived_store.store_dir),
         )
     return _derived_store
+
+
+def get_fundamentals_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> Any:
+    """Provide the quarterly fundamentals store."""
+    global _fundamentals_store
+    if _fundamentals_store is None:
+        from tyche.market_data.fundamentals_store import FundamentalsStore
+
+        _fundamentals_store = FundamentalsStore(data_dir=settings.data_dir)
+        logger.info("fundamentals_store_initialized")
+    return _fundamentals_store
+
+
+def get_estimates_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> Any:
+    """Provide the analyst estimates/revisions/surprises store."""
+    global _estimates_store
+    if _estimates_store is None:
+        from tyche.market_data.estimates_store import EstimatesStore
+
+        _estimates_store = EstimatesStore(data_dir=settings.data_dir)
+        logger.info("estimates_store_initialized")
+    return _estimates_store
+
+
+def get_short_interest_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> Any:
+    """Provide the short-interest history store."""
+    global _short_interest_store
+    if _short_interest_store is None:
+        from tyche.market_data.short_interest_store import ShortInterestStore
+
+        _short_interest_store = ShortInterestStore(data_dir=settings.data_dir)
+        logger.info("short_interest_store_initialized")
+    return _short_interest_store
+
+
+def get_catalyst_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> Any:
+    """Provide the demand-catalyst / policy signal store (D-CAT / D-POL)."""
+    global _catalyst_store
+    if _catalyst_store is None:
+        from tyche.market_data.catalyst_store import CatalystSignalStore
+
+        _catalyst_store = CatalystSignalStore(data_dir=settings.data_dir)
+        logger.info("catalyst_store_initialized")
+    return _catalyst_store
+
+
+def get_policy_calendar(
+    settings: TycheSettings = Depends(get_settings),
+) -> Any:
+    """Provide the structural policy/capex tailwind calendar (D-POL)."""
+    global _policy_calendar
+    if _policy_calendar is None:
+        from tyche.market_data.policy_calendar import PolicyEventCalendar
+
+        _policy_calendar = PolicyEventCalendar()
+        logger.info("policy_calendar_initialized")
+    return _policy_calendar
+
+
+def get_supply_chain_graph(
+    settings: TycheSettings = Depends(get_settings),
+) -> Any:
+    """Provide the curated supply-chain demand-propagation graph (D-GRAPH)."""
+    global _supply_chain_graph
+    if _supply_chain_graph is None:
+        from tyche.market_data.supply_chain_graph import SupplyChainGraph
+
+        _supply_chain_graph = SupplyChainGraph()
+        logger.info("supply_chain_graph_initialized")
+    return _supply_chain_graph
+
+
+def get_estimates_finnhub(
+    settings: TycheSettings = Depends(get_settings),
+) -> "FinnhubClient | None":
+    """Provide a Finnhub client for estimates (independent of the news flag).
+
+    Returns ``None`` when no API key is configured.
+    """
+    if not settings.finnhub_api_key:
+        return None
+    from tyche.market_data.finnhub import FinnhubClient
+
+    return FinnhubClient(api_key=settings.finnhub_api_key)
 
 
 def get_feature_engine(
@@ -565,6 +663,7 @@ def reset_all() -> None:
     global _news_article_store, _finnhub_client, _news_classifier
     global _edgar_client, _filing_8k_store, _insider_tx_store
     global _csp_predictor, _breakout_predictor, _alpha_engine
+    global _catalyst_store, _policy_calendar, _supply_chain_graph
 
     from tyche.api.routes.conviction import invalidate_conviction_cache
     invalidate_conviction_cache(clear_engine=True)
@@ -601,3 +700,6 @@ def reset_all() -> None:
     _filing_8k_store = None
     _insider_tx_store = None
     _csp_predictor = None
+    _catalyst_store = None
+    _policy_calendar = None
+    _supply_chain_graph = None

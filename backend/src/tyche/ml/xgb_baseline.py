@@ -43,13 +43,19 @@ except ImportError:
 
 
 from tyche.ml.features import (
+    ANTI_CHASE_FEATURE_COLS,
+    CATALYST_FEATURE_COLS,
     CORRELATION_FEATURE_COLS,
+    ESTIMATE_FEATURE_COLS,
     ETF_FEATURE_COLS,
     FEATURE_COLS,
+    FUNDAMENTAL_FEATURE_COLS,
+    GRAPH_FEATURE_COLS,
     MARKET_CONTEXT_COLS,
     MOMENTUM_FEATURE_COLS,
     NEIGHBOR_FEATURE_COLS,
     RS_FEATURE_COLS,
+    SHORT_INTEREST_FEATURE_COLS,
 )
 
 _DEFAULT_XGB_PARAMS: dict = {
@@ -227,11 +233,22 @@ def get_feature_columns(
     include_correlation: bool = True,
     include_market_context: bool = True,
     include_momentum: bool = False,
+    include_anti_chase: bool = False,
+    include_fundamental: bool = False,
+    include_estimate: bool = False,
+    include_short_interest: bool = False,
+    include_catalyst: bool = False,
+    include_graph: bool = False,
 ) -> list[str]:
     """Return the feature column list for the specified model variant.
 
     ``include_momentum`` is opt-in (default False) so the CSP model's feature
     set is unchanged. The Alpha BreakoutPredictor passes ``include_momentum=True``.
+
+    The Demand Conviction groups (``include_anti_chase`` / ``include_fundamental``
+    / ``include_estimate`` / ``include_short_interest``) are also opt-in and gate
+    the Directional Alpha v2 feature set. ``demand_feature_columns()`` is the
+    convenience constructor for the full v2 set.
     """
     cols = list(FEATURE_COLS)
     if include_neighbors:
@@ -245,7 +262,37 @@ def get_feature_columns(
     if include_momentum:
         cols.extend(MOMENTUM_FEATURE_COLS)
         cols.extend(RS_FEATURE_COLS)
+    if include_anti_chase:
+        cols.extend(ANTI_CHASE_FEATURE_COLS)
+    if include_fundamental:
+        cols.extend(FUNDAMENTAL_FEATURE_COLS)
+    if include_estimate:
+        cols.extend(ESTIMATE_FEATURE_COLS)
+    if include_short_interest:
+        cols.extend(SHORT_INTEREST_FEATURE_COLS)
+    if include_catalyst:
+        cols.extend(CATALYST_FEATURE_COLS)
+    if include_graph:
+        cols.extend(GRAPH_FEATURE_COLS)
     return cols
+
+
+def demand_feature_columns() -> list[str]:
+    """Full Demand Conviction (Directional Alpha v2) feature set.
+
+    Momentum/RS (demoted to confirmation/anti-chase) + over-extension +
+    fundamentals + estimates + short interest, on top of the base technical
+    and relational features.
+    """
+    return get_feature_columns(
+        include_momentum=True,
+        include_anti_chase=True,
+        include_fundamental=True,
+        include_estimate=True,
+        include_short_interest=True,
+        include_catalyst=True,
+        include_graph=True,
+    )
 
 
 def walk_forward_evaluate(
@@ -558,6 +605,61 @@ ALPHA_TARGETS: list[str] = [
     "big_move_up_40pct_60d",
     "big_move_up_60pct_120d",
 ]
+
+# Sustained big-move targets — require the price to still be up at the END of
+# the horizon (forward close), not just an intra-window peak. Realistic targets
+# for the Demand Conviction scorer; used by the demand ablation/retrain.
+ALPHA_SUSTAINED_TARGETS: list[str] = [
+    "big_move_sustained_25pct_40d",
+    "big_move_sustained_40pct_60d",
+    "big_move_sustained_60pct_120d",
+]
+
+
+def run_demand_baselines(
+    dataset: pd.DataFrame,
+    targets: list[str] | None = None,
+    train_days: int = 252,
+    test_days: int = 63,
+    output_dir: str | Path | None = None,
+) -> list[BaselineReport]:
+    """Ablation: momentum-only vs full Demand Conviction feature set.
+
+    For each target runs two walk-forward evaluations — momentum features only
+    (the v1 set) vs momentum + over-extension + fundamentals + estimates +
+    short interest (the v2 set) — so the incremental lift of the demand groups
+    can be measured directly and non-additive groups dropped.
+    """
+    if targets is None:
+        targets = ALPHA_SUSTAINED_TARGETS
+
+    available_targets = [t for t in targets if t in dataset.columns]
+    if not available_targets:
+        logger.error("no_valid_demand_targets", requested=targets)
+        return []
+
+    momentum_cols = get_feature_columns(include_momentum=True)
+    demand_cols = demand_feature_columns()
+
+    reports: list[BaselineReport] = []
+    for target in available_targets:
+        for variant, cols in (("momentum", momentum_cols), ("demand", demand_cols)):
+            report = walk_forward_evaluate(
+                dataset=dataset,
+                target=target,
+                feature_cols=cols,
+                train_days=train_days,
+                test_days=test_days,
+                model_name=f"demand_{variant}_{target}",
+            )
+            report.feature_set = variant
+            report.print_report()
+            reports.append(report)
+
+    if output_dir:
+        _save_reports(reports, output_dir)
+
+    return reports
 
 
 def run_alpha_baselines(

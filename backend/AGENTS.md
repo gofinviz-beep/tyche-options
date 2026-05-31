@@ -19,8 +19,10 @@
 
 ## Data Sources
 
-- **Polygon.io** — historical OHLCV data, ticker metadata including SIC codes/sector classification (bootstrap/backtest only)
+- **Polygon.io** — historical OHLCV data, ticker metadata including SIC codes/sector classification (bootstrap/backtest only), short interest, options flat files (via Massive S3)
 - **Tradier** — live quotes, options chains, account operations, order execution
+- **Finnhub** (`market_data/finnhub.py`) — demand data: Fundamental-1 (standardized statements → D-FUND) + Estimates-1 (revisions, surprises, recommendations, price targets → D-EST). 300 rpm.
+- **Benzinga via Massive** (`market_data/benzinga.py`) — Corporate Guidance → D-CAT guide-vs-consensus catalysts
 - **Gemini LLM** — qualitative analysis only; all numbers come from broker data via `_resolve_numeric()`. Three model tiers: `gemini_model_fast` (scanner), `gemini_model_deep` (complex reasoning), `gemini_model_classify` (news/8-K classification, defaults to `gemini-2.5-flash-lite`)
 
 ## Key Conventions
@@ -52,18 +54,21 @@
 - **Results (3.39M rows, 8,192 tickers):** single model = 88.0% acc / 0.915 AUC, neighbor model = 87.6% acc / 0.910 AUC → single model deployed (neighbor features don't help). Top feature: `price_to_21ema_pct` (51.3%). Relational features (ETF + correlation) contribute 8.1% of importance; SPY/QQQ betas rank 12th/14th.
 - `compute_rolling_correlations()` auto-injects SPY/QQQ into the ticker list — they are ETFs excluded by `filter_equity_only()` but required for beta computation
 
-## Directional Alpha Engine (10X / Big-Move Signals)
+## Directional Alpha — Demand Conviction Engine v2 (10X / Big-Move Signals)
 
-Complements (does not replace) the CSP/CC income engine — finds large upside moves to buy.
+Complements (does not replace) the CSP/CC income engine — finds large upside moves to buy. v2 **leads with demand evidence** (v1 led with momentum, which favored already-run names). Full reference: `docs/directional-alpha.md`.
 
-- **Labels** (`ml/labels.py`): `BIG_MOVE_SPECS` — `big_move_up_25pct_40d` (swing), `big_move_up_40pct_60d` (trend), `big_move_up_60pct_120d` (thematic), plus magnitude regression targets. Built from raw OHLCV only.
-- **Features** (`ml/features.py`): `MOMENTUM_FEATURE_COLS` + `RS_FEATURE_COLS` — multi-horizon returns, EMA-200 + slope, EMA-stack score, % off 52w high / above 52w low, breakout flags, volume thrust, slope accel, and relative strength vs SPY. Opt-in via `get_feature_columns(include_momentum=True)`. NOTE: a MACD-histogram + multi-timeframe trend group was ablation-tested (May 2026) and dropped — noise-level lift (+0.0003–0.0005 AUC).
-- **Model** (`ml/breakout.py`): `BreakoutPredictor` mirrors `CSPSafetyPredictor` — loads the big-move XGBoost artifacts, exposes per-horizon probabilities. Graceful degradation when no artifact.
-- **Engine** (`strategy/alpha_engine.py`): `AlphaScoreEngine` composites deterministic factors (momentum, relative strength, trend quality, breakout, volume thrust) + ML probabilities into a 0–100 `AlphaScore` with a `horizon` tag and `signal` (strong_buy/buy/watch/avoid). `AlphaSignal` carries `market_cap` + `institutional_pct`.
-- **Persistence** (`market_data/alpha_store.py`): `AlphaSignalStore` → `data/alpha_signals.parquet`.
-- **Batch** (`workflow/alpha_batch.py`): `run_alpha_batch()` — nightly compute over the universe. Build-net floor `alpha_min_market_cap_millions` (default $250M, common-stock only). Scheduled 16:20 ET (`alpha_batch_enabled`).
-- **Route** (`api/routes/alpha.py`): `GET /alpha/scan` (read-time `min_market_cap_millions` floor + common-stock filter + meta enrichment), `GET /alpha/signal/{ticker}`, `POST /alpha/recompute`.
-- **Training CLI:** `python scripts/train_alpha.py` (walk-forward ablation + `--save-model`).
+- **Six demand dimensions** (each degrades to neutral when its store is absent): D-FUND (Finnhub fundamentals), D-EST (Finnhub estimates), D-CAT (news/8-K catalysts + Benzinga guide-vs-consensus), D-POL (`market_data/policy_calendar.py` `PolicyEventCalendar`), D-GRAPH (`market_data/supply_chain_graph.py` `SupplyChainGraph`), D-TECH (Polygon short interest).
+- **Stores:** `FundamentalsStore` (`data/fundamentals/`), `EstimatesStore` (`data/estimates/`), `ShortInterestStore` (`data/short_interest/`), `CatalystSignalStore` (`data/catalyst_signals/`). Ingest: `workflow/demand_data.py` `ingest_demand_data` via `scripts/ingest_demand_data.py` (parallel, rate-limited per source).
+- **Benzinga guide-vs-consensus** (`market_data/benzinga.py`): `derive_guidance_catalysts()` prefers guided-vs-consensus, falls back to same-period revision then YoY. Fiscal-calendar alignment via `_infer_fye_month()` (in `demand_data.py`) + `fiscal_quarter_end()` + `_match_consensus()` (nearest Finnhub period ≤ 46d). Comparator skipped (never wrong-matches) when FYE unknown.
+- **Labels** (`ml/labels.py`): peak `big_move_up_{25,40,60}pct_{40,60,120}d` (touches target intra-window) **and** sustained `big_move_sustained_*` (still up at horizon END — realistic buy target). Raw OHLCV only.
+- **Features** (`ml/features.py`): momentum/RS + demand groups (`FUNDAMENTAL/ESTIMATE/SHORT_INTEREST/CATALYST/GRAPH_FEATURE_COLS`), 97 cols total (`demand_feature_columns()`), via `get_feature_columns(include_demand=True, ...)`. **Demand augmenters MUST stay vectorized** (per-ticker `merge_asof` / numpy broadcast) — a per-row loop hangs `build_dataset` for 30–60 min.
+- **Model** (`ml/breakout.py`): `BreakoutPredictor` loads per-horizon XGBoost artifacts; instantiate with `ALPHA_TARGETS` (peak) or `ALPHA_SUSTAINED_TARGETS` (sustained). Graceful degradation when no artifact.
+- **Engine** (`strategy/alpha_engine.py`): `AlphaScoreEngine` → `composite = 0.55·ml_blend + 0.45·factor_blend`, then anti-chase `×(1 − 0.45·overextension)`, then regime-routed (`REGIME_REVENUE`/`REGIME_NARRATIVE`) demand multiplier `1 + 0.30·net` clamped `[0.70, 1.30]` (net=0 → v1-identical). 0–100 `AlphaScore` + `horizon` + `signal`. `AlphaSignal` carries `DemandDimensions`, `regime`, `demand_multiplier`, `overextension_*`, `market_cap`, `institutional_pct`.
+- **Peak vs Sustained variants** (compare-only; page defaults to Sustained): `AlphaSignalStore(variant=)` → `data/alpha_signals.parquet` (peak) / `data/alpha_signals_sustained.parquet`. `alpha_sustained_enabled` (default true) gates the second. `run_alpha_batch(variants=[...])` builds features ONCE, scores each.
+- **Batch** (`workflow/alpha_batch.py`): chained after nightly flatfile (`alpha_batch_after_flatfile`) else 16:20 ET cron. Build-net floor `alpha_min_market_cap_millions` (default $250M, common-stock only).
+- **Route** (`api/routes/alpha.py`): `GET /alpha/scan?variant=sustained|peak` (read-time `min_market_cap_millions` floor + common-stock filter + meta; falls back to peak + reports served `variant`), `GET /alpha/signal/{ticker}` (any name regardless of rank — `/scan` only returns top `limit`), `POST /alpha/recompute`.
+- **Training CLI:** `python scripts/train_alpha.py` (`--save-model`, `--feature-set demand`). **Demand gate:** `python scripts/run_demand_gate.py` — walk-forward ablation (momentum vs demand) + conditional promotion of `big_move_sustained_*` (net-new; never overwrites peak). Verdict → `data/ml/alpha_results/demand_gate_verdict.json`.
 
 ## Live Market Cap (shares × close)
 
@@ -88,11 +93,12 @@ Complements (does not replace) the CSP/CC income engine — finds large upside m
 
 All data operations are automated via APScheduler. Full runbook: `docs/data-operations.md`.
 
-- **Daily after close:** OHLCV refresh (16:02, then reprices market caps from shares × close) → conviction batch (16:08) → exit monitor (16:05), alpha batch (16:20), options snapshot (16:10) → bridge Tradier IV (16:45)
+- **Daily after close:** OHLCV refresh (16:02, then reprices market caps from shares × close) → conviction batch (16:08) → exit monitor (16:05), options snapshot (16:10) → bridge Tradier IV (16:45). **Alpha batch** runs chained after the nightly S3 flatfile ingest (`alpha_batch_after_flatfile`, ~02:00 ET) — peak + sustained snapshots — else a standalone 16:20 ET cron.
+- **Daily demand data (03:00 ET, `demand_data_enabled` / `demand_data_refresh_time`):** Finnhub fundamentals + estimates, Polygon short interest, Benzinga guidance → catalysts (`_scheduled_demand_data` → `ingest_demand_data`). Skipped with a warning if credentials are absent.
 - **Weekly:** Ticker meta refresh (Sundays 02:00 ET) — Polygon reference data + shares-outstanding refresh + live cap reprice (the separate Polygon market-cap backfill is no longer run here — superseded by the daily shares × close reprice)
 - **Monthly:** Correlation refresh (28th, 22:00 ET) → ML retrain (1st, 02:00 ET, includes ETF + correlation features)
 - **Quarterly (Mar/Jun/Sep/Dec):** ETF constituents (1st, 03:00) → sector/SIC + institutional ownership (1st, 03:30)
-- **Config knobs:** `conviction_batch_after_ohlcv`, `alpha_batch_enabled`, `bridge_tradier_iv_enabled`, `correlation_refresh_enabled`, `etf_refresh_enabled`, `quarterly_meta_refresh_enabled`, `weekly_meta_refresh_enabled` — all default `true`
+- **Config knobs:** `conviction_batch_after_ohlcv`, `alpha_batch_enabled`, `alpha_batch_after_flatfile`, `alpha_sustained_enabled`, `demand_data_enabled`, `bridge_tradier_iv_enabled`, `correlation_refresh_enabled`, `etf_refresh_enabled`, `quarterly_meta_refresh_enabled`, `weekly_meta_refresh_enabled` — all default `true`
 - Handler functions in `app.py`, scheduler methods in `workflow/scheduler.py`
 
 ## Testing

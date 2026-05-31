@@ -49,14 +49,30 @@ def main() -> None:
     parser.add_argument("--data-dir", type=str, default="data", help="Root data directory")
     parser.add_argument("--save-model", action="store_true", default=True, help="Train + save production big-move models (default True)")
     parser.add_argument("--no-save-model", action="store_false", dest="save_model", help="Skip saving production models")
+    parser.add_argument(
+        "--feature-set",
+        choices=["momentum", "demand"],
+        default="momentum",
+        help="momentum = v1 set; demand = Demand Conviction v2 (fundamentals + "
+        "estimates + over-extension + short interest). Default momentum.",
+    )
+    parser.add_argument(
+        "--sustained",
+        action="store_true",
+        help="Target the sustained big-move labels (forward close at horizon) "
+        "instead of intra-window peaks — the de-biased Demand Conviction target.",
+    )
 
     args = parser.parse_args()
 
     from tyche.ml.dataset import build_dataset, load_dataset, save_dataset
     from tyche.ml.xgb_baseline import (
+        ALPHA_SUSTAINED_TARGETS,
         ALPHA_TARGETS,
+        demand_feature_columns,
         get_feature_columns,
         run_alpha_baselines,
+        run_demand_baselines,
         train_production_model,
     )
 
@@ -91,30 +107,45 @@ def main() -> None:
 
     _print_label_summary(dataset)
 
-    targets = args.targets or ALPHA_TARGETS
-    reports = run_alpha_baselines(
-        dataset=dataset,
-        targets=targets,
-        train_days=args.train_days,
-        test_days=args.test_days,
-        output_dir=args.results_dir,
-    )
+    use_demand = args.feature_set == "demand"
+    default_targets = ALPHA_SUSTAINED_TARGETS if args.sustained else ALPHA_TARGETS
+    targets = args.targets or default_targets
 
-    if reports:
-        _print_go_no_go(reports)
+    if use_demand:
+        # Ablation: momentum-only vs full Demand Conviction feature set.
+        reports = run_demand_baselines(
+            dataset=dataset,
+            targets=targets,
+            train_days=args.train_days,
+            test_days=args.test_days,
+            output_dir=args.results_dir,
+        )
+        if reports:
+            _print_demand_gate(reports)
+        feature_cols = demand_feature_columns()
+    else:
+        reports = run_alpha_baselines(
+            dataset=dataset,
+            targets=targets,
+            train_days=args.train_days,
+            test_days=args.test_days,
+            output_dir=args.results_dir,
+        )
+        if reports:
+            _print_go_no_go(reports)
+        feature_cols = get_feature_columns(include_momentum=True)
 
     if args.save_model:
-        momentum_cols = get_feature_columns(include_momentum=True)
         for target in targets:
             if target not in dataset.columns:
                 continue
             print(f"\n{'=' * 70}")
-            print(f"TRAINING PRODUCTION MODEL: {target}")
+            print(f"TRAINING PRODUCTION MODEL: {target} ({args.feature_set})")
             print(f"{'=' * 70}")
             train_production_model(
                 dataset=dataset,
                 target=target,
-                feature_cols=momentum_cols,
+                feature_cols=feature_cols,
                 data_dir=args.data_dir,
             )
             print(f"Saved: data/ml/models/{target}.json")
@@ -140,6 +171,32 @@ def _print_label_summary(dataset) -> None:
                 rate = dataset[col].dropna().mean()
                 print(f"  {col:<28} valid={valid:>10,}  positive_rate={rate:.3f}")
     print(f"{'=' * 70}\n")
+
+
+def _print_demand_gate(reports) -> None:
+    """Does the Demand Conviction feature set beat momentum-only?"""
+    print(f"\n{'=' * 70}")
+    print("DEMAND GATE: Do fundamentals/estimates/anti-chase add lift?")
+    print(f"{'=' * 70}")
+    targets_seen = sorted({r.target for r in reports})
+    for target in targets_seen:
+        mom = [r for r in reports if r.target == target and r.feature_set == "momentum"]
+        dem = [r for r in reports if r.target == target and r.feature_set == "demand"]
+        if mom and dem:
+            m, d = mom[0], dem[0]
+            delta = d.mean_auc - m.mean_auc
+            verdict = "GO" if delta > 0.005 else ("FLAT" if delta > -0.005 else "REGRESS")
+            print(
+                f"\n  {target}:"
+                f"\n    Momentum-only: auc={m.mean_auc:.4f}  prec={m.mean_precision:.1f}%"
+                f"\n    Demand (v2):   auc={d.mean_auc:.4f}  prec={d.mean_precision:.1f}%"
+                f"\n    Lift: {delta:+.4f} auc  ->  {verdict}"
+            )
+    print(
+        "\n  Keep the demand groups only if they add AUC/precision lift; drop "
+        "non-additive groups (same discipline that dropped the MACD/MTF group)."
+    )
+    print(f"{'=' * 70}")
 
 
 def _print_go_no_go(reports) -> None:

@@ -15,6 +15,22 @@ class AlphaFactorScores(BaseModel):
     volume_thrust: float = 0.0
 
 
+class AlphaDemandDimensions(BaseModel):
+    """Per-dimension Demand Conviction breakdown (D-FUND/D-EST/D-CAT/D-POL/D-TECH).
+
+    ``fund`` / ``est`` / ``squeeze`` are 0-1 quality reads; ``catalyst`` /
+    ``policy`` are signed (-1..1). ``net`` is the regime-weighted evidence used.
+    All ``None`` when the underlying dimension has no data for the ticker.
+    """
+
+    fund: float | None = None
+    est: float | None = None
+    catalyst: float | None = None
+    policy: float | None = None
+    squeeze: float | None = None
+    net: float | None = None
+
+
 class AlphaSignalResponse(BaseModel):
     """Directional alpha assessment for a single ticker."""
 
@@ -38,6 +54,13 @@ class AlphaSignalResponse(BaseModel):
     volume_thrust_ratio: float | None = None
     as_of_date: str | None = None
 
+    # Demand Conviction v2: regime router + per-dimension breakdown + anti-chase.
+    regime: str = "narrative"
+    demand: AlphaDemandDimensions | None = None
+    demand_multiplier: float | None = None
+    overextension_score: float | None = None
+    overextension_penalty: float | None = None
+
     market_cap: float | None = None
     institutional_pct: float | None = None
     sector: str | None = None
@@ -51,6 +74,9 @@ class AlphaScanResponse(BaseModel):
     as_of_date: str | None = None
     computed_at: str | None = None
     ml_available: bool = False
+    # Which model variant produced these signals: "peak" (legacy intra-window
+    # big-move models) or "sustained" (move must still hold at horizon end).
+    variant: str = "peak"
     total: int = 0
     strong_buy_count: int = 0
     buy_count: int = 0

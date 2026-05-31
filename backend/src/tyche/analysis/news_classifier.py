@@ -13,6 +13,10 @@ from dataclasses import dataclass
 import structlog
 from pydantic import BaseModel, Field
 
+from tyche.analysis.catalyst_taxonomy import (
+    DEMAND_CATALYST_NAMES,
+    POLICY_TAG_NAMES,
+)
 from tyche.analysis.client import GeminiClient
 
 logger = structlog.get_logger()
@@ -49,6 +53,12 @@ Rules:
 - Reserve extreme scores (beyond +/-0.5) for truly material events:
   - Earnings miss/beat, regulatory action, CEO departure, M&A, major lawsuit
 - Sentiment must be one of: positive, negative, neutral
+- Also tag the DEMAND CATALYST (how it changes forward demand) from:
+  {demand_catalysts}
+  Use "none" when the article is not a demand signal.
+- Also tag any POLICY/regulatory tailwind or headwind from:
+  {policy_tags}
+  Use "none" when no policy/regulatory angle applies.
 - Provide a 1-sentence reasoning for your classification"""
 
 _ARTICLE_PROMPT = """Classify this news article:
@@ -68,6 +78,8 @@ Rules:
 - Score impact from -1.0 to +1.0. Be conservative: most news is neutral (0.0 to +/-0.2)
 - Reserve extreme scores (beyond +/-0.5) for truly material events
 - Sentiment must be one of: positive, negative, neutral
+- Tag the DEMAND CATALYST from: {demand_catalysts} (use "none" if not a demand signal)
+- Tag any POLICY/regulatory angle from: {policy_tags} (use "none" if none)
 - Return exactly one classification per article, preserving the article_id"""
 
 _BATCH_ARTICLE_PROMPT = """Classify each of these {count} news articles:
@@ -119,6 +131,8 @@ Rules:
   - Item 2.01 (Acquisitions/Dispositions): M&A events
   - Item 4.02 (Non-reliance on financials): always highly negative
 - Sentiment must be one of: positive, negative, neutral
+- Tag the DEMAND CATALYST from: {demand_catalysts} (use "none" if not a demand signal)
+- Tag any POLICY/regulatory angle from: {policy_tags} (use "none" if none)
 - Provide a 1-sentence reasoning for your classification"""
 
 _8K_FILING_PROMPT = """Classify this SEC 8-K filing:
@@ -142,6 +156,8 @@ Rules:
 - Score impact from -1.0 to +1.0
 - 8-K filings are often material events — don't default to neutral unless truly routine
 - Sentiment must be one of: positive, negative, neutral
+- Tag the DEMAND CATALYST from: {demand_catalysts} (use "none" if not a demand signal)
+- Tag any POLICY/regulatory angle from: {policy_tags} (use "none" if none)
 - Return exactly one classification per filing, preserving the accession_no"""
 
 _8K_BATCH_PROMPT = """Classify each of these {count} SEC 8-K filings:
@@ -152,6 +168,9 @@ Return one classification per filing with matching accession_no."""
 
 _ARTICLES_BATCH_SIZE = 10
 _FILINGS_BATCH_SIZE = 5
+
+_DEMAND_CATALYSTS_STR = ", ".join(DEMAND_CATALYST_NAMES)
+_POLICY_TAGS_STR = ", ".join(POLICY_TAG_NAMES)
 
 
 class TickerMention(BaseModel):
@@ -170,6 +189,12 @@ class ArticleClassification(BaseModel):
     impact_score: float = Field(
         description="Impact score from -1.0 to +1.0", ge=-1.0, le=1.0
     )
+    demand_catalyst: str = Field(
+        default="none", description="Demand catalyst tag from the taxonomy"
+    )
+    policy_tag: str = Field(
+        default="none", description="Policy/regulatory tag from the taxonomy"
+    )
     reasoning: str = Field(description="1-sentence explanation")
 
 
@@ -183,6 +208,8 @@ class BatchArticleClassification(BaseModel):
     impact_score: float = Field(
         description="Impact score from -1.0 to +1.0", ge=-1.0, le=1.0
     )
+    demand_catalyst: str = Field(default="none", description="Demand catalyst tag")
+    policy_tag: str = Field(default="none", description="Policy/regulatory tag")
     reasoning: str = Field(description="1-sentence explanation")
 
 
@@ -196,6 +223,8 @@ class Batch8KClassification(BaseModel):
     impact_score: float = Field(
         description="Impact score from -1.0 to +1.0", ge=-1.0, le=1.0
     )
+    demand_catalyst: str = Field(default="none", description="Demand catalyst tag")
+    policy_tag: str = Field(default="none", description="Policy/regulatory tag")
     reasoning: str = Field(description="1-sentence explanation")
 
 
@@ -216,6 +245,10 @@ def _sanitize(cls: ArticleClassification | BatchArticleClassification | Batch8KC
         cls.impact_score = 1.0
     if cls.sentiment not in {"positive", "negative", "neutral"}:
         cls.sentiment = "neutral"
+    dc = getattr(cls, "demand_catalyst", "none")
+    cls.demand_catalyst = dc.lower() if dc and dc.lower() in DEMAND_CATALYST_NAMES else "none"
+    pt = getattr(cls, "policy_tag", "none")
+    cls.policy_tag = pt.lower() if pt and pt.lower() in POLICY_TAG_NAMES else "none"
 
 
 def _to_article_classification(
@@ -227,6 +260,8 @@ def _to_article_classification(
         event_type=batch_item.event_type,
         sentiment=batch_item.sentiment,
         impact_score=batch_item.impact_score,
+        demand_catalyst=getattr(batch_item, "demand_catalyst", "none"),
+        policy_tag=getattr(batch_item, "policy_tag", "none"),
         reasoning=batch_item.reasoning,
     )
 
@@ -259,7 +294,11 @@ class NewsClassifier:
         self, title: str, summary: str, published_at: str
     ) -> ArticleClassification:
         """Classify a single article (used by tests and one-off calls)."""
-        system = _SYSTEM_PROMPT.format(event_types=", ".join(_EVENT_TYPES))
+        system = _SYSTEM_PROMPT.format(
+            event_types=", ".join(_EVENT_TYPES),
+            demand_catalysts=_DEMAND_CATALYSTS_STR,
+            policy_tags=_POLICY_TAGS_STR,
+        )
         prompt = _ARTICLE_PROMPT.format(
             title=title,
             published_at=published_at,
@@ -290,6 +329,8 @@ class NewsClassifier:
         system = _8K_SYSTEM_PROMPT.format(
             ticker=ticker,
             event_types=", ".join(_EVENT_TYPES),
+            demand_catalysts=_DEMAND_CATALYSTS_STR,
+            policy_tags=_POLICY_TAGS_STR,
         )
         prompt = _8K_FILING_PROMPT.format(
             ticker=ticker,
@@ -325,7 +366,9 @@ class NewsClassifier:
             return {a["article_id"]: cls}
 
         system = _BATCH_SYSTEM_PROMPT.format(
-            event_types=", ".join(_EVENT_TYPES)
+            event_types=", ".join(_EVENT_TYPES),
+            demand_catalysts=_DEMAND_CATALYSTS_STR,
+            policy_tags=_POLICY_TAGS_STR,
         )
         formatted = "\n\n".join(
             f"--- Article {i+1} ---\n"
@@ -370,7 +413,9 @@ class NewsClassifier:
             return {f["accession_no"]: cls}
 
         system = _8K_BATCH_SYSTEM_PROMPT.format(
-            event_types=", ".join(_EVENT_TYPES)
+            event_types=", ".join(_EVENT_TYPES),
+            demand_catalysts=_DEMAND_CATALYSTS_STR,
+            policy_tags=_POLICY_TAGS_STR,
         )
         formatted = "\n\n".join(
             f"--- Filing {i+1} ---\n"

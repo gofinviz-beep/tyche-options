@@ -202,16 +202,20 @@ Validated on 176K deep dip rows (2015–2026, $1B+ cap, 60%+ institutional owner
 
 If assigned on a pullback CSP, the stock was bought at 5% below a rising EMA on a quality large-cap name — exactly where we'd want to own it anyway. Enter the wheel: sell covered calls on the assigned shares.
 
-## Directional Alpha (Big-Move Buys)
+## Directional Alpha — Demand Conviction Engine v2 (Big-Move Buys)
 
-The "other engine" — instead of harvesting premium, find quality names poised for **large upside moves** (the AMD / Micron / space-stock runs). Complements, does not replace, the CSP/CC income engine.
+The "other engine" — instead of harvesting premium, find quality names poised for **large upside moves** (the AMD / Micron / space-stock runs). Complements, does not replace, the CSP/CC income engine. **Full reference: `docs/directional-alpha.md`.**
 
-- **Three horizons** (label specs in `ml/labels.py`): Swing (+25% / ~40d), Trend (+40% / ~60d), Thematic (+60% / ~120d).
-- **Edge sources:** multi-horizon momentum, relative strength vs SPY, EMA-stack alignment + 200-EMA slope, proximity to 52-week high, breakout flags, volume thrust — plus an XGBoost big-move probability per horizon (`BreakoutPredictor`).
-- **AlphaScore (0–100):** deterministic factor composite × ML probability, in `strategy/alpha_engine.py`. Maps to a signal: strong_buy / buy / watch / avoid, with a horizon tag.
-- **Universe:** common stock only, build-net floor $250M (`alpha_min_market_cap_millions`); the page filters upward (default $1B). Market cap shown is the live `shares × close` value.
-- **What was tested and dropped:** MACD-histogram + multi-timeframe (weekly/monthly/quarterly) trend alignment added only noise-level lift (+0.0003–0.0005 AUC) on top of momentum/EMA-stack and was removed to keep the nightly pipeline lean.
-- **Full reference:** `docs/directional-alpha.md`.
+- **v1 → v2 thesis.** v1 ranked on price momentum + ML breakout prob, which structurally favored names that had *already run*. v2 leads with **demand evidence** and uses momentum only to *time* the entry, plus an **anti-chase** penalty that demotes already-extended names.
+- **Six demand dimensions** (each degrades gracefully to neutral when its store is absent): **D-FUND** (Finnhub Fundamental-1: revenue growth/accel, margin, EPS, FCF), **D-EST** (Finnhub Estimates-1: revisions, surprises, recommendation, PT upside), **D-CAT** (news/8-K catalysts + Massive **Benzinga Corporate Guidance**, guide-vs-consensus), **D-POL** (`PolicyEventCalendar` structural tailwinds), **D-GRAPH** (`SupplyChainGraph` customer→supplier demand cascade), **D-TECH** (Polygon short interest / days-to-cover squeeze).
+- **Guide vs. consensus + fiscal alignment.** `derive_guidance_catalysts()` prefers guided-vs-Finnhub-consensus, falling back to same-period revision then YoY. `_infer_fye_month()` (modal vote over `FundamentalsStore` period-ends) + `fiscal_quarter_end()` align Benzinga's company fiscal labels (e.g. NVDA/WMT FY ends Jan) to Finnhub's calendar quarters; skips the comparator (never a wrong match) when FYE can't be inferred.
+- **Three horizons** (`ml/labels.py`): Swing (+25% / ~40d), Trend (+40% / ~60d), Thematic (+60% / ~120d). **Two label families: peak** (`big_move_up_*`, touches target intra-window — biased to flash spikes) vs **sustained** (`big_move_sustained_*`, still up by target at horizon END — realistic buy target).
+- **AlphaScore (0–100)** (`strategy/alpha_engine.py`): `composite = 0.55·ml_blend + 0.45·factor_blend`, then `×(1 − 0.45·overextension)` anti-chase, then a **regime-routed demand multiplier** `1 + 0.30·net` clamped `[0.70, 1.30]` (Revenue vs Narrative regime weights the dimensions differently; net=0 with no demand data → v1-identical). Maps to strong_buy / buy / watch / avoid + horizon tag.
+- **Peak vs Sustained variants.** Both scored from one feature build, persisted to separate snapshots (`alpha_signals.parquet` peak, `alpha_signals_sustained.parquet`). `alpha_sustained_enabled` (default true) gates the second. The page **defaults to Sustained** with a **compare-only** Peak/Sustained toggle; only `GET /alpha/scan?variant=` switches the snapshot read (engine/`/signal/{ticker}` unchanged). Sustained is much more selective than peak.
+- **Demand gate** (`scripts/run_demand_gate.py`): non-destructive walk-forward ablation (momentum-only vs full demand) on sustained targets; promotes `big_move_sustained_*` models only where demand adds ≥ min-lift AUC (net-new artifacts, never overwrites peak `big_move_up_*`). May 2026 verdict: demand won all 3 horizons (precision +5.6/+6.6/+6.2pp, thematic AUC 0.905) → all promoted.
+- **Universe:** common stock only, build-net floor $250M (`alpha_min_market_cap_millions`); the page filters upward (default $1B). Market cap shown is live `shares × close`.
+- **Why a ticker may be missing from the page:** `/alpha/scan` returns only the top `limit` by score; demoted mega-caps (e.g. NVDA ~29/100 "avoid", rank ~1,300) won't appear — use `GET /alpha/signal/{ticker}` for any specific name.
+- **What was tested and dropped:** MACD-histogram + multi-timeframe trend alignment added only noise-level lift (+0.0003–0.0005 AUC) and was removed.
 
 ## CSP Scanner Quality Controls
 
@@ -272,3 +276,7 @@ The MILP allocator adds a mega-cap preference: `cap_w = 1.0 + 0.1 × min(1.0, ma
 | `flatfile_ingest_enabled` | `true` | Enable nightly S3 options flat file ingest |
 | `flatfile_ingest_time` | `"02:00"` | Time (ET) for nightly flat file download |
 | `flatfile_ingest_min_market_cap` | `1000000000` | Min market cap ($1B) for flat file universe |
+| `alpha_batch_enabled` | `true` | Enable the nightly Directional Alpha batch |
+| `alpha_batch_after_flatfile` | `true` | Chain the alpha batch after the nightly flatfile ingest (else standalone 4:20 PM ET cron) |
+| `alpha_sustained_enabled` | `true` | Also compute the `sustained` alpha snapshot alongside `peak` |
+| `alpha_min_market_cap_millions` | `250` | Build-net market-cap floor ($250M, common stock only); page filters upward |

@@ -92,6 +92,24 @@ def _add_big_move_labels(labels: pd.DataFrame, close: pd.Series) -> None:
             labels[col] = (fwd_max - close) / close * 100
 
 
+def _add_sustained_big_move_labels(labels: pd.DataFrame, close: pd.Series) -> None:
+    """Add *sustained* big-move labels using the forward CLOSE at the horizon.
+
+    The v1 ``big_move_up_*`` labels fire on the intra-window peak (close-to-
+    close max), which rewards flash spikes that fully retrace. The sustained
+    label requires the price to still be up by the threshold at the END of the
+    horizon — a far more realistic target for a multi-week directional buy, and
+    the basis for the de-biased Demand Conviction scorer. NaN where the forward
+    window is incomplete.
+    """
+    for horizon, min_gain_pct in BIG_MOVE_SPECS:
+        fwd_close = _forward_close(close, horizon)
+        close_gain_pct = (fwd_close - close) / close * 100
+        col = f"big_move_sustained_{int(min_gain_pct)}pct_{horizon}d"
+        labels[col] = (close_gain_pct >= min_gain_pct).astype(float)
+        labels.loc[fwd_close.isna(), col] = np.nan
+
+
 def compute_labels(
     ohlcv: pd.DataFrame,
     support_ema: pd.Series | None = None,
@@ -179,6 +197,7 @@ def compute_labels(
     labels["days_to_ema_recovery"] = first_above
 
     _add_big_move_labels(labels, close)
+    _add_sustained_big_move_labels(labels, close)
 
     return labels
 
@@ -258,5 +277,6 @@ def compute_labels_vectorized(
     labels["days_to_ema_recovery"] = first_above
 
     _add_big_move_labels(labels, close)
+    _add_sustained_big_move_labels(labels, close)
 
     return labels

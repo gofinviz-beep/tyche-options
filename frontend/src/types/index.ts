@@ -918,6 +918,15 @@ export interface AlphaFactorScores {
   volume_thrust: number;
 }
 
+export interface AlphaDemandDimensions {
+  fund: number | null;
+  est: number | null;
+  catalyst: number | null;
+  policy: number | null;
+  squeeze: number | null;
+  net: number | null;
+}
+
 export interface AlphaSignal {
   ticker: string;
   alpha_score: number;
@@ -936,6 +945,11 @@ export interface AlphaSignal {
   ema_stack_score: number;
   volume_thrust_ratio: number | null;
   as_of_date: string | null;
+  regime: "revenue" | "narrative";
+  demand: AlphaDemandDimensions | null;
+  demand_multiplier: number | null;
+  overextension_score: number | null;
+  overextension_penalty: number | null;
   market_cap: number | null;
   institutional_pct: number | null;
   sector: string | null;
@@ -947,6 +961,7 @@ export interface AlphaScanResult {
   as_of_date: string | null;
   computed_at: string | null;
   ml_available: boolean;
+  variant: string;
   total: number;
   strong_buy_count: number;
   buy_count: number;

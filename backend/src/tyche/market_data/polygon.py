@@ -1057,3 +1057,153 @@ class PolygonClient:
             count=len(articles),
         )
         return articles
+
+    # ── Financials & Ratios ────────────────────────────────────────────
+
+    @staticmethod
+    def _fin_value(node: dict[str, Any] | None, *keys: str) -> float | None:
+        """Pull the first present ``{key: {"value": ...}}`` from a statement."""
+        if not isinstance(node, dict):
+            return None
+        for key in keys:
+            item = node.get(key)
+            if isinstance(item, dict) and item.get("value") is not None:
+                try:
+                    return float(item["value"])
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    async def get_financials(
+        self,
+        ticker: str,
+        timeframe: str = "quarterly",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Fetch standardized financial statements (Financials & Ratios).
+
+        Uses ``/vX/reference/financials``. Returns a list of normalized,
+        point-in-time row dicts (newest first) keyed for ``FundamentalsStore``.
+        Degrades gracefully: missing line items become ``None`` and an
+        unavailable endpoint (e.g. no subscription) yields ``[]``.
+
+        Args:
+            ticker: Stock symbol.
+            timeframe: ``quarterly`` | ``annual`` | ``ttm``.
+            limit: Max periods to fetch (Polygon caps at 100).
+        """
+        params: dict[str, Any] = {
+            "ticker": ticker.upper(),
+            "timeframe": timeframe,
+            "order": "desc",
+            "limit": min(max(limit, 1), 100),
+            "sort": "period_of_report_date",
+        }
+
+        try:
+            data = await self._request("GET", "/vX/reference/financials", params=params)
+        except PolygonAPIError as exc:
+            logger.warning(
+                "polygon_financials_unavailable", ticker=ticker, error=str(exc)
+            )
+            return []
+
+        rows: list[dict[str, Any]] = []
+        for item in data.get("results", []):
+            fin = item.get("financials", {}) or {}
+            income = fin.get("income_statement", {}) or {}
+            balance = fin.get("balance_sheet", {}) or {}
+            cash = fin.get("cash_flow_statement", {}) or {}
+
+            period_end = item.get("end_date") or item.get("period_of_report_date")
+            if not period_end:
+                continue
+
+            rows.append(
+                {
+                    "period_end": period_end,
+                    "filing_date": item.get("filing_date") or period_end,
+                    "fiscal_year": item.get("fiscal_year"),
+                    "fiscal_period": item.get("fiscal_period", ""),
+                    "timeframe": item.get("timeframe", timeframe),
+                    "revenue": self._fin_value(income, "revenues", "revenue"),
+                    "gross_profit": self._fin_value(income, "gross_profit"),
+                    "operating_income": self._fin_value(
+                        income, "operating_income_loss"
+                    ),
+                    "net_income": self._fin_value(
+                        income, "net_income_loss", "net_income_loss_available_to_common_stockholders_basic"
+                    ),
+                    "eps_diluted": self._fin_value(
+                        income, "diluted_earnings_per_share", "basic_earnings_per_share"
+                    ),
+                    "operating_cash_flow": self._fin_value(
+                        cash, "net_cash_flow_from_operating_activities"
+                    ),
+                    "capex": self._fin_value(
+                        cash, "payments_to_acquire_property_plant_and_equipment"
+                    ),
+                    "free_cash_flow": None,
+                    "cash_and_equivalents": self._fin_value(
+                        balance, "cash", "cash_and_equivalents"
+                    ),
+                    "total_debt": self._fin_value(
+                        balance, "long_term_debt", "liabilities"
+                    ),
+                    "total_assets": self._fin_value(balance, "assets"),
+                    "total_equity": self._fin_value(balance, "equity"),
+                    "shares_diluted": self._fin_value(
+                        income, "diluted_average_shares", "basic_average_shares"
+                    ),
+                }
+            )
+
+        logger.debug("polygon_financials_fetched", ticker=ticker, periods=len(rows))
+        return rows
+
+    # ── Short Interest ─────────────────────────────────────────────────
+
+    async def get_short_interest(
+        self,
+        ticker: str,
+        limit: int = 24,
+    ) -> list[dict[str, Any]]:
+        """Fetch short-interest history (FINRA settlement cadence).
+
+        Uses ``/stocks/v1/short-interest``. Returns normalized rows (newest
+        first) for ``ShortInterestStore``. Degrades to ``[]`` if the endpoint
+        is unavailable.
+        """
+        params: dict[str, Any] = {
+            "ticker": ticker.upper(),
+            "order": "desc",
+            "limit": min(max(limit, 1), 100),
+            "sort": "settlement_date",
+        }
+
+        try:
+            data = await self._request("GET", "/stocks/v1/short-interest", params=params)
+        except PolygonAPIError as exc:
+            logger.warning(
+                "polygon_short_interest_unavailable", ticker=ticker, error=str(exc)
+            )
+            return []
+
+        rows: list[dict[str, Any]] = []
+        for item in data.get("results", []):
+            settlement = item.get("settlement_date")
+            if not settlement:
+                continue
+            rows.append(
+                {
+                    "settlement_date": settlement,
+                    "short_interest": item.get("short_interest"),
+                    "avg_daily_volume": item.get("avg_daily_volume"),
+                    "days_to_cover": item.get("days_to_cover"),
+                    "short_interest_ratio": item.get("days_to_cover"),
+                    "short_pct_float": None,
+                }
+            )
+
+        logger.debug("polygon_short_interest_fetched", ticker=ticker, rows=len(rows))
+        return rows

@@ -21,8 +21,21 @@ logger = structlog.get_logger()
 class AlphaSignalStore:
     """Parquet-backed store for the latest directional alpha scan."""
 
-    def __init__(self, data_dir: str = "data") -> None:
-        self._path = Path(data_dir) / "alpha_signals.parquet"
+    def __init__(self, data_dir: str = "data", variant: str = "peak") -> None:
+        # "peak" keeps the historical filename for backward compatibility; other
+        # variants (e.g. "sustained") get a suffixed snapshot so both can coexist
+        # and the page toggle can switch between them instantly.
+        self._variant = variant or "peak"
+        name = (
+            "alpha_signals.parquet"
+            if self._variant == "peak"
+            else f"alpha_signals_{self._variant}.parquet"
+        )
+        self._path = Path(data_dir) / name
+
+    @property
+    def variant(self) -> str:
+        return self._variant
 
     @property
     def path(self) -> Path:
@@ -43,6 +56,12 @@ class AlphaSignalStore:
         if "factors" in df.columns:
             factors = pd.json_normalize(df["factors"]).add_prefix("factor_")
             df = pd.concat([df.drop(columns=["factors"]), factors], axis=1)
+        # Flatten the per-dimension demand breakdown the same way. Uses a
+        # distinct prefix so it doesn't collide with the top-level
+        # ``demand_multiplier`` column.
+        if "demand" in df.columns:
+            demand = pd.json_normalize(df["demand"]).add_prefix("ddim_")
+            df = pd.concat([df.drop(columns=["demand"]), demand], axis=1)
 
         df["as_of_date"] = as_of.isoformat()
         df["computed_at"] = datetime.now(timezone.utc).isoformat()
@@ -68,20 +87,26 @@ class AlphaSignalStore:
         computed_at = str(df["computed_at"].iloc[0]) if "computed_at" in df.columns else None
 
         factor_cols = [c for c in df.columns if c.startswith("factor_")]
+        demand_cols = [c for c in df.columns if c.startswith("ddim_")]
         meta_cols = {"as_of_date", "computed_at"}
         records: list[dict[str, Any]] = []
         for _, row in df.iterrows():
             rec: dict[str, Any] = {}
             factors: dict[str, float] = {}
+            demand: dict[str, float] = {}
             for col in df.columns:
                 if col in meta_cols:
                     continue
                 val = row[col]
                 if col in factor_cols:
                     factors[col[len("factor_"):]] = _clean(val)
+                elif col in demand_cols:
+                    demand[col[len("ddim_"):]] = _clean(val)
                 else:
                     rec[col] = _clean(val)
             rec["factors"] = factors
+            if demand:
+                rec["demand"] = demand
             records.append(rec)
 
         return records, as_of, computed_at

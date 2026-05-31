@@ -18,11 +18,16 @@ from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.derived_store import DerivedMetricsStore
 from tyche.ml.features import (
     FEATURE_COLS,
+    add_catalyst_features,
     add_correlation_features,
+    add_estimate_features,
     add_etf_features,
+    add_fundamental_features,
+    add_graph_features,
     add_market_context_features,
     add_neighbor_features,
     add_relative_strength_features,
+    add_short_interest_features,
     build_sector_map,
     extract_ticker_features,
 )
@@ -44,6 +49,7 @@ def build_dataset(
     include_correlation: bool = True,
     include_market_context: bool = True,
     include_momentum: bool = True,
+    include_demand: bool = True,
     max_tickers: int | None = None,
 ) -> pd.DataFrame:
     """Build the full tabular dataset from on-disk stores.
@@ -147,6 +153,7 @@ def build_dataset(
         include_correlation=include_correlation,
         include_market_context=include_market_context,
         include_momentum=include_momentum,
+        include_demand=include_demand,
     )
 
     elapsed = time.time() - t0
@@ -173,6 +180,7 @@ def apply_relational_features(
     include_correlation: bool = True,
     include_market_context: bool = True,
     include_momentum: bool = True,
+    include_demand: bool = True,
 ) -> pd.DataFrame:
     """Apply cross-sectional / relational feature augmentations in place.
 
@@ -237,6 +245,71 @@ def apply_relational_features(
             logger.warning("relative_strength_features_failed", exc_info=True)
             dataset = add_relative_strength_features(dataset, spy_ohlcv=None)
 
+    if include_demand:
+        dataset = _apply_demand_features(dataset, data_dir=data_dir)
+
+    return dataset
+
+
+def _apply_demand_features(dataset: pd.DataFrame, *, data_dir: str) -> pd.DataFrame:
+    """Apply fundamentals / estimates / short-interest augmentations (D-FUND,
+    D-EST, D-TECH). Each degrades to NaN defaults when its store is absent."""
+    try:
+        from tyche.market_data.fundamentals_store import FundamentalsStore
+
+        store = FundamentalsStore(data_dir=data_dir)
+        dataset = add_fundamental_features(dataset, fundamentals_store=store)
+        logger.info("fundamental_features_added")
+    except Exception:
+        logger.warning("fundamental_features_failed", exc_info=True)
+        dataset = add_fundamental_features(dataset, fundamentals_store=None)
+
+    try:
+        from tyche.market_data.estimates_store import EstimatesStore
+
+        store = EstimatesStore(data_dir=data_dir)
+        dataset = add_estimate_features(dataset, estimates_store=store)
+        logger.info("estimate_features_added")
+    except Exception:
+        logger.warning("estimate_features_failed", exc_info=True)
+        dataset = add_estimate_features(dataset, estimates_store=None)
+
+    try:
+        from tyche.market_data.short_interest_store import ShortInterestStore
+
+        store = ShortInterestStore(data_dir=data_dir)
+        dataset = add_short_interest_features(dataset, short_interest_store=store)
+        logger.info("short_interest_features_added")
+    except Exception:
+        logger.warning("short_interest_features_failed", exc_info=True)
+        dataset = add_short_interest_features(dataset, short_interest_store=None)
+
+    try:
+        from tyche.market_data.catalyst_store import CatalystSignalStore
+        from tyche.market_data.policy_calendar import PolicyEventCalendar
+
+        cat_store = CatalystSignalStore(data_dir=data_dir)
+        meta = TickerMetaStore(data_dir=data_dir)
+        dataset = add_catalyst_features(
+            dataset,
+            catalyst_store=cat_store if cat_store.get_all_tickers() else None,
+            policy_calendar=PolicyEventCalendar(),
+            sectors=meta.get_sectors(),
+        )
+        logger.info("catalyst_features_added")
+    except Exception:
+        logger.warning("catalyst_features_failed", exc_info=True)
+        dataset = add_catalyst_features(dataset, catalyst_store=None, policy_calendar=None)
+
+    try:
+        from tyche.market_data.supply_chain_graph import SupplyChainGraph
+
+        dataset = add_graph_features(dataset, graph=SupplyChainGraph())
+        logger.info("graph_features_added")
+    except Exception:
+        logger.warning("graph_features_failed", exc_info=True)
+        dataset = add_graph_features(dataset, graph=None)
+
     return dataset
 
 
@@ -248,7 +321,7 @@ def build_latest_features(
 ) -> pd.DataFrame:
     """Build the latest-date feature row per ticker for live alpha inference.
 
-    Mirrors ``build_dataset`` feature extraction (including all relational
+    Mirrors ``build_dataset`` feature extraction (relational + demand
     augmentations) but keeps only the most recent row per ticker and skips
     label construction. Used by the nightly alpha batch and on-demand scans.
     """
@@ -277,7 +350,8 @@ def build_latest_features(
         candidates = candidates[:max_tickers]
 
     frames: list[pd.DataFrame] = []
-    for ticker in candidates:
+    total = len(candidates)
+    for i, ticker in enumerate(candidates, start=1):
         try:
             ohlcv = ohlcv_store.read_ticker(ticker)
             if len(ohlcv) < MIN_BARS:
@@ -299,6 +373,8 @@ def build_latest_features(
             frames.append(last)
         except Exception:
             logger.warning("latest_features_ticker_failed", ticker=ticker, exc_info=True)
+        if i % 500 == 0:
+            logger.info("latest_features_progress", done=i, total=total, rows=len(frames))
 
     if not frames:
         return pd.DataFrame()
@@ -309,6 +385,8 @@ def build_latest_features(
         ohlcv_store=ohlcv_store,
         data_dir=data_dir,
     )
+    latest = _apply_demand_features(latest, data_dir=data_dir)
+    logger.info("latest_features_complete", tickers=len(latest))
     return latest
 
 

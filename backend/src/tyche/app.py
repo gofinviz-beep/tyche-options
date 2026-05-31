@@ -88,10 +88,12 @@ async def _scheduled_morning_scan() -> None:
 
 
 async def _scheduled_ohlcv_refresh() -> None:
-    """Fetch today's OHLCV data from Polygon after market close.
+    """Fetch latest OHLCV from Polygon before the flatfile options ingest.
 
-    Invalidates conviction caches so the subsequent conviction batch
-    (scheduled ~6 minutes later) writes fresh data.
+    Scheduled daily at ``flatfile_ingest_time - ohlcv_refresh_offset_minutes``
+    so grouped-daily bars (and repriced market caps) are current when the S3
+    flatfile pipeline runs. Also invalidates conviction caches for downstream
+    jobs.
     """
     import asyncio
 
@@ -332,6 +334,9 @@ async def _scheduled_flatfile_ingest() -> None:
                 returncode=proc.returncode,
                 output_tail=output[-500:] if len(output) > 500 else output,
             )
+            if settings.alpha_batch_enabled and settings.alpha_batch_after_flatfile:
+                logger.info("alpha_batch_chained_after_flatfile")
+                await _scheduled_alpha_batch()
         else:
             logger.error(
                 "scheduled_flatfile_ingest_failed",
@@ -340,6 +345,35 @@ async def _scheduled_flatfile_ingest() -> None:
             )
     except Exception:
         logger.error("scheduled_flatfile_ingest_failed", exc_info=True)
+
+
+async def _scheduled_demand_data() -> None:
+    """Daily demand-data ingest: fundamentals, estimates, short interest.
+
+    Foundation for the Demand Conviction engine. Each source degrades
+    gracefully when its credentials/subscription are absent.
+    """
+    from tyche.config import get_settings as _gs
+    from tyche.workflow.demand_data import ingest_demand_data
+
+    settings = _gs()
+    if not settings.demand_data_enabled:
+        return
+    if not settings.polygon_api_key and not settings.finnhub_api_key:
+        logger.warning("demand_data_skipped_no_credentials")
+        return
+
+    try:
+        counts = await ingest_demand_data(
+            settings,
+            do_fundamentals=settings.fundamentals_refresh_enabled,
+            do_estimates=settings.estimates_refresh_enabled,
+            do_short_interest=settings.short_interest_refresh_enabled,
+            do_guidance=settings.guidance_refresh_enabled,
+        )
+        logger.info("scheduled_demand_data_complete", **counts)
+    except Exception:
+        logger.error("scheduled_demand_data_failed", exc_info=True)
 
 
 async def _scheduled_conviction_batch() -> None:
@@ -386,11 +420,10 @@ async def _scheduled_conviction_batch() -> None:
 
 
 async def _scheduled_alpha_batch() -> None:
-    """Run the directional alpha batch after daily OHLCV refresh.
+    """Run the directional alpha batch (Demand Conviction + ML scoring).
 
-    Computes big-move ML probabilities + factor scores for the universe and
-    persists the ranked snapshot to alpha_signals.parquet. Runs in a worker
-    thread to avoid blocking the event loop (CPU-bound feature build).
+    Normally chained after the nightly flatfile ingest (``alpha_batch_after_flatfile``).
+    Falls back to a standalone 4:20 PM ET weekday cron when chaining is disabled.
     """
     import asyncio
 
@@ -402,12 +435,14 @@ async def _scheduled_alpha_batch() -> None:
     try:
         engine = get_alpha_engine(settings)
         predictor = get_breakout_predictor(settings)
+        variants = ["peak", "sustained"] if settings.alpha_sustained_enabled else ["peak"]
         result = await asyncio.to_thread(
             run_alpha_batch,
             data_dir=settings.data_dir,
             min_market_cap=settings.alpha_min_market_cap_millions * 1_000_000,
             engine=engine,
             predictor=predictor,
+            variants=variants,
         )
         logger.info("scheduled_alpha_batch_complete", **{k: v for k, v in result.items() if k != "status"})
     except Exception:
@@ -884,10 +919,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await create_tables_for_models("news", NewsSignal, FilingSignal)
 
     from tyche.api.deps import get_scheduler
+    from tyche.config import ohlcv_refresh_time_before_flatfile
 
     scheduler = get_scheduler()
     scheduler.schedule_morning_scan(_scheduled_morning_scan)
-    scheduler.schedule_ohlcv_refresh(_scheduled_ohlcv_refresh)
+
+    ohlcv_h, ohlcv_m = ohlcv_refresh_time_before_flatfile(
+        settings.flatfile_ingest_time,
+        settings.ohlcv_refresh_offset_minutes,
+    )
+    scheduler.schedule_ohlcv_refresh(
+        _scheduled_ohlcv_refresh,
+        hour=ohlcv_h,
+        minute=ohlcv_m,
+        daily=True,
+    )
     scheduler.schedule_exit_monitor(_scheduled_exit_monitor)
 
     if settings.options_snapshot_enabled and settings.tradier_api_token:
@@ -940,7 +986,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.conviction_batch_after_ohlcv:
         scheduler.schedule_conviction_batch(_scheduled_conviction_batch)
 
-    if getattr(settings, "alpha_batch_enabled", True):
+    if getattr(settings, "alpha_batch_enabled", True) and not settings.alpha_batch_after_flatfile:
         scheduler.schedule_alpha_batch(_scheduled_alpha_batch)
 
     if settings.bridge_tradier_iv_enabled and settings.tradier_api_token:
@@ -957,6 +1003,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if settings.weekly_meta_refresh_enabled:
         scheduler.schedule_weekly_meta(_scheduled_weekly_meta)
+
+    if settings.demand_data_enabled:
+        parts = settings.demand_data_refresh_time.split(":")
+        dd_h = int(parts[0]) if len(parts) >= 1 else 3
+        dd_m = int(parts[1]) if len(parts) >= 2 else 0
+        scheduler.schedule_demand_data(_scheduled_demand_data, hour=dd_h, minute=dd_m)
 
     scheduler.start()
 

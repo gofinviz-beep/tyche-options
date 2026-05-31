@@ -317,6 +317,7 @@ export function useAlphaScan(params?: {
   signal?: string;
   horizon?: string;
   minScore?: number;
+  variant?: string;
   minMarketCapMillions?: number;
   limit?: number;
 }) {

@@ -88,7 +88,16 @@ async def _run_news_pipeline_locked(settings: TycheSettings) -> NewsPipelineResu
 
         classifier = _get_classifier(settings)
         if classifier is not None:
-            classified = await _classify_unclassified(store, classifier, tickers)
+            catalyst_store = None
+            try:
+                from tyche.market_data.catalyst_store import CatalystSignalStore
+
+                catalyst_store = CatalystSignalStore(data_dir=settings.data_dir)
+            except Exception:
+                logger.warning("catalyst_store_init_failed", exc_info=True)
+            classified = await _classify_unclassified(
+                store, classifier, tickers, catalyst_store=catalyst_store
+            )
             result.articles_classified = classified
         else:
             logger.info("news_pipeline_no_classifier")
@@ -119,8 +128,18 @@ async def _run_news_pipeline_locked(settings: TycheSettings) -> NewsPipelineResu
     return result
 
 
-async def _classify_unclassified(store, classifier, tickers: list[str]) -> int:
-    """Classify all unclassified articles across tickers."""
+async def _classify_unclassified(
+    store, classifier, tickers: list[str], catalyst_store=None
+) -> int:
+    """Classify all unclassified articles across tickers.
+
+    When ``catalyst_store`` is provided, demand-catalyst / policy tags from the
+    classifier are persisted to the CatalystSignalStore (D-CAT / D-POL).
+    """
+    import pandas as pd
+
+    from tyche.market_data.catalyst_store import records_from_classification
+
     total_classified = 0
 
     for ticker in tickers:
@@ -137,11 +156,16 @@ async def _classify_unclassified(store, classifier, tickers: list[str]) -> int:
             }
             for _, row in unclassified.iterrows()
         ]
+        pub_dates = {
+            row["article_id"]: pd.to_datetime(row["published_at"]).date()
+            for _, row in unclassified.iterrows()
+        }
 
         try:
             results = await classifier.classify_batch(articles_to_classify)
 
             classifications: dict[str, dict] = {}
+            catalyst_rows: list[dict] = []
             for article_id, classification in results.items():
                 classifications[article_id] = {
                     "event_type": classification.event_type,
@@ -149,9 +173,31 @@ async def _classify_unclassified(store, classifier, tickers: list[str]) -> int:
                     "impact_score": classification.impact_score,
                     "relevance": _extract_relevance(classification, ticker),
                 }
+                if catalyst_store is not None:
+                    ev_date = pub_dates.get(article_id)
+                    if ev_date is not None:
+                        catalyst_rows.extend(
+                            records_from_classification(
+                                ticker=ticker,
+                                event_date=ev_date,
+                                demand_catalyst=getattr(
+                                    classification, "demand_catalyst", "none"
+                                ),
+                                policy_tag=getattr(classification, "policy_tag", "none"),
+                                impact_score=classification.impact_score,
+                                source="news",
+                                ref_id=str(article_id),
+                            )
+                        )
 
             updated = store.bulk_update_classifications(ticker, classifications)
             total_classified += updated
+
+            if catalyst_store is not None and catalyst_rows:
+                try:
+                    catalyst_store.write_records(ticker, pd.DataFrame(catalyst_rows))
+                except Exception:
+                    logger.warning("catalyst_persist_failed", ticker=ticker)
 
         except Exception as exc:
             logger.warning(

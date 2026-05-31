@@ -25,6 +25,23 @@ from tyche.persistence.config_store import ConfigStore
 
 logger = structlog.get_logger()
 
+
+def offset_schedule_time(time_hm: str, offset_minutes: int) -> tuple[int, int]:
+    """Return ``(hour, minute)`` in ET after shifting ``HH:MM`` by *offset_minutes*."""
+    parts = (time_hm or "00:00").strip().split(":")
+    hour = int(parts[0]) if parts and parts[0] else 0
+    minute = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+    total = (hour * 60 + minute + offset_minutes) % (24 * 60)
+    return total // 60, total % 60
+
+
+def ohlcv_refresh_time_before_flatfile(
+    flatfile_time: str, offset_minutes: int = 30,
+) -> tuple[int, int]:
+    """OHLCV refresh slot: *offset_minutes* before the flatfile ingest time."""
+    return offset_schedule_time(flatfile_time, -offset_minutes)
+
+
 # ---------------------------------------------------------------------------
 # 1.  Environment-only settings (secrets + deployment infrastructure)
 # ---------------------------------------------------------------------------
@@ -321,19 +338,56 @@ class TycheSettings(BaseModel):
     # --- Automated Data Pipelines ---
     flatfile_ingest_enabled: bool = True
     flatfile_ingest_time: str = "07:00"
+    # Daily OHLCV refresh runs this many minutes before ``flatfile_ingest_time``
+    # so grouped-daily bars land before the S3 options flatfile pipeline.
+    ohlcv_refresh_offset_minutes: int = 30
     flatfile_ingest_min_market_cap: float = 1_000_000_000
     conviction_batch_after_ohlcv: bool = True
     alpha_batch_enabled: bool = True
+    # When true, run the directional alpha batch immediately after the nightly
+    # flatfile ingest completes (OHLCV refresh runs 30 min earlier). When false,
+    # falls back to the standalone 4:20 PM ET weekday cron.
+    alpha_batch_after_flatfile: bool = True
     # Directional Alpha BUILD net: the widest market-cap floor the nightly batch
     # computes, so the page control can explore down to here. Common-stock only
     # (no warrants/units/ADRs). The page defaults to a $1B view and can filter
     # upward; set this lower only to widen what the page can reveal.
     alpha_min_market_cap_millions: float = 250.0
+    # When true, the alpha batch ALSO scores the "sustained" big-move models
+    # (``big_move_sustained_*`` — require the move to still hold at the end of
+    # the horizon, not just an intra-window peak) and writes a second snapshot.
+    # The Directional Alpha page exposes a Peak/Sustained toggle to compare them
+    # live. When false, only the legacy "peak" snapshot is produced.
+    alpha_sustained_enabled: bool = True
     bridge_tradier_iv_enabled: bool = True
     correlation_refresh_enabled: bool = True
     etf_refresh_enabled: bool = True
     quarterly_meta_refresh_enabled: bool = True
     weekly_meta_refresh_enabled: bool = True
+
+    # --- Demand data (fundamentals, estimates, short interest) ---
+    # Powers the Demand Conviction (Directional Alpha v2) engine. Each store
+    # degrades gracefully when its source/credentials are unavailable.
+    demand_data_enabled: bool = True
+    fundamentals_refresh_enabled: bool = True
+    estimates_refresh_enabled: bool = True
+    short_interest_refresh_enabled: bool = True
+    # Demand catalysts from Benzinga Corporate Guidance (via Massive/Polygon key).
+    guidance_refresh_enabled: bool = True
+    # Fundamentals source: "finnhub" (Fundamental-1 statements) or "polygon"
+    # (Massive Financials & Ratios). Finnhub is preferred — its standardized
+    # statements carry the quarterly revenue series D-FUND needs.
+    fundamentals_source: str = "finnhub"
+    # Daily window (ET) after OHLCV refresh; fundamentals/SI change slowly,
+    # estimates are snapshotted daily to build a revision time series.
+    demand_data_refresh_time: str = "03:00"
+    demand_data_min_market_cap_millions: float = 250.0
+    demand_data_concurrency: int = 8
+    # Finnhub request rate (calls/min) for demand-data ingestion. Free tier is
+    # 60; paid Fundamental-1/Estimates-1 plans allow 300. Default 250 keeps a
+    # safety margin under the 300 SLA. The client backs off on any 429, so
+    # over-setting self-heals (just slower). Override per-run via --finnhub-rpm.
+    finnhub_rate_limit_rpm: int = 250
 
     # --- EDGAR Pipeline ---
     edgar_ingestion_enabled: bool = False

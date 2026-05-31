@@ -110,22 +110,35 @@ class WorkflowScheduler:
         func: Callable[..., Coroutine[Any, Any, Any]],
         hour: int = 16,
         minute: int = 2,
+        *,
+        daily: bool = False,
     ) -> None:
-        """Schedule the OHLCV data refresh (default 4:02 PM ET, right after close)."""
+        """Schedule the OHLCV data refresh.
+
+        Default (legacy): 4:02 PM ET weekdays. When ``daily=True``, runs every
+        calendar day at the given time (used for the pre-flatfile morning slot).
+        """
+        trigger_kwargs: dict[str, Any] = {
+            "hour": hour,
+            "minute": minute,
+            "timezone": "US/Eastern",
+        }
+        if not daily:
+            trigger_kwargs["day_of_week"] = "mon-fri"
         job = self._scheduler.add_job(
             func,
-            CronTrigger(
-                day_of_week="mon-fri",
-                hour=hour,
-                minute=minute,
-                timezone="US/Eastern",
-            ),
+            CronTrigger(**trigger_kwargs),
             id="ohlcv_refresh",
             replace_existing=True,
             name="OHLCV Daily Refresh",
         )
         self._jobs["ohlcv_refresh"] = job.id
-        logger.info("scheduled_ohlcv_refresh", time=f"{hour:02d}:{minute:02d} ET")
+        cadence = "daily" if daily else "mon-fri"
+        logger.info(
+            "scheduled_ohlcv_refresh",
+            time=f"{hour:02d}:{minute:02d} ET",
+            cadence=cadence,
+        )
 
     def schedule_exit_monitor(
         self,
@@ -431,6 +444,33 @@ class WorkflowScheduler:
         )
         self._jobs["weekly_meta"] = job.id
         logger.info("scheduled_weekly_meta", time=f"{hour:02d}:{minute:02d} ET")
+
+    def schedule_demand_data(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 3,
+        minute: int = 0,
+    ) -> None:
+        """Schedule daily demand-data ingest (default 3:00 AM ET).
+
+        Pulls fundamentals, analyst estimates/revisions/surprises, and short
+        interest for the equity universe. Estimates are snapshotted daily to
+        build a revision time series; fundamentals/short-interest update slowly
+        but the job is idempotent so daily runs are cheap.
+        """
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="demand_data",
+            replace_existing=True,
+            name="Demand Data Ingest",
+        )
+        self._jobs["demand_data"] = job.id
+        logger.info("scheduled_demand_data", time=f"{hour:02d}:{minute:02d} ET")
 
     def schedule_eod_journal(
         self,

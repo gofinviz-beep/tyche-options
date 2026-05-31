@@ -243,6 +243,7 @@ export const api = {
       horizon?: string;
       minScore?: number;
       minMarketCapMillions?: number;
+      variant?: string;
       limit?: number;
     }) => {
       const q = new URLSearchParams();
@@ -251,6 +252,7 @@ export const api = {
       if (params?.minScore) q.set("min_score", String(params.minScore));
       if (params?.minMarketCapMillions != null)
         q.set("min_market_cap_millions", String(params.minMarketCapMillions));
+      if (params?.variant) q.set("variant", params.variant);
       if (params?.limit) q.set("limit", String(params.limit));
       const qs = q.toString();
       return request<import("@/types").AlphaScanResult>(
