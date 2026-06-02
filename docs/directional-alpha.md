@@ -1,5 +1,100 @@
 # Directional Alpha Engine (Demand Conviction v2)
 
+**Standalone doc.** This file is meant to explain the full alpha system without reading the
+rest of the repo. Diagrams: **§0.2** (end-to-end), **§3.3** (news → ML). If Mermaid does not
+render in your viewer, use the ASCII equivalents in those sections.
+
+---
+
+## 0. Context for new readers
+
+### 0.1 What this is
+
+**Tyche Options** is an options/stocks copilot. Its main workflow sells **cash-secured puts**
+and **covered calls** near EMA support (income). **Directional Alpha** is a separate product
+surface: a ranked list of **stocks to buy for large upside** over roughly 40–120 trading days,
+shown at **`/stocks/alpha`** in the web app.
+
+You get a **0–100 Alpha score**, a **buy/watch/avoid** signal, a **horizon** (Swing / Trend /
+Thematic), and a breakdown of **six demand dimensions** (fundamentals, estimates, catalysts,
+policy, supply chain, squeeze). ML estimates **P(big move)**; rules fuse ML + demand + anti-chase.
+
+### 0.2 End-to-end flow (nightly + page)
+
+```mermaid
+flowchart TB
+  subgraph ingest [Data ingest scheduled]
+    OHLCV[Polygon OHLCV]
+    FH[Finnhub fundamentals + estimates]
+    NEWS[Polygon + Finnhub news]
+    BZ[Benzinga guidance via Massive]
+    SI[Polygon short interest]
+    OHLCV --> FEAT[Feature build]
+    FH --> FEAT
+    SI --> FEAT
+    NEWS --> GEM[Gemini classify]
+    GEM --> CAT[CatalystSignalStore]
+    BZ --> CAT
+    CAT --> FEAT
+  end
+  subgraph train [ML offline]
+    FEAT --> DS[alpha_dataset.parquet]
+    DS --> GATE[run_demand_gate.py]
+    GATE --> MODELS["XGBoost big_move_sustained_*"]
+  end
+  subgraph nightly [Alpha batch after market close]
+    FEAT2[build_latest_features]
+    MODELS --> BP[BreakoutPredictor]
+    FEAT2 --> BP
+    BP --> ENG[AlphaScoreEngine]
+    FEAT2 --> ENG
+    ENG --> SNAP[alpha_signals_sustained.parquet]
+  end
+  subgraph ui [Web UI]
+    SNAP --> API["GET /alpha/scan"]
+    API --> PAGE["/stocks/alpha"]
+  end
+```
+
+ASCII equivalent:
+
+```
+  [Polygon OHLCV] [Finnhub fund/est] [short interest] ──► feature rows per ticker/date
+  [Polygon+Finnhub news] ──► Gemini ──► CatalystStore ◄── [Benzinga guidance]
+                                    │
+  offline: features + labels ──► run_demand_gate ──► XGBoost sustained models
+  nightly: latest features + models ──► AlphaScoreEngine ──► Parquet snapshot
+  UI: GET /alpha/scan ◄── snapshot ──► /stocks/alpha
+```
+
+### 0.3 Glossary
+
+| Term | Meaning |
+|---|---|
+| **Peak model** | Predicts P(price **touches** +25/40/60% at any point in the window). Biased toward flash spikes. |
+| **Sustained model** | Predicts P(price is **still up** by that % at the **end** of the window). Default on the page. |
+| **Demand gate** | Walk-forward test: do 97 demand features beat ~62 momentum-only features on sustained labels? |
+| **D-FUND … D-TECH** | Six demand dimensions scored in the UI and used in the live demand multiplier. |
+| **CSP / CC** | Cash-secured put / covered call — the income engine (different goal, different page). |
+
+### 0.4 Document map
+
+| Section | Contents |
+|---|---|
+| §1 | Why demand-led scoring (thesis) |
+| §2 | Parquet stores + ingestion scripts |
+| §3 | ML features; **§3.3** news/Finnhub + catalyst diagram |
+| §4 | Peak vs sustained **labels** |
+| §5 | **Training**, demand gate, inference |
+| §6 | How AlphaScore (0–100) is computed |
+| §7–8 | Snapshots, API, scheduling |
+| §9 | Frontend page behavior |
+| §10 | vs income engine |
+
+---
+
+## Introduction
+
 A second signal engine focused on **large upside moves** ("10X" / big-move buys) — the
 complement to the CSP / Covered Call income engine. Where the income engine harvests
 premium near support, the alpha engine looks for quality names positioned to run hard to
@@ -36,7 +131,7 @@ only to time the entry — not to pick the name.
 |---|---|---|---|
 | **D-FUND** | Fundamentals | Revenue growth + acceleration, margin trend, EPS growth, FCF positivity | Finnhub Fundamental-1 (standardized statements) |
 | **D-EST** | Estimates | EPS/revenue revisions (90d), recommendation score + trend, surprise history, price-target upside | Finnhub Estimates-1 |
-| **D-CAT** | Catalysts | Demand catalysts (contract/design wins, capex guidance) + **guide-vs-consensus** verdicts; recency-weighted | News/8-K classifier + Massive **Benzinga Corporate Guidance** |
+| **D-CAT** | Catalysts | Demand catalysts (contract/design wins, guidance raises/cuts) + **guide-vs-consensus**; recency-weighted | Classified **news** (Polygon + Finnhub → Gemini) + **Benzinga Corporate Guidance** (Massive). SEC 8-K filings are classified separately for Intelligence / deep-dip risk — they do **not** currently populate `CatalystSignalStore` (see §3.3). |
 | **D-POL** | Policy | Structural multi-quarter tailwinds (AI-capex supercycle, CHIPS Act, defense/space, IRA) | Curated `PolicyEventCalendar` |
 | **D-GRAPH** | Supply chain | Upstream-customer demand cascade (hyperscaler capex → suppliers), edge-weighted | Curated `SupplyChainGraph` |
 | **D-TECH** | Squeeze | Short-squeeze pressure from days-to-cover / short-interest ratio | Polygon short interest |
@@ -125,22 +220,122 @@ quarter-end. To match them correctly:
 
 Feature columns are assembled by `ml/features.py` and selected via `get_feature_columns(...)`
 (flags: `include_momentum`, `include_demand`, `include_neighbors`, `include_etf`,
-`include_correlation`, `include_market_context`). The full demand feature set is **97 columns**
-(`demand_feature_columns()`).
+`include_correlation`, `include_market_context`). The **production sustained models** use
+`demand_feature_columns()` — **97 columns** (neighbors are built in the dataset for other
+experiments but are **not** in the promoted demand gate feature list).
+
+### 3.1 Feature groups (sustained / demand models)
+
+| Group | Count | Columns (summary) | Source |
+|---|---:|---|---|
+| Base technical | 28 | EMAs, slopes, RSI, streaks, returns, IV rank/VRP, cap, sector | OHLCV + `DerivedMetricsStore` + `TickerMetaStore` |
+| ETF | 7 | `in_spy`, `spy_weight`, `etf_membership_count`, … | `data/etf_constituents.parquet` |
+| Correlation | 5 | `spy_beta_60d`, `qqq_beta_60d`, peer corr stats | `data/correlations.parquet` |
+| Market context | 6 | `concurrent_dips`, `spy_return_*`, `spy_rsi_14`, … | Cross-sectional OHLCV + SPY |
+| Momentum / RS | 16 | `return_63d/126d/252d`, `ema_200`, `breakout_*`, `rs_*`, … | OHLCV (timing, not primary pick signal) |
+| Anti-chase | 4 | `overextension_score`, `rsi_overbought`, `parabolic_21d`, … | OHLCV only |
+| D-FUND | 11 | `f_rev_growth_yoy`, `f_gross_margin`, `f_fcf_margin`, … | `FundamentalsStore` (`merge_asof` on `filing_date`) |
+| D-EST | 7 | `e_eps_revision_90d`, `e_rec_score`, `e_price_target_upside`, … | `EstimatesStore` |
+| D-TECH (squeeze) | 4 | `si_days_to_cover`, `si_ratio`, … | Polygon short interest |
+| D-CAT / D-POL | 4 | `cat_demand_score`, `cat_policy_score`, `cat_count_90d`, `cat_recency_days` | `CatalystSignalStore` + `PolicyEventCalendar` |
+| D-GRAPH | 5 | `graph_customer_mom`, `graph_demand_propagation`, … | Curated `SupplyChainGraph` |
 
 **Momentum / RS (timing):** `return_63d/126d/252d`, `ema_200` + slope, `price_to_200ema_pct`,
 `ema_stack_score` (8>21>50>200), `pct_off_52w_high`, `pct_above_52w_low`, `breakout_20d/63d`,
-`volume_thrust_ratio`, `slope_accel`, `rs_63d/126d/252d` vs SPY, plus an `overextension_score`.
+`volume_thrust_ratio`, `slope_accel`, `rs_63d/126d/252d` vs SPY, plus anti-chase
+`overextension_score` (also used live by `AlphaScoreEngine` for the anti-chase multiplier).
 
-**Demand groups** (augmented onto the feature frame, each degrades to NaN/0 when its store is
-absent):
+**Demand augmenters** (each degrades to NaN/0 when its store is absent):
 
-- `FUNDAMENTAL_FEATURE_COLS` — `add_fundamental_features()` (`merge_asof` on filing date).
-- `ESTIMATE_FEATURE_COLS` — `add_estimate_features()`.
-- `SHORT_INTEREST_FEATURE_COLS` — `add_short_interest_features()`.
-- `CATALYST_FEATURE_COLS` — `add_catalyst_features()` (recency-weighted, half-life 30d, 180d
-  lookback; blends news/8-K catalysts with the `PolicyEventCalendar` tailwind).
-- `GRAPH_FEATURE_COLS` — `add_graph_features()` (same-date customer demand cascade).
+- `add_fundamental_features()` — D-FUND
+- `add_estimate_features()` — D-EST (per-ticker `merge_asof`, not per-row loops)
+- `add_short_interest_features()` — D-TECH squeeze
+- `add_catalyst_features()` — D-CAT/D-POL (30d half-life, 180d lookback; see §3.3)
+- `add_graph_features()` — D-GRAPH (supplier-only numpy alignment)
+
+### 3.2 Peak vs sustained feature parity
+
+Training and nightly scoring use the **same** augmentation path (`build_dataset()` /
+`build_latest_features()` with `include_demand=True`). Only the **label column** and **model
+artifact filenames** differ between variants. `BreakoutPredictor` is constructed with either
+`ALPHA_TARGETS` (peak) or `ALPHA_SUSTAINED_TARGETS` (sustained).
+
+### 3.3 How news reaches ML (and which Finnhub APIs matter)
+
+News is **not** fed to XGBoost as raw headlines. It flows through classification → discrete
+catalyst events → four numeric `cat_*` features.
+
+```mermaid
+flowchart LR
+  subgraph ingest [Ingestion]
+    P[Polygon news API]
+    F["Finnhub GET /company-news"]
+    B[Massive Benzinga guidance]
+  end
+  subgraph classify [Classification]
+    G[Gemini NewsClassifier]
+  end
+  subgraph stores [Stores]
+    NA[NewsArticleStore Parquet]
+    CS[CatalystSignalStore Parquet]
+  end
+  subgraph ml [ML]
+    AC[add_catalyst_features]
+    XGB[XGBoost cat_* columns]
+  end
+  P --> NA
+  F --> NA
+  NA --> G
+  G -->|demand_catalyst + policy_tag + impact| CS
+  B -->|derive_guidance_catalysts| CS
+  CS --> AC --> XGB
+```
+
+ASCII equivalent (same pipeline):
+
+```
+  Polygon news ──┐
+  Finnhub /company-news ──┼──► NewsArticleStore ──► Gemini NewsClassifier
+                           │         │
+                           │         └── demand_catalyst, policy_tag, impact
+                           │                    │
+  Benzinga guidance ───────┴──► derive_guidance_catalysts ──► CatalystSignalStore
+                                                           │
+                                                           ▼
+                                              add_catalyst_features → cat_* → XGBoost
+```
+
+**Finnhub endpoints used by Directional Alpha**
+
+| Endpoint | Role in alpha | Used for |
+|---|---|---|
+| `GET /company-news` | Indirect (D-CAT) | Raw articles merged with Polygon in `NewsIngestor`; after Gemini classification, demand/policy tags land in `CatalystSignalStore` |
+| `GET /stock/financials` (+ reported fallbacks) | Direct (D-FUND) | `f_*` features via `FundamentalsStore` |
+| `GET /stock/eps-estimate`, `/stock/revenue-estimate` | Direct (D-EST) | Consensus level + revisions |
+| `GET /stock/earnings` | Direct (D-EST) | Surprise history |
+| `GET /stock/recommendation` | Direct (D-EST) | Analyst recommendation trend |
+| `GET /stock/price-target` | Direct (D-EST) | PT upside |
+| `GET /stock/metric` | Optional fundamentals | TTM ratios when standardized statements are thin |
+
+Finnhub **does not** classify news — that is **Gemini** (`gemini_model_classify`, default
+`gemini-2.5-flash-lite`) via `NewsClassifier`, which assigns `demand_catalyst` and `policy_tag`
+from `analysis/catalyst_taxonomy.py` (e.g. `design_win`, `guidance_raise`, `capex_guidance_up`,
+`chips_act`). `records_from_classification()` turns each classified article into 0–2 rows in
+`CatalystSignalStore` (`source=news`).
+
+**Benzinga guidance** (Massive API, not Finnhub) is ingested in `ingest_demand_data` →
+`derive_guidance_catalysts()` (guide-vs-consensus when FYE alignment succeeds) → catalyst rows
+with `source=guidance`.
+
+**SEC 8-K / Form 4:** `EdgarIngestor` + the same `NewsClassifier` in 8-K mode populate
+`Filing8KStore` and `news.db` filing signals (Intelligence UI, deep-dip `DipCatalystClassifier`).
+That path does **not** write to `CatalystSignalStore` today, so 8-K text does not enter the
+`cat_*` training columns unless we add an EDGAR → catalyst bridge.
+
+**Operational schedules:** News ingest/classify runs on the news pipeline cron
+(`news_ingestion_enabled`, default every 4h). Demand fundamentals/estimates/guidance run on the
+demand-data job (default 03:00 ET). Alpha batch only **reads** persisted Parquet/SQLite — it does
+not call Finnhub at scoring time.
 
 ### ⚠️ Vectorization (point-in-time augmentation must stay O(rows))
 
@@ -178,43 +373,72 @@ calibration.
 
 ---
 
-## 5. ML models — `BreakoutPredictor`
+## 5. ML models — training, sustained gate, inference
 
-`ml/breakout.py` loads the per-horizon XGBoost artifacts from `data/ml/models/` and returns
-per-horizon P(big move). It is variant-agnostic — instantiate with the target list you want:
+### 5.1 `BreakoutPredictor` (live inference)
 
-- **Peak** → `ALPHA_TARGETS` (`big_move_up_*`).
-- **Sustained** → `ALPHA_SUSTAINED_TARGETS` (`big_move_sustained_*`).
+`ml/breakout.py` loads per-horizon XGBoost classifiers from `data/ml/models/{target}.json` (+
+`{target}_meta.json`). Variant is selected by target list:
 
-Gracefully degrades to `None` (rules-only) when no artifact exists.
+| Variant | Target keys | Typical feature count at train |
+|---|---|---:|
+| **Peak** | `big_move_up_25pct_40d`, `big_move_up_40pct_60d`, `big_move_up_60pct_120d` | ~62 (`get_feature_columns(include_momentum=True)` — momentum + base + ETF + correlation + market context) |
+| **Sustained** | `big_move_sustained_25pct_40d`, `big_move_sustained_40pct_60d`, `big_move_sustained_60pct_120d` | **97** (`demand_feature_columns()`) |
 
-### The demand gate (`scripts/run_demand_gate.py`)
+Missing features at inference are filled with **-999** (XGBoost sentinel). If no artifacts exist,
+`is_available=False` and `AlphaScoreEngine` falls back to factor-only scoring (net demand
+multiplier still applies when dimension data exists on the signal).
 
-A single non-destructive pass that decides whether to promote the demand-feature models:
+Nightly batch (`workflow/alpha_batch.py`) builds features **once**, then for each variant loads its
+own `BreakoutPredictor`. Sustained probabilities are **remapped** onto the canonical peak target
+keys before fusion so horizon naming stays consistent in the API.
 
-1. Build the dataset once (demand features + sustained labels), cache to
-   `data/ml/alpha_dataset.parquet`.
-2. Walk-forward ablation per horizon: **momentum-only vs. full demand feature set** on the
-   *sustained* targets.
-3. **Promote** (train + persist) the demand-feature production model only where demand adds
-   ≥ `--min-lift` AUC. Writes the `big_move_sustained_*` artifacts — which are **net-new** and
-   do **not** overwrite the peak `big_move_up_*` models. Verdict → `data/ml/alpha_results/demand_gate_verdict.json`.
+### 5.2 How sustained models are trained
 
-**Verdict (May 2026, 3.4M rows, walk-forward):** demand beat momentum on all three horizons —
-precision +5.6 / +6.6 / +6.2 pp (swing / trend / thematic), AUC up to 0.905 on thematic. All
-three sustained models promoted.
+**Primary path — demand gate** (`scripts/run_demand_gate.py`):
 
-**Retrain after fundamentals fix (June 2026):** After the standardized + dual-class re-ingest,
-re-run the full ML alignment pass:
+1. **Dataset** — `build_dataset(..., include_momentum=True, include_demand=True)` over the
+   equity universe (default `min_market_cap=$4B` in the script; batch uses a wider $250M build
+   floor). Labels include both peak and sustained columns; only sustained targets are used for
+   gate/promotion. Cached to `data/ml/alpha_dataset.parquet`.
+2. **Walk-forward ablation** — `run_demand_baselines()` trains **two** models per horizon on
+   non-overlapping windows (default **252 train / 63 test** trading days, stepped by test size):
+   - **momentum** — `get_feature_columns(include_momentum=True)` (~62 cols)
+   - **demand** — `demand_feature_columns()` (97 cols)
+3. **Promotion** — For each `big_move_sustained_*` target, if `demand_auc - momentum_auc ≥
+   --min-lift` (default **0.005**), `train_production_model()` fits XGBoost on **all** rows with
+   a valid label (no holdout — walk-forward metrics are informational only) and saves
+   `data/ml/models/{target}.json`. Peak `big_move_up_*` files are **never** overwritten.
+
+**Classifier hyperparameters** (`ml/xgb_baseline.py`): binary logistic, `max_depth=6`,
+`learning_rate=0.05`, `n_estimators=300`, `subsample=0.8`, `colsample_bytree=0.8`,
+`min_child_weight=10`, L1/L2 regularization.
+
+**Alternate CLI** — `scripts/train_alpha.py --feature-set demand --sustained --save-model`
+runs the same demand feature set + sustained labels without the gate comparison (useful for
+forced retrains).
+
+**Peak models** — `scripts/train_alpha.py` (default `--feature-set momentum`, no `--sustained`)
+or `run_alpha_baselines()` (baseline vs momentum ablation on `big_move_up_*`).
+
+### 5.3 Demand gate verdict
+
+Written to `data/ml/alpha_results/demand_gate_verdict.json`.
+
+**Verdict (May 2026, ~3.4M rows, walk-forward):** demand beat momentum on all three sustained
+horizons — precision **+5.6 / +6.6 / +6.2** pp (swing / trend / thematic), thematic AUC up to
+**0.905**. All three `big_move_sustained_*` models were promoted.
+
+**Retrain after fundamentals fix (June 2026):**
 
 ```bash
 cd backend
 python scripts/run_demand_gate.py              # sustained models (97 features)
-python scripts/train_alpha.py --feature-set momentum   # peak models (62 features)
+python scripts/train_alpha.py --feature-set momentum   # peak models (~62 features)
 python -c "from tyche.workflow.alpha_batch import run_alpha_batch; run_alpha_batch(variants=['peak','sustained'])"
 ```
 
-Restart the backend (or `deps.reset_all()`) so the API reloads new model artifacts.
+Restart the backend (or `deps.reset_all()`) so `BreakoutPredictor` reloads new artifacts.
 
 ---
 
@@ -288,20 +512,42 @@ reports the served `variant`.
 > ~1,300th — already-run names are intentionally demoted) won't be in the payload. Use
 > `GET /alpha/signal/{ticker}` to inspect it directly.
 
-## 9. Frontend — Directional Alpha page
+## 9. Frontend — Directional Alpha page (`/stocks/alpha`)
 
-`frontend/src/pages/stocks/Alpha.tsx` (Stocks → Directional Alpha):
+Route: **Stocks → Directional Alpha** (`frontend/src/pages/stocks/Alpha.tsx`).
 
-- **Peak/Sustained toggle** (top-right, defaults to Sustained, persists to `localStorage`
-  `tyche_alpha_model_variant`) + a "Move Target" pill showing the active model + an amber notice
-  if it fell back to peak.
-- Columns: Signal, Ticker, Alpha, Horizon, Regime, Demand (net), Move Prob, Exp. Move,
-  RS vs SPY (6m), Return (6m), Off 52w High, Price, Mkt Cap, Inst Own.
-- Signal / Horizon / Regime are `multiselect` filters; Alpha and Inst Own have `min` thresholds.
-- **Min Mkt Cap** selector ($250M–$10B, default $1B, persists to
-  `tyche_alpha_min_market_cap_m`) → `GET /alpha/scan`.
-- Expandable row: **Demand Conviction** breakdown (per-dimension bars, regime, demand ×,
-  anti-chase), factor bars, per-horizon ML probabilities, return/EMA-stack metrics.
+### What the page does
+
+- Loads **`GET /api/v1/alpha/scan`** (top 500 by Alpha score) with read-time filters; does **not**
+  retrain models in the browser.
+- **Peak / Sustained toggle** (default **Sustained**) → `?variant=sustained|peak`, persisted in
+  `localStorage` key `tyche_alpha_model_variant`. Chooses which Parquet snapshot to read
+  (`alpha_signals_sustained.parquet` vs `alpha_signals.parquet`). Shows a fallback banner if
+  sustained snapshot is missing (API serves peak and reports `variant` in the response).
+- **Min Mkt Cap** ($250M–$10B presets, default **$1B**) → `min_market_cap_millions` query param;
+  persisted as `tyche_alpha_min_market_cap_m`. Build-net floor remains $250M in the batch.
+- **Refresh** → `POST /alpha/recompute` (background batch for both variants when
+  `alpha_sustained_enabled`).
+
+### Table columns
+
+Signal, Ticker, Alpha (0–100), Horizon (Swing / Trend / Thematic), Regime (Revenue / Narrative),
+Demand (net), Move Prob (ML P for the row’s horizon), Exp. Move (prob × target %), RS vs SPY
+(6m), Return (6m), Off 52w High, Price, Mkt Cap, Inst Own — with `multiselect` filters on
+Signal / Horizon / Regime and min filters on Alpha / Inst Own.
+
+### Expanded row
+
+- **Demand Conviction** — per-dimension bars (D-FUND, D-EST, D-CAT, D-POL, D-GRAPH, D-TECH),
+  regime label, demand multiplier, anti-chase readout.
+- **Factor breakdown** — momentum, RS, trend quality, breakout, volume thrust.
+- **Per-horizon ML probabilities** — swing / trend / thematic (from the active variant’s models).
+
+### Inspecting a ticker not on the page
+
+`/alpha/scan` only returns the top `limit` names by score. Mega-caps that already ran can rank
+below the cutoff (e.g. NVDA ~29/100 “avoid”). Use **`GET /alpha/signal/{ticker}`** for full
+detail regardless of rank.
 
 ---
 
