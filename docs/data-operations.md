@@ -24,6 +24,7 @@ All times are US/Eastern. Weekday-only jobs do not fire on weekends or market ho
 | Time ET | Job | Config Knob | API Cost | Runtime |
 |---------|-----|-------------|----------|---------|
 | 02:00 | **S3 Flatfile Options Ingest** | `flatfile_ingest_enabled` | Massive S3 (download) | ~10-30 min |
+| 03:00 | **Demand Data Refresh** | `demand_data_enabled` | Finnhub + Polygon + Benzinga | ~30-60 min |
 
 The S3 flat file job runs every day (including weekends) to catch up on any missed days. It uses `--days-back 3` to cover weekends and the script's `completed_dates` check makes re-runs idempotent. Requires `TYCHE_MASSIVE_S3_ACCESS_KEY` and `TYCHE_MASSIVE_S3_SECRET_KEY` in `.env`.
 
@@ -93,9 +94,24 @@ Quarterly:
 ### Directional Alpha Batch
 - Runs `run_alpha_batch()` across the equity universe (common-stock only, build-net floor `alpha_min_market_cap_millions`, default $250M)
 - `AlphaScoreEngine` composites momentum / relative-strength / trend-quality / breakout / volume-thrust factors + the `BreakoutPredictor` ML big-move probabilities into a 0–100 Alpha score with a horizon tag (Swing/Trend/Thematic)
-- Persists to `data/alpha_signals.parquet` (`AlphaSignalStore`)
-- Serves the Directional Alpha page (`GET /alpha/scan`); the page applies its own market-cap floor (default $1B) at read time
+- Persists to `data/alpha_signals.parquet` (peak) and `data/alpha_signals_sustained.parquet` (sustained) via `AlphaSignalStore(variant=...)`
+- Serves the Directional Alpha page (`GET /alpha/scan?variant=sustained|peak`); the page applies its own market-cap floor (default $1B) at read time
+- Feature build reads D-FUND/D-EST from on-disk Parquet — run demand ingest + alpha batch after any fundamentals repair
 - Gracefully degrades to rules-only scoring when no big-move model artifacts exist
+
+### Demand Data Refresh
+- Runs `ingest_demand_data()` from `workflow/demand_data.py` (scheduled 03:00 ET when `demand_data_enabled`)
+- **Fundamentals:** Finnhub `/stock/financials` (standardized, primary) → as-reported quarterly → as-reported annual; dual-class aliasing via `dual_class.py` (GOOG→GOOGL, etc.)
+- **Estimates:** Finnhub Estimates-1 (revisions, surprises, recommendations, price targets) with same dual-class fetch
+- **Short interest:** Polygon
+- **Guidance → catalysts:** Benzinga via Massive/Polygon key
+- Writes to `data/fundamentals/`, `data/estimates/`, `data/short_interest/`, `data/catalyst_signals/`
+- Manual full-universe re-ingest: `python scripts/ingest_demand_data.py`
+
+### Demand Data Audit (manual)
+- `python scripts/audit_demand_coverage.py` — Parquet hygiene for the alpha universe ($250M+); outputs `data/ml/demand_audit_report.csv` + `demand_audit_summary.json`
+- `--repair` / `--repair-ingest-gaps-only` — re-fetch tickers with ingest gaps (not source-empty names)
+- `python scripts/audit_finnhub_vs_edgar.py` — compares SEC 10-Q/10-K filing dates vs Finnhub store for STALE tickers; **note:** compares store filing dates only — Jan-FYE false STALE and pre-standardized quarterly-only logic can overstate lag; use after fundamentals fix for directional signal only
 
 ### Conviction Batch
 - Runs `run_conviction_batch()` across the full equity universe
@@ -295,6 +311,15 @@ curl http://localhost:8000/api/v1/system/scheduler/status
 
    # 11. Train ML model
    python scripts/train_baselines.py --dataset data/ml/dataset.parquet --targets csp_win_5d --save-model
+
+   # 12. Demand data (Directional Alpha D-FUND/D-EST) — requires TYCHE_FINNHUB_API_KEY
+   python scripts/ingest_demand_data.py
+   python scripts/audit_demand_coverage.py
+
+   # 13. Directional Alpha models + batch
+   python scripts/run_demand_gate.py
+   python scripts/train_alpha.py --feature-set momentum
+   curl -X POST http://localhost:8000/api/v1/alpha/recompute
    ```
 
 3. **Start the backend:**
@@ -356,6 +381,12 @@ curl http://localhost:8000/api/v1/system/scheduler/status
 ### Directional Alpha page empty
 - **Check:** `data/alpha_signals.parquet` exists and the page's Min Mkt Cap floor isn't above the build-net floor (`alpha_min_market_cap_millions`, $250M).
 - **Fix:** `curl -X POST http://localhost:8000/api/v1/alpha/recompute` (background). Big-move ML probabilities require trained artifacts (`python scripts/train_alpha.py --save-model`); without them the page runs rules-only.
+
+### D-FUND looks stale / demand scores untrusted
+- **Check:** `python scripts/audit_demand_coverage.py` — review `fund_status`, `fund_latest_period`, `both_ok` in summary JSON.
+- **Fix:** Full re-ingest `python scripts/ingest_demand_data.py`, re-audit, then retrain (`run_demand_gate.py` + `train_alpha.py`) and re-run alpha batch. Restart backend to reload model artifacts.
+- **False STALE:** Jan-FYE tickers (e.g. PL) may show STALE when `filing_date = period_end` even with current quarter data — verify `fund_latest_period`, not filing age alone.
+- **Dual-class:** GOOG/BRK.B/etc. fetch via canonical symbol (`GOOGL`, `BRK.A`) — data should match primary class.
 
 ## Cost Summary
 

@@ -21,7 +21,7 @@ The `OHLCVStore`, `OptionsChainStore`, `OptionsHistoryStore`, `HistoricalIVStore
 | Ticker metadata | `backend/data/ticker_meta.parquet` | Single file (market cap, shares outstanding, type, exchange, sector, SIC, institutional ownership). `market_cap` is derived daily as `shares_outstanding × latest close` (Polygon's static field lags months). |
 | Directional alpha signals (peak) | `backend/data/alpha_signals.parquet` | Single file (big-move buy signals: alpha score, horizon, ML probabilities, demand dimensions, factors) |
 | Directional alpha signals (sustained) | `backend/data/alpha_signals_sustained.parquet` | Single file — `AlphaSignalStore(variant="sustained")`. Same schema, sustained big-move models |
-| Demand: fundamentals | `backend/data/fundamentals/{TICKER}.parquet` | One per ticker (Finnhub Fundamental-1 standardized statements) |
+| Demand: fundamentals | `backend/data/fundamentals/{TICKER}.parquet` | One per ticker (Finnhub `/stock/financials` standardized, primary; as-reported quarterly/annual fallback; dual-class aliasing) |
 | Demand: estimates | `backend/data/estimates/{TICKER}.parquet` | One per ticker (Finnhub Estimates-1: revisions, surprises, recommendations, price targets) |
 | Demand: short interest | `backend/data/short_interest/{TICKER}.parquet` | One per ticker (Polygon short interest / days-to-cover) |
 | Demand: catalyst signals | `backend/data/catalyst_signals/{TICKER}.parquet` | One per ticker (news/8-K demand catalysts + Benzinga guide-vs-consensus) |
@@ -85,6 +85,8 @@ from tyche.market_data.data_store import TickerMetaStore
 | `backfill_shares_caps.py` | Fetch shares outstanding + reprice market cap (`shares × close`) | `--tickers MU,NVDA` (default: full universe) |
 | `train_alpha.py` | Train/evaluate directional big-move models (walk-forward) | `--save-model` (also `--feature-set demand`) |
 | `ingest_demand_data.py` | Ingest demand data (Finnhub fundamentals/estimates, Polygon short interest, Benzinga guidance → catalysts) | full universe, parallel rate-limited |
+| `audit_demand_coverage.py` | Audit D-FUND/D-EST Parquet hygiene for alpha universe | outputs `data/ml/demand_audit_*` |
+| `audit_finnhub_vs_edgar.py` | Compare SEC vs Finnhub filing dates for STALE tickers | requires `TYCHE_EDGAR_USER_AGENT_EMAIL` |
 | `run_demand_gate.py` | Demand-feature walk-forward ablation + conditional promotion of `big_move_sustained_*` models | `--min-lift 0.005` |
 
 ## Tradier Client Setup

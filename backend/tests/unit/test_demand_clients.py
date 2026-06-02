@@ -237,6 +237,80 @@ def _finnhub_statements_payload() -> dict:
     }
 
 
+def _finnhub_standardized_payloads() -> tuple[dict, dict, dict]:
+    ic = {
+        "symbol": "PL",
+        "financials": [
+            {
+                "period": "2026-01-31",
+                "year": 2026,
+                "quarter": 4,
+                "revenue": 86.822,
+                "grossIncome": 47.03,
+                "ebit": -36.002,
+                "netIncome": -152.455,
+                "dilutedEPS": -0.4803,
+                "dilutedAverageSharesOutstanding": 317.4112,
+            }
+        ],
+    }
+    bs = {
+        "symbol": "PL",
+        "financials": [
+            {
+                "period": "2026-01-31",
+                "totalAssets": 1200.5,
+                "totalEquity": 800.25,
+                "totalDebt": 100.0,
+                "cashShortTermInvestments": 50.0,
+            }
+        ],
+    }
+    cf = {
+        "symbol": "PL",
+        "financials": [
+            {
+                "period": "2026-01-31",
+                "netOperatingCashFlow": 10.0,
+                "capitalExpenditure": -2.5,
+            }
+        ],
+    }
+    return ic, bs, cf
+
+
+class TestFinnhubStandardizedFinancials:
+    @pytest.mark.asyncio
+    async def test_merges_ic_bs_cf_and_scales_millions(self, finnhub):
+        ic, bs, cf = _finnhub_standardized_payloads()
+
+        async def _side_effect(path, params=None):
+            stmt = (params or {}).get("statement")
+            if stmt == "ic":
+                return ic
+            if stmt == "bs":
+                return bs
+            if stmt == "cf":
+                return cf
+            return {}
+
+        finnhub._request = AsyncMock(side_effect=_side_effect)
+        rows = await finnhub.get_standardized_financials("PL")
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["period_end"] == "2026-01-31"
+        assert r["filing_date"] == "2026-01-31"
+        assert r["fiscal_period"] == "Q4"
+        assert r["revenue"] == pytest.approx(86.822e6)
+        assert r["gross_profit"] == pytest.approx(47.03e6)
+        assert r["eps_diluted"] == pytest.approx(-0.4803)
+        assert r["shares_diluted"] == pytest.approx(317.4112e6)
+        assert r["total_assets"] == pytest.approx(1200.5e6)
+        assert r["operating_cash_flow"] == pytest.approx(10.0e6)
+        assert r["capex"] == pytest.approx(-2.5e6)
+        assert r["free_cash_flow"] == pytest.approx(7.5e6)
+
+
 class TestFinnhubStatements:
     @pytest.mark.asyncio
     async def test_parses_statements(self, finnhub):

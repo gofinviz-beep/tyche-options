@@ -1,7 +1,8 @@
 """Demand-data ingestion: fundamentals, estimates/revisions, short interest.
 
 Foundation for the Demand Conviction engine (Directional Alpha v2). Pulls
-point-in-time financials (Finnhub Fundamental-1 statements, Polygon fallback),
+point-in-time financials (Finnhub ``/stock/financials`` standardized, with
+as-reported fallback; dual-class symbols resolve to the voting share class),
 analyst estimates/revisions/surprises (Finnhub Estimates-1), short interest
 (Polygon), and company-issued corporate guidance (Benzinga via Massive/Polygon)
 for the equity universe and persists them to their respective Parquet stores.
@@ -27,6 +28,7 @@ from tyche.market_data.catalyst_store import (
 )
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.estimates_store import EstimatesStore
+from tyche.market_data.dual_class import finnhub_symbol_candidates
 from tyche.market_data.fundamentals_store import FundamentalsStore
 from tyche.market_data.polygon import PolygonClient
 from tyche.market_data.short_interest_store import ShortInterestStore
@@ -290,6 +292,63 @@ async def ingest_demand_data(
         "guidance": 0,
     }
 
+    # Cross-ticker cache: canonical Finnhub symbol → fetched rows (dual-class).
+    _fund_rows_cache: dict[str, list[dict]] = {}
+    _est_rows_cache: dict[str, list[dict]] = {}
+
+    async def _fetch_fundamental_rows(ticker: str) -> list[dict]:
+        for sym in finnhub_symbol_candidates(ticker):
+            if sym in _fund_rows_cache:
+                cached = _fund_rows_cache[sym]
+                if cached:
+                    return cached
+                continue
+            rows = await finnhub.get_standardized_financials(
+                sym, freq="quarterly", limit=limit_periods, preliminary=True
+            )
+            if not rows:
+                rows = await finnhub.get_financials_statements(
+                    sym, freq="quarterly", limit=limit_periods
+                )
+            if not rows:
+                rows = await finnhub.get_financials_statements(
+                    sym, freq="annual", limit=min(limit_periods, 8)
+                )
+            _fund_rows_cache[sym] = rows
+            if rows:
+                if sym != ticker.upper():
+                    logger.debug(
+                        "dual_class_fundamentals",
+                        ticker=ticker,
+                        fetch_symbol=sym,
+                    )
+                return rows
+        return []
+
+    async def _fetch_estimate_rows(ticker: str) -> list[dict]:
+        for sym in finnhub_symbol_candidates(ticker):
+            if sym in _est_rows_cache:
+                cached = _est_rows_cache[sym]
+                if cached:
+                    return cached
+                continue
+            est_rows: list[dict] = []
+            est_rows += await finnhub.get_recommendation_trends(sym)
+            est_rows += await finnhub.get_earnings_surprises(sym)
+            est_rows += await finnhub.get_estimates(sym, as_of=as_of)
+            est_rows += await finnhub.get_price_target(sym, as_of=as_of)
+            est_rows += await finnhub.get_basic_financials(sym, as_of=as_of)
+            _est_rows_cache[sym] = est_rows
+            if est_rows:
+                if sym != ticker.upper():
+                    logger.debug(
+                        "dual_class_estimates",
+                        ticker=ticker,
+                        fetch_symbol=sym,
+                    )
+                return est_rows
+        return []
+
     # ── Per-source workers (one ticker each) ───────────────────────────
     # Each source hits a different API (Finnhub / Polygon / Benzinga) with its
     # own client-side rate budget, so they're run as independent pipelines that
@@ -299,9 +358,7 @@ async def ingest_demand_data(
         try:
             rows: list[dict] = []
             if finnhub is not None and fund_source != "polygon":
-                rows = await finnhub.get_financials_statements(
-                    ticker, freq="quarterly", limit=limit_periods
-                )
+                rows = await _fetch_fundamental_rows(ticker)
             if not rows and polygon is not None:
                 rows = await polygon.get_financials(
                     ticker, timeframe="quarterly", limit=limit_periods
@@ -325,12 +382,7 @@ async def ingest_demand_data(
 
     async def _estimates(ticker: str) -> None:
         try:
-            est_rows: list[dict] = []
-            est_rows += await finnhub.get_recommendation_trends(ticker)
-            est_rows += await finnhub.get_earnings_surprises(ticker)
-            est_rows += await finnhub.get_estimates(ticker, as_of=as_of)
-            est_rows += await finnhub.get_price_target(ticker, as_of=as_of)
-            est_rows += await finnhub.get_basic_financials(ticker, as_of=as_of)
+            est_rows = await _fetch_estimate_rows(ticker)
             if est_rows:
                 await asyncio.to_thread(est_store.write_records, ticker, pd.DataFrame(est_rows))
                 counts["estimates"] += 1

@@ -348,6 +348,134 @@ class FinnhubClient:
                 rows.append({"snapshot_date": snap, "metric": metric, "period": "", "value": val})
         return rows
 
+    # Standardized ``/stock/financials`` reports dollar amounts in millions;
+    # EPS is per-share; share counts are in millions.
+    _STD_MILLIONS = 1_000_000.0
+
+    _STD_IC_FIELDS: tuple[tuple[str, str, bool], ...] = (
+        ("revenue", "revenue", True),
+        ("gross_profit", "grossIncome", True),
+        ("operating_income", "ebit", True),
+        ("net_income", "netIncome", True),
+        ("eps_diluted", "dilutedEPS", False),
+        ("shares_diluted", "dilutedAverageSharesOutstanding", True),
+    )
+    _STD_CF_FIELDS: tuple[tuple[str, str, bool], ...] = (
+        ("operating_cash_flow", "netOperatingCashFlow", True),
+        ("operating_cash_flow", "operatingCashFlow", True),
+        ("capex", "capitalExpenditure", True),
+    )
+    _STD_BS_FIELDS: tuple[tuple[str, str, bool], ...] = (
+        ("total_assets", "totalAssets", True),
+        ("total_equity", "totalEquity", True),
+        ("total_equity", "totalShareholderEquity", True),
+        ("total_debt", "totalDebt", True),
+        ("total_debt", "shortLongTermDebtTotal", True),
+        ("cash_and_equivalents", "cashShortTermInvestments", True),
+        ("cash_and_equivalents", "cashEquivalents", True),
+    )
+
+    @staticmethod
+    def _std_val(item: dict, src_key: str, *, in_millions: bool) -> float | None:
+        val = FinnhubClient._num(item.get(src_key))
+        if val is None:
+            return None
+        return float(val) * FinnhubClient._STD_MILLIONS if in_millions else float(val)
+
+    @classmethod
+    def _apply_std_fields(
+        cls,
+        row: dict,
+        item: dict,
+        mapping: tuple[tuple[str, str, bool], ...],
+    ) -> None:
+        for dst, src, in_millions in mapping:
+            if row.get(dst) is not None:
+                continue
+            val = cls._std_val(item, src, in_millions=in_millions)
+            if val is not None:
+                row[dst] = val
+
+    async def get_standardized_financials(
+        self,
+        ticker: str,
+        *,
+        freq: str = "quarterly",
+        limit: int = 20,
+        preliminary: bool = True,
+    ) -> list[dict]:
+        """Standardized BS/IC/CF via ``/stock/financials`` → ``FundamentalsStore`` rows.
+
+        Merges income, balance, and cash-flow statements by ``period`` end date.
+        Dollar amounts and share counts are scaled from Finnhub's millions to
+        absolute units. ``filing_date`` is set to ``period_end`` when Finnhub
+        does not supply a filed date (conservative, leakage-safe default).
+        """
+        params_base: dict = {"symbol": ticker.upper(), "freq": freq}
+        if preliminary:
+            params_base["preliminary"] = "true"
+
+        ic_data, bs_data, cf_data = await asyncio.gather(
+            self._safe_get("/stock/financials", {**params_base, "statement": "ic"}),
+            self._safe_get("/stock/financials", {**params_base, "statement": "bs"}),
+            self._safe_get("/stock/financials", {**params_base, "statement": "cf"}),
+        )
+
+        by_period: dict[str, dict] = {}
+
+        def _ingest(block: list | dict | None, mapping: tuple[tuple[str, str, bool], ...]) -> None:
+            if not isinstance(block, dict):
+                return
+            items = block.get("financials") or []
+            if not isinstance(items, list):
+                return
+            for item in items[:limit]:
+                if not isinstance(item, dict):
+                    continue
+                period_raw = item.get("period")
+                if not period_raw:
+                    continue
+                period_end = str(period_raw).split(" ")[0].split("T")[0]
+                row = by_period.setdefault(
+                    period_end,
+                    {
+                        "period_end": period_end,
+                        "filing_date": period_end,
+                        "fiscal_year": item.get("year"),
+                        "fiscal_period": "",
+                        "timeframe": freq if freq in ("quarterly", "annual", "ttm") else "quarterly",
+                    },
+                )
+                q = item.get("quarter")
+                if q not in (0, None, ""):
+                    row["fiscal_period"] = f"Q{q}"
+                elif not row.get("fiscal_period"):
+                    row["fiscal_period"] = "FY" if freq == "annual" else ""
+                if row.get("fiscal_year") in (None, 0, ""):
+                    row["fiscal_year"] = item.get("year")
+                self._apply_std_fields(row, item, mapping)
+
+        _ingest(ic_data if isinstance(ic_data, dict) else None, self._STD_IC_FIELDS)
+        _ingest(bs_data if isinstance(bs_data, dict) else None, self._STD_BS_FIELDS)
+        _ingest(cf_data if isinstance(cf_data, dict) else None, self._STD_CF_FIELDS)
+
+        rows: list[dict] = []
+        for period_end in sorted(by_period.keys(), reverse=True)[:limit]:
+            row = by_period[period_end]
+            ocf = row.get("operating_cash_flow")
+            capex = row.get("capex")
+            if ocf is not None and capex is not None:
+                row["free_cash_flow"] = ocf - abs(capex)
+            rows.append(row)
+
+        logger.debug(
+            "finnhub_standardized_financials_fetched",
+            ticker=ticker,
+            freq=freq,
+            periods=len(rows),
+        )
+        return rows
+
     # ── Financial Statements (Fundamental-1) ────────────────────────────
     #
     # ``/stock/financials-reported`` returns as-reported (SEC-tagged) line
@@ -367,6 +495,11 @@ class FinnhubClient:
             "Revenues",
             "SalesRevenueNet",
             "SalesRevenueGoodsNet",
+            # Banks / insurers often report total revenue under custom extensions.
+            "TotalRevenues",
+            "TotalRevenue",
+            # Net interest income is a reasonable revenue proxy when no total line exists.
+            "InterestAndDividendIncomeOperating",
         ),
         "gross_profit": ("GrossProfit",),
         "operating_income": ("OperatingIncomeLoss",),
@@ -411,13 +544,22 @@ class FinnhubClient:
         if not isinstance(section, list):
             return None
         wanted = [c.lower() for c in candidates]
-        # Exact (suffix) match first, then substring fallback.
+        # Per-candidate: exact (suffix) match, then substring — so higher-priority
+        # tags (e.g. TotalRevenues) win before lower-priority exact matches
+        # (e.g. bank net-interest lines) on later candidates.
         for want in wanted:
             for item in section:
                 concept = str(item.get("concept", "")).lower()
-                # Concepts may be namespaced ("us-gaap_Revenues") — match suffix.
                 tail = concept.split("_")[-1] if "_" in concept else concept
                 if tail == want or concept == want:
+                    val = item.get("value")
+                    try:
+                        return float(val)
+                    except (TypeError, ValueError):
+                        return None
+            for item in section:
+                concept = str(item.get("concept", "")).lower()
+                if want in concept:
                     val = item.get("value")
                     try:
                         return float(val)

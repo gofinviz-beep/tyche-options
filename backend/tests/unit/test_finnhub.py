@@ -117,3 +117,31 @@ class TestFinnhubClient:
                 await client.get_company_news(
                     "AAPL", date(2026, 4, 1), date(2026, 4, 10)
                 )
+
+
+class TestConceptValue:
+    def test_bank_total_revenues_beats_net_interest(self):
+        """Custom TotalRevenues extension must win over net-interest line items."""
+        section = [
+            {
+                "concept": "us-gaap_InterestAndDividendIncomeOperating",
+                "value": 5_824_000_000,
+            },
+            {
+                "concept": (
+                    "bk_TotalRevenuesIncludingRevenueGeneratedByVariableInterestEntities"
+                ),
+                "value": 5_409_000_000,
+            },
+        ]
+        revenue = FinnhubClient._concept_value(
+            section, FinnhubClient._STATEMENT_CONCEPTS["revenue"]
+        )
+        assert revenue == 5_409_000_000
+
+    def test_us_gaap_revenues_exact_match(self):
+        section = [{"concept": "us-gaap_Revenues", "value": 100.0}]
+        revenue = FinnhubClient._concept_value(
+            section, FinnhubClient._STATEMENT_CONCEPTS["revenue"]
+        )
+        assert revenue == 100.0

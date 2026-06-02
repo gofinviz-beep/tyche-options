@@ -21,7 +21,7 @@
 
 - **Polygon.io** — historical OHLCV data, ticker metadata including SIC codes/sector classification (bootstrap/backtest only), short interest, options flat files (via Massive S3)
 - **Tradier** — live quotes, options chains, account operations, order execution
-- **Finnhub** (`market_data/finnhub.py`) — demand data: Fundamental-1 (standardized statements → D-FUND) + Estimates-1 (revisions, surprises, recommendations, price targets → D-EST). 300 rpm.
+- **Finnhub** (`market_data/finnhub.py`) — demand data: Fundamental-1 standardized `/stock/financials` (primary D-FUND) + as-reported quarterly/annual fallbacks + Estimates-1 (D-EST). `get_standardized_financials()` merges IC/BS/CF, scales millions→absolute. Dual-class fetch via `market_data/dual_class.py` (GOOG→GOOGL, etc.). 300 rpm.
 - **Benzinga via Massive** (`market_data/benzinga.py`) — Corporate Guidance → D-CAT guide-vs-consensus catalysts
 - **Gemini LLM** — qualitative analysis only; all numbers come from broker data via `_resolve_numeric()`. Three model tiers: `gemini_model_fast` (scanner), `gemini_model_deep` (complex reasoning), `gemini_model_classify` (news/8-K classification, defaults to `gemini-2.5-flash-lite`)
 
@@ -59,7 +59,8 @@
 Complements (does not replace) the CSP/CC income engine — finds large upside moves to buy. v2 **leads with demand evidence** (v1 led with momentum, which favored already-run names). Full reference: `docs/directional-alpha.md`.
 
 - **Six demand dimensions** (each degrades to neutral when its store is absent): D-FUND (Finnhub fundamentals), D-EST (Finnhub estimates), D-CAT (news/8-K catalysts + Benzinga guide-vs-consensus), D-POL (`market_data/policy_calendar.py` `PolicyEventCalendar`), D-GRAPH (`market_data/supply_chain_graph.py` `SupplyChainGraph`), D-TECH (Polygon short interest).
-- **Stores:** `FundamentalsStore` (`data/fundamentals/`), `EstimatesStore` (`data/estimates/`), `ShortInterestStore` (`data/short_interest/`), `CatalystSignalStore` (`data/catalyst_signals/`). Ingest: `workflow/demand_data.py` `ingest_demand_data` via `scripts/ingest_demand_data.py` (parallel, rate-limited per source).
+- **Stores:** `FundamentalsStore` (`data/fundamentals/`), `EstimatesStore` (`data/estimates/`), `ShortInterestStore` (`data/short_interest/`), `CatalystSignalStore` (`data/catalyst_signals/`). Ingest: `workflow/demand_data.py` `ingest_demand_data` via `scripts/ingest_demand_data.py` (parallel, rate-limited per source). Fundamentals: standardized → as-reported quarterly → annual; dual-class via `dual_class.py`.
+- **Audit:** `scripts/audit_demand_coverage.py` (Parquet hygiene, repair flags); `scripts/audit_finnhub_vs_edgar.py` (SEC vs store lag for STALE tickers).
 - **Benzinga guide-vs-consensus** (`market_data/benzinga.py`): `derive_guidance_catalysts()` prefers guided-vs-consensus, falls back to same-period revision then YoY. Fiscal-calendar alignment via `_infer_fye_month()` (in `demand_data.py`) + `fiscal_quarter_end()` + `_match_consensus()` (nearest Finnhub period ≤ 46d). Comparator skipped (never wrong-matches) when FYE unknown.
 - **Labels** (`ml/labels.py`): peak `big_move_up_{25,40,60}pct_{40,60,120}d` (touches target intra-window) **and** sustained `big_move_sustained_*` (still up at horizon END — realistic buy target). Raw OHLCV only.
 - **Features** (`ml/features.py`): momentum/RS + demand groups (`FUNDAMENTAL/ESTIMATE/SHORT_INTEREST/CATALYST/GRAPH_FEATURE_COLS`), 97 cols total (`demand_feature_columns()`), via `get_feature_columns(include_demand=True, ...)`. **Demand augmenters MUST stay vectorized** (per-ticker `merge_asof` / numpy broadcast) — a per-row loop hangs `build_dataset` for 30–60 min.
@@ -68,7 +69,7 @@ Complements (does not replace) the CSP/CC income engine — finds large upside m
 - **Peak vs Sustained variants** (compare-only; page defaults to Sustained): `AlphaSignalStore(variant=)` → `data/alpha_signals.parquet` (peak) / `data/alpha_signals_sustained.parquet`. `alpha_sustained_enabled` (default true) gates the second. `run_alpha_batch(variants=[...])` builds features ONCE, scores each.
 - **Batch** (`workflow/alpha_batch.py`): chained after nightly flatfile (`alpha_batch_after_flatfile`) else 16:20 ET cron. Build-net floor `alpha_min_market_cap_millions` (default $250M, common-stock only).
 - **Route** (`api/routes/alpha.py`): `GET /alpha/scan?variant=sustained|peak` (read-time `min_market_cap_millions` floor + common-stock filter + meta; falls back to peak + reports served `variant`), `GET /alpha/signal/{ticker}` (any name regardless of rank — `/scan` only returns top `limit`), `POST /alpha/recompute`.
-- **Training CLI:** `python scripts/train_alpha.py` (`--save-model`, `--feature-set demand`). **Demand gate:** `python scripts/run_demand_gate.py` — walk-forward ablation (momentum vs demand) + conditional promotion of `big_move_sustained_*` (net-new; never overwrites peak). Verdict → `data/ml/alpha_results/demand_gate_verdict.json`.
+- **Training CLI:** `python scripts/train_alpha.py` (`--save-model`, `--feature-set momentum` for peak 62-feature models; `--feature-set demand --sustained` for demand ablation). **Demand gate:** `python scripts/run_demand_gate.py` — walk-forward ablation (momentum vs demand) + conditional promotion of `big_move_sustained_*` (97 features; net-new; never overwrites peak). After fundamentals repair: re-run gate + peak train + alpha batch + restart backend. Verdict → `data/ml/alpha_results/demand_gate_verdict.json`.
 
 ## Live Market Cap (shares × close)
 

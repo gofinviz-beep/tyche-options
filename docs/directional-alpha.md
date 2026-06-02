@@ -59,6 +59,40 @@ Ingestion is orchestrated by `workflow/demand_data.py` (`ingest_demand_data`) an
 pipeline** (Finnhub 300 rpm; Polygon; Benzinga via Massive). Wired into the nightly schedule
 behind config flags in the `# --- Demand data ---` block of `config.py`.
 
+### Fundamentals ingestion (Finnhub standardized + fallbacks)
+
+D-FUND quality depends on using the **right Finnhub endpoints**, not just
+`financials-reported?freq=quarterly`:
+
+1. **Primary:** `/stock/financials` (standardized IC/BS/CF) via
+   `FinnhubClient.get_standardized_financials()` — merges income statement, balance sheet,
+   and cash flow; scales millions → absolute; accepts `preliminary=true`.
+2. **Fallback 1:** as-reported `financials-reported?freq=quarterly`.
+3. **Fallback 2:** as-reported `financials-reported?freq=annual` (catches Q4 / 10-K-only
+   updates that never appear on the quarterly feed — e.g. Jan-FYE names like PL).
+
+**Dual-class shares.** Company-level fundamentals and estimates are identical across share
+classes, but Finnhub often publishes under the voting / primary SEC symbol (GOOGL not GOOG).
+`market_data/dual_class.py` maps each class to a canonical symbol; `demand_data.py` tries
+`finnhub_symbol_candidates()` (canonical first), caches by fetch symbol, and **writes rows
+under the universe ticker** (GOOG gets GOOGL data).
+
+**`filing_date` for standardized rows.** When Finnhub omits a filed date, the pipeline
+defaults to `period_end` (conservative for point-in-time `merge_asof`). Jan-FYE tickers can
+look **STALE** in the audit (>120d since period end) even when the period is current — check
+`fund_latest_period`, not just filing age.
+
+**Coverage audit (run after full re-ingest):**
+
+```bash
+cd backend && python scripts/audit_demand_coverage.py
+# outputs: data/ml/demand_audit_report.csv, demand_audit_summary.json
+```
+
+Post–June 2026 re-ingest baseline (~$250M+ universe): fund OK ~2,879 | STALE ~295 |
+MISSING ~37; estimates OK ~3,212; ingest gaps 0. Remaining gaps are mostly **source limits**
+(SPACs, no analyst coverage), not pipeline bugs.
+
 ### Benzinga guidance → demand catalysts (`market_data/benzinga.py`)
 
 Corporate guidance is the strongest forward demand read. `derive_guidance_catalysts()` turns
@@ -169,6 +203,18 @@ A single non-destructive pass that decides whether to promote the demand-feature
 **Verdict (May 2026, 3.4M rows, walk-forward):** demand beat momentum on all three horizons —
 precision +5.6 / +6.6 / +6.2 pp (swing / trend / thematic), AUC up to 0.905 on thematic. All
 three sustained models promoted.
+
+**Retrain after fundamentals fix (June 2026):** After the standardized + dual-class re-ingest,
+re-run the full ML alignment pass:
+
+```bash
+cd backend
+python scripts/run_demand_gate.py              # sustained models (97 features)
+python scripts/train_alpha.py --feature-set momentum   # peak models (62 features)
+python -c "from tyche.workflow.alpha_batch import run_alpha_batch; run_alpha_batch(variants=['peak','sustained'])"
+```
+
+Restart the backend (or `deps.reset_all()`) so the API reloads new model artifacts.
 
 ---
 

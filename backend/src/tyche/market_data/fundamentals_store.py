@@ -9,9 +9,9 @@ revenue, margins, earnings, cash flow, balance-sheet, and share counts. The
 extraction can avoid look-ahead bias by only consuming rows whose filing date
 is on or before the as-of date.
 
-Source: Polygon/Massive ``/vX/reference/financials`` (Financials & Ratios).
-The store is source-agnostic — any caller that produces a DataFrame matching
-``FUNDAMENTALS_SCHEMA`` can persist to it.
+Source: Finnhub ``/stock/financials`` (standardized, primary) or Polygon/Massive
+``/vX/reference/financials`` fallback. As-reported Finnhub is used only when
+standardized returns empty.
 """
 
 from __future__ import annotations

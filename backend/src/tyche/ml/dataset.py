@@ -380,12 +380,15 @@ def build_latest_features(
         return pd.DataFrame()
 
     latest = pd.concat(frames, ignore_index=True)
+    # apply_relational_features(..., include_demand=True) already runs
+    # _apply_demand_features — do NOT call it again here; a second pass
+    # merge_asof's onto existing f_/si_ columns and produces _x/_y suffixes
+    # that end up NaN (universe-wide ddim_fund=0 at serving).
     latest = apply_relational_features(
         latest,
         ohlcv_store=ohlcv_store,
         data_dir=data_dir,
     )
-    latest = _apply_demand_features(latest, data_dir=data_dir)
     logger.info("latest_features_complete", tickers=len(latest))
     return latest
 

@@ -817,7 +817,9 @@ def add_fundamental_features(
         return _fill_defaults(all_features.copy(), FUNDAMENTAL_FEATURE_COLS)
 
     df = all_features.copy()
-    df["_date"] = pd.to_datetime(df[date_col])
+    # Normalise to ns resolution — merge_asof requires identical units, and the
+    # Parquet filing_date can deserialize as datetime64[s]/[us] (Pandas 2.x strict).
+    df["_date"] = pd.to_datetime(df[date_col]).astype("datetime64[ns]")
 
     out: list[pd.DataFrame] = []
     for ticker, group in df.groupby("ticker", sort=False):
@@ -828,7 +830,7 @@ def add_fundamental_features(
             continue
 
         f = fund.sort_values("period_end").reset_index(drop=True)
-        f["filing_dt"] = pd.to_datetime(f["filing_date"])
+        f["filing_dt"] = pd.to_datetime(f["filing_date"]).astype("datetime64[ns]")
         rev = f["revenue"]
         eps = f["eps_diluted"]
         shares = f["shares_diluted"]
@@ -1057,7 +1059,9 @@ def add_short_interest_features(
         return _fill_defaults(all_features.copy(), SHORT_INTEREST_FEATURE_COLS)
 
     df = all_features.copy()
-    df["_date"] = pd.to_datetime(df[date_col])
+    # Normalise to ns resolution — merge_asof requires identical units, and the
+    # Parquet settlement_date can deserialize as datetime64[s]/[us] (Pandas 2.x strict).
+    df["_date"] = pd.to_datetime(df[date_col]).astype("datetime64[ns]")
 
     out: list[pd.DataFrame] = []
     for ticker, group in df.groupby("ticker", sort=False):
@@ -1068,7 +1072,7 @@ def add_short_interest_features(
             continue
 
         s = si.sort_values("settlement_date").reset_index(drop=True)
-        s["settle_dt"] = pd.to_datetime(s["settlement_date"])
+        s["settle_dt"] = pd.to_datetime(s["settlement_date"]).astype("datetime64[ns]")
         s["si_change_pct"] = s["short_interest"].pct_change() * 100.0
         cols = pd.DataFrame(
             {

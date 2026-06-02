@@ -141,6 +141,26 @@ class TestFundamentalFeatures:
         out = add_fundamental_features(feats, fundamentals_store=None)
         assert out["f_rev_growth_yoy"].isna().all()
 
+    def test_mixed_datetime_resolution(self):
+        """Regression: a Parquet round-trip yields datetime64[s]/[us] filing
+        dates while the feature frame is a different unit. merge_asof must not
+        raise — before the fix this MergeError was swallowed and D-FUND was
+        zeroed for the ENTIRE universe (every ticker forced to narrative regime).
+        """
+        fund = self._fund()
+        fund["filing_date"] = pd.to_datetime(fund["filing_date"]).astype("datetime64[s]")
+        store = _FakeFundStore(fund)
+        feats = pd.DataFrame(
+            {
+                "ticker": ["MU"],
+                "date": pd.Series([pd.Timestamp("2025-11-01")], dtype="datetime64[us]"),
+                "close": [110.0],
+            }
+        )
+        out = add_fundamental_features(feats, fundamentals_store=store)
+        assert out["f_rev_growth_yoy"].notna().all()
+        assert out.iloc[0]["f_rev_growth_yoy"] == pytest.approx(0.5, abs=1e-6)
+
 
 # ── Estimates (D-EST) ──────────────────────────────────────────────────
 
@@ -227,6 +247,48 @@ class TestShortInterestFeatures:
         late = out[out["date"] == date(2026, 5, 5)].iloc[0]
         assert early["si_days_to_cover"] == pytest.approx(4.0)  # only 04-15 visible
         assert late["si_days_to_cover"] == pytest.approx(5.0)  # 04-30 now visible
+
+    def test_mixed_datetime_resolution(self):
+        """Regression: Parquet-deserialized settlement dates (datetime64[s]) vs a
+        [us]/[ns] feature frame must not raise in merge_asof — before the fix this
+        zeroed D-TECH for the whole universe."""
+        si = pd.DataFrame(
+            {
+                "settlement_date": pd.Series(
+                    pd.to_datetime(["2026-04-15", "2026-04-30"]), dtype="datetime64[s]"
+                ),
+                "short_interest": [8e6, 10e6],
+                "days_to_cover": [4.0, 5.0],
+                "short_interest_ratio": [4.0, 5.0],
+                "short_pct_float": [0.1, 0.12],
+            }
+        )
+        store = _FakeSIStore(si)
+        feats = pd.DataFrame(
+            {
+                "ticker": ["MU"],
+                "date": pd.Series([pd.Timestamp("2026-05-05")], dtype="datetime64[us]"),
+                "close": [100.0],
+            }
+        )
+        out = add_short_interest_features(feats, short_interest_store=store)
+        assert out["si_days_to_cover"].notna().all()
+        assert out.iloc[0]["si_days_to_cover"] == pytest.approx(5.0)
+
+
+class TestDemandApplyOnce:
+    """Regression: demand augmentation must run exactly once at serving time."""
+
+    def test_second_fundamental_pass_corrupts_yoy(self):
+        fund_df = TestFundamentalFeatures()._fund()
+        store = _FakeFundStore(fund_df)
+        feats = pd.DataFrame(
+            {"ticker": ["MU"], "date": [date(2025, 11, 1)], "close": [100.0]}
+        )
+        once = add_fundamental_features(feats, fundamentals_store=store)
+        assert once["f_rev_growth_yoy"].notna().all()
+        twice = add_fundamental_features(once, fundamentals_store=store)
+        assert twice["f_rev_growth_yoy"].isna().all()
 
 
 # ── Feature column plumbing ────────────────────────────────────────────
