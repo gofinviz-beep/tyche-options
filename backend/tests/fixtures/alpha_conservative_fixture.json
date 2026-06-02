@@ -1,0 +1,223 @@
+{
+  "description": "Conservative AlphaScoreEngine scoring baseline (discovery flags off).",
+  "engine": {
+    "strong_buy_threshold": 72,
+    "buy_threshold": 58,
+    "watch_threshold": 44
+  },
+  "cases": [
+    {
+      "name": "revenue_regime_ml_present",
+      "features": {
+        "close": 100.0,
+        "return_63d": 0.12,
+        "return_126d": 0.28,
+        "return_252d": 0.45,
+        "rs_63d": 0.06,
+        "rs_126d": 0.18,
+        "ema_stack_score": 3,
+        "slope_accel": 0.1,
+        "price_to_200ema_pct": 10.0,
+        "pct_off_52w_high": -5.0,
+        "breakout_20d": 1,
+        "breakout_63d": 1,
+        "volume_thrust_ratio": 1.4,
+        "f_quarters_since_filing": 2,
+        "f_rev_growth_yoy": 0.25,
+        "f_rev_accel": 1,
+        "f_gross_margin_trend": 0.02,
+        "f_eps_growth_yoy": 0.2,
+        "f_fcf_positive": 1,
+        "e_eps_revision_90d": 8.0,
+        "e_rev_revision_90d": 5.0,
+        "e_rec_score": 0.5,
+        "e_eps_surprise_avg4": 3.0,
+        "e_price_target_upside": 0.15,
+        "cat_demand_score": 0.4,
+        "cat_policy_score": 0.1,
+        "si_days_to_cover": 4.0,
+        "overextension_score": 0.15
+      },
+      "breakout_probs": {
+        "big_move_up_25pct_40d": 0.75,
+        "big_move_up_40pct_60d": 0.7,
+        "big_move_up_60pct_120d": 0.65
+      },
+      "expected": {
+        "alpha_score": 76.5,
+        "signal": "strong_buy",
+        "regime": "revenue",
+        "horizon": "swing",
+        "overextension_penalty": 0.9325,
+        "demand_multiplier": 1.1518,
+        "demand_net": 0.506
+      }
+    },
+    {
+      "name": "narrative_regime_catalyst_driven",
+      "features": {
+        "close": 100.0,
+        "return_63d": 0.12,
+        "return_126d": 0.28,
+        "return_252d": 0.45,
+        "rs_63d": 0.06,
+        "rs_126d": 0.18,
+        "ema_stack_score": 3,
+        "slope_accel": 0.1,
+        "price_to_200ema_pct": 10.0,
+        "pct_off_52w_high": -5.0,
+        "breakout_20d": 1,
+        "breakout_63d": 1,
+        "volume_thrust_ratio": 1.4,
+        "f_quarters_since_filing": 20,
+        "cat_demand_score": 0.6,
+        "cat_policy_score": 0.3,
+        "si_days_to_cover": 8.0,
+        "overextension_score": 0.2
+      },
+      "breakout_probs": null,
+      "expected": {
+        "alpha_score": 70.4,
+        "signal": "buy",
+        "regime": "narrative",
+        "horizon": "thematic",
+        "overextension_penalty": 0.91,
+        "demand_multiplier": 1.121,
+        "demand_net": 0.4032
+      }
+    },
+    {
+      "name": "revenue_missing_estimates",
+      "features": {
+        "close": 100.0,
+        "return_63d": 0.12,
+        "return_126d": 0.28,
+        "return_252d": 0.45,
+        "rs_63d": 0.06,
+        "rs_126d": 0.18,
+        "ema_stack_score": 3,
+        "slope_accel": 0.1,
+        "price_to_200ema_pct": 10.0,
+        "pct_off_52w_high": -5.0,
+        "breakout_20d": 1,
+        "breakout_63d": 1,
+        "volume_thrust_ratio": 1.4,
+        "f_quarters_since_filing": 1,
+        "f_rev_growth_yoy": 0.18,
+        "f_rev_accel": 0,
+        "f_gross_margin_trend": 0.0,
+        "f_eps_growth_yoy": 0.1,
+        "f_fcf_positive": 1,
+        "overextension_score": 0.1
+      },
+      "breakout_probs": null,
+      "expected": {
+        "alpha_score": 63.3,
+        "signal": "buy",
+        "regime": "revenue",
+        "horizon": "thematic",
+        "overextension_penalty": 0.955,
+        "demand_multiplier": 0.9604,
+        "demand_net": -0.132
+      }
+    },
+    {
+      "name": "high_overextension_ml_present",
+      "features": {
+        "close": 100.0,
+        "return_63d": 0.12,
+        "return_126d": 0.28,
+        "return_252d": 0.45,
+        "rs_63d": 0.06,
+        "rs_126d": 0.18,
+        "ema_stack_score": 3,
+        "slope_accel": 0.1,
+        "price_to_200ema_pct": 35,
+        "pct_off_52w_high": -5.0,
+        "breakout_20d": 1,
+        "breakout_63d": 1,
+        "volume_thrust_ratio": 1.4,
+        "overextension_score": 0.95,
+        "parabolic_21d": 0.45,
+        "rsi_14": 82,
+        "cat_demand_score": 0.5
+      },
+      "breakout_probs": {
+        "big_move_up_25pct_40d": 0.8,
+        "big_move_up_40pct_60d": 0.75,
+        "big_move_up_60pct_120d": 0.7
+      },
+      "expected": {
+        "alpha_score": 47.1,
+        "signal": "watch",
+        "regime": "narrative",
+        "horizon": "swing",
+        "overextension_penalty": 0.5725,
+        "demand_multiplier": 1.1129,
+        "demand_net": 0.3762
+      }
+    },
+    {
+      "name": "no_ml_weak_factors",
+      "features": {
+        "close": 100.0,
+        "return_63d": -0.15,
+        "return_126d": -0.2,
+        "return_252d": -0.25,
+        "rs_63d": -0.08,
+        "rs_126d": -0.12,
+        "ema_stack_score": 0,
+        "slope_accel": -0.1,
+        "price_to_200ema_pct": -20,
+        "pct_off_52w_high": -35,
+        "breakout_20d": 0,
+        "breakout_63d": 0,
+        "volume_thrust_ratio": 0.7,
+        "overextension_score": 0.05
+      },
+      "breakout_probs": null,
+      "expected": {
+        "alpha_score": 0.0,
+        "signal": "avoid",
+        "regime": "narrative",
+        "horizon": "none",
+        "overextension_penalty": 0.9775,
+        "demand_multiplier": 0.74,
+        "demand_net": -0.8667
+      }
+    },
+    {
+      "name": "ml_present_moderate_factors",
+      "features": {
+        "close": 100.0,
+        "return_63d": 0.12,
+        "return_126d": 0.28,
+        "return_252d": 0.45,
+        "rs_63d": 0.06,
+        "rs_126d": 0.18,
+        "ema_stack_score": 3,
+        "slope_accel": 0.1,
+        "price_to_200ema_pct": 10.0,
+        "pct_off_52w_high": -5.0,
+        "breakout_20d": 1,
+        "breakout_63d": 1,
+        "volume_thrust_ratio": 1.4,
+        "overextension_score": 0.25
+      },
+      "breakout_probs": {
+        "big_move_up_25pct_40d": 0.55,
+        "big_move_up_40pct_60d": 0.5,
+        "big_move_up_60pct_120d": 0.48
+      },
+      "expected": {
+        "alpha_score": 54.7,
+        "signal": "watch",
+        "regime": "narrative",
+        "horizon": "swing",
+        "overextension_penalty": 0.8875,
+        "demand_multiplier": 1.02,
+        "demand_net": 0.0667
+      }
+    }
+  ]
+}
