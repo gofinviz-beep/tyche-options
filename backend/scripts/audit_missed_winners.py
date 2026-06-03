@@ -5,8 +5,6 @@ Read-only diagnostic. Does not change scoring or models.
 Run from ``backend/``:
     .venv/bin/python scripts/audit_missed_winners.py --source snapshot
     .venv/bin/python scripts/audit_missed_winners.py --source engine --tickers MU AVGO SNDK STX ARM
-
-Writes ``data/ml/alpha_results/missed_winners.csv``.
 """
 
 from __future__ import annotations
@@ -50,11 +48,40 @@ def _opt(val: Any) -> float | None:
     return float(val)
 
 
+def _apply_killed_by(
+    *,
+    killed_by: list[str],
+    ml_blend: float | None,
+    overextension_penalty: float | None,
+    missing: list[str],
+    alpha_score: float | None,
+    low_ml_threshold: float,
+    anti_chase_threshold: float,
+    missing_demand_threshold: int,
+    watch_threshold: float,
+) -> None:
+    # killed_by is a diagnostic label only. Changing these thresholds changes labels,
+    # not the underlying measured score, ML blend, penalty, or demand multiplier.
+    if ml_blend is not None and ml_blend < low_ml_threshold:
+        killed_by.append("low_ml_prob")
+    if overextension_penalty is not None and overextension_penalty < anti_chase_threshold:
+        killed_by.append("anti_chase")
+    if len(missing) >= missing_demand_threshold:
+        killed_by.append("missing_demand")
+    if alpha_score is not None and alpha_score < watch_threshold:
+        killed_by.append("below_threshold")
+
+
 def _score_breakdown(
     engine: AlphaScoreEngine,
     row: pd.Series,
     breakout_probs: dict[str, np.ndarray] | None,
     index: int,
+    *,
+    low_ml_threshold: float,
+    anti_chase_threshold: float,
+    missing_demand_threshold: int,
+    watch_threshold: float,
 ) -> dict[str, Any]:
     """Mirror AlphaScoreEngine.score_from_features intermediate values."""
     factors = engine._compute_factors(row)
@@ -97,19 +124,24 @@ def _score_breakdown(
         missing.append("D-TECH")
 
     killed_by: list[str] = []
-    if ml_blend is not None and ml_blend < 0.15:
-        killed_by.append("low_ml_prob")
-    if overextension_penalty < 0.85:
-        killed_by.append("anti_chase")
-    if len(missing) >= 4:
-        killed_by.append("missing_demand")
-    if alpha_score < _WATCH_THRESHOLD:
-        killed_by.append("below_threshold")
+    _apply_killed_by(
+        killed_by=killed_by,
+        ml_blend=ml_blend,
+        overextension_penalty=overextension_penalty,
+        missing=missing,
+        alpha_score=alpha_score,
+        low_ml_threshold=low_ml_threshold,
+        anti_chase_threshold=anti_chase_threshold,
+        missing_demand_threshold=missing_demand_threshold,
+        watch_threshold=watch_threshold,
+    )
 
     return {
         "ml_blend": ml_blend,
         "factor_blend": round(factor_blend, 4),
         "composite_before_penalty": round(composite_before_penalty, 4),
+        "composite_after_penalty": round(composite_after_penalty, 4),
+        "composite_final": round(composite_final, 4),
         "overextension_penalty": round(overextension_penalty, 4),
         "demand_multiplier": round(demand_multiplier, 4),
         "alpha_score": alpha_score,
@@ -121,6 +153,14 @@ def _score_breakdown(
         "breakout_prob_trend": p_trend,
         "breakout_prob_thematic": p_thematic,
         "demand_net": dims.net,
+        "score_without_overextension_penalty": round(
+            100.0 * min(1.0, composite_before_penalty * demand_multiplier), 1
+        ),
+        "score_with_neutral_demand_multiplier": round(
+            100.0 * min(1.0, composite_after_penalty), 1
+        ),
+        "score_before_penalty_and_demand": round(100.0 * composite_before_penalty, 1),
+        "counterfactual_mode": "exact",
     }
 
 
@@ -134,7 +174,15 @@ def _load_snapshot_map(data_dir: str) -> tuple[dict[str, dict], str]:
     return {}, "none"
 
 
-def _probe_snapshot(tickers: list[str], data_dir: str) -> list[dict]:
+def _probe_snapshot(
+    tickers: list[str],
+    data_dir: str,
+    *,
+    low_ml_threshold: float,
+    anti_chase_threshold: float,
+    missing_demand_threshold: int,
+    watch_threshold: float,
+) -> list[dict]:
     snap_map, variant = _load_snapshot_map(data_dir)
     rows: list[dict] = []
     for ticker in tickers:
@@ -145,6 +193,7 @@ def _probe_snapshot(tickers: list[str], data_dir: str) -> list[dict]:
                 "source": "snapshot",
                 "snapshot_variant": variant,
                 "killed_by": "not_in_snapshot",
+                "counterfactual_mode": "approx_from_snapshot",
             })
             continue
         demand = rec.get("demand") or {}
@@ -170,17 +219,39 @@ def _probe_snapshot(tickers: list[str], data_dir: str) -> list[dict]:
             vals = [float(v) for v in ml_vals if v is not None]
             ml_blend = 0.6 * max(vals) + 0.4 * (sum(vals) / len(vals))
 
-        killed_by: list[str] = []
-        if ml_blend is not None and ml_blend < 0.15:
-            killed_by.append("low_ml_prob")
+        score = rec.get("alpha_score")
         penalty = rec.get("overextension_penalty")
-        if penalty is not None and float(penalty) < 0.85:
-            killed_by.append("anti_chase")
-        if len(missing) >= 4:
-            killed_by.append("missing_demand")
-        score = float(rec.get("alpha_score") or 0)
-        if score < _WATCH_THRESHOLD:
-            killed_by.append("below_threshold")
+        demand_multiplier = rec.get("demand_multiplier")
+
+        score_without_overextension_penalty_approx = None
+        score_with_neutral_demand_multiplier_approx = None
+        if score is not None and penalty not in (None, 0):
+            try:
+                score_without_overextension_penalty_approx = round(
+                    min(100.0, float(score) / float(penalty)), 1
+                )
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+        if score is not None and demand_multiplier not in (None, 0):
+            try:
+                score_with_neutral_demand_multiplier_approx = round(
+                    min(100.0, float(score) / float(demand_multiplier)), 1
+                )
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+
+        killed_by: list[str] = []
+        _apply_killed_by(
+            killed_by=killed_by,
+            ml_blend=ml_blend,
+            overextension_penalty=float(penalty) if penalty is not None else None,
+            missing=missing,
+            alpha_score=float(score) if score is not None else None,
+            low_ml_threshold=low_ml_threshold,
+            anti_chase_threshold=anti_chase_threshold,
+            missing_demand_threshold=missing_demand_threshold,
+            watch_threshold=watch_threshold,
+        )
 
         rows.append({
             "ticker": ticker,
@@ -189,19 +260,34 @@ def _probe_snapshot(tickers: list[str], data_dir: str) -> list[dict]:
             "ml_blend": ml_blend,
             "factor_blend": None,
             "composite_before_penalty": None,
-            "overextension_penalty": rec.get("overextension_penalty"),
-            "demand_multiplier": rec.get("demand_multiplier"),
-            "alpha_score": rec.get("alpha_score"),
+            "composite_after_penalty": None,
+            "composite_final": None,
+            "overextension_penalty": penalty,
+            "demand_multiplier": demand_multiplier,
+            "alpha_score": score,
             "signal": rec.get("signal"),
             "regime": rec.get("regime"),
             "missing_demand_dimensions": ",".join(missing),
             "killed_by": ",".join(killed_by),
             "demand_net": demand.get("net"),
+            "score_without_overextension_penalty": score_without_overextension_penalty_approx,
+            "score_with_neutral_demand_multiplier": score_with_neutral_demand_multiplier_approx,
+            "score_before_penalty_and_demand": None,
+            "counterfactual_mode": "approx_from_snapshot",
         })
     return rows
 
 
-def _probe_engine(tickers: list[str], data_dir: str, min_market_cap: float) -> list[dict]:
+def _probe_engine(
+    tickers: list[str],
+    data_dir: str,
+    min_market_cap: float,
+    *,
+    low_ml_threshold: float,
+    anti_chase_threshold: float,
+    missing_demand_threshold: int,
+    watch_threshold: float,
+) -> list[dict]:
     features = build_latest_features(
         data_dir=data_dir,
         min_market_cap=min_market_cap,
@@ -237,7 +323,16 @@ def _probe_engine(tickers: list[str], data_dir: str, min_market_cap: float) -> l
             continue
         idx = feat_index[t]
         row = features.iloc[idx]
-        breakdown = _score_breakdown(engine, row, probs or None, idx)
+        breakdown = _score_breakdown(
+            engine,
+            row,
+            probs or None,
+            idx,
+            low_ml_threshold=low_ml_threshold,
+            anti_chase_threshold=anti_chase_threshold,
+            missing_demand_threshold=missing_demand_threshold,
+            watch_threshold=watch_threshold,
+        )
         breakdown["ticker"] = ticker
         breakdown["source"] = "engine"
         rows.append(breakdown)
@@ -263,20 +358,37 @@ def main() -> None:
         "--output",
         default="data/ml/alpha_results/missed_winners.csv",
     )
+    parser.add_argument("--low-ml-threshold", type=float, default=0.30)
+    parser.add_argument("--anti-chase-threshold", type=float, default=0.80)
+    parser.add_argument("--missing-demand-threshold", type=int, default=3)
+    parser.add_argument("--watch-threshold", type=float, default=_WATCH_THRESHOLD)
     args = parser.parse_args()
 
     settings = get_settings()
     min_cap = settings.alpha_min_market_cap_millions * 1e6
     tickers = [t.upper() for t in args.tickers]
 
+    kw = {
+        "low_ml_threshold": args.low_ml_threshold,
+        "anti_chase_threshold": args.anti_chase_threshold,
+        "missing_demand_threshold": args.missing_demand_threshold,
+        "watch_threshold": args.watch_threshold,
+    }
+
     if args.source == "snapshot":
-        rows = _probe_snapshot(tickers, args.data_dir)
+        rows = _probe_snapshot(tickers, args.data_dir, **kw)
     else:
-        rows = _probe_engine(tickers, args.data_dir, min_cap)
+        rows = _probe_engine(tickers, args.data_dir, min_cap, **kw)
+
+    out_df = pd.DataFrame(rows)
+    if "alpha_score" in out_df.columns and out_df["alpha_score"].notna().any():
+        out_df["score_percentile_within_probe"] = (
+            out_df["alpha_score"].rank(pct=True, method="average")
+        )
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(out_path, index=False)
+    out_df.to_csv(out_path, index=False)
 
     print(f"\n{'=' * 60}")
     print(f"MISSED WINNERS ({args.source})")

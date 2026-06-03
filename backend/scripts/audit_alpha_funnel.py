@@ -15,7 +15,9 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pandas as pd
 import structlog
 
@@ -29,8 +31,16 @@ logger = structlog.get_logger()
 
 _FEATURE_COLS = (
     "f_rev_growth_yoy",
+    "f_rev_accel",
     "e_eps_revision_90d",
+    "e_rev_revision_90d",
+    "e_rec_score",
+    "e_price_target_upside",
+    "e_eps_surprise_avg4",
     "cat_demand_score",
+    "cat_policy_score",
+    "cat_count_90d",
+    "cat_recency_days",
     "si_days_to_cover",
 )
 _ML_PROB_COLS = (
@@ -38,7 +48,13 @@ _ML_PROB_COLS = (
     "breakout_prob_trend",
     "breakout_prob_thematic",
 )
-_SCORE_THRESHOLDS = (44, 58, 72)
+_DISTRIBUTION_COLS = (
+    "f_rev_growth_yoy",
+    "e_eps_revision_90d",
+    "e_rev_revision_90d",
+    "cat_demand_score",
+    "cat_count_90d",
+)
 
 
 def _has_value(series: pd.Series) -> int:
@@ -47,10 +63,50 @@ def _has_value(series: pd.Series) -> int:
     return int(series.notna().sum())
 
 
+def _nonzero(series: pd.Series) -> int:
+    s = pd.to_numeric(series, errors="coerce")
+    return int((s.notna() & (s != 0)).sum())
+
+
+def _positive(series: pd.Series) -> int:
+    s = pd.to_numeric(series, errors="coerce")
+    return int((s > 0).sum())
+
+
+def _negative(series: pd.Series) -> int:
+    s = pd.to_numeric(series, errors="coerce")
+    return int((s < 0).sum())
+
+
+def _gt_zero(series: pd.Series) -> int:
+    s = pd.to_numeric(series, errors="coerce")
+    return int((s > 0).sum())
+
+
 def _count_scores(scores: pd.Series, threshold: float) -> int:
     if scores.empty:
         return 0
     return int((scores >= threshold).sum())
+
+
+def _distribution(col: pd.Series) -> dict[str, Any]:
+    s = pd.to_numeric(col, errors="coerce")
+    valid = s.dropna()
+    if valid.empty:
+        return {
+            "non_null": 0,
+            "nonzero": 0,
+            "p05": None,
+            "p50": None,
+            "p95": None,
+        }
+    return {
+        "non_null": int(s.notna().sum()),
+        "nonzero": int((valid != 0).sum()),
+        "p05": round(float(valid.quantile(0.05)), 4),
+        "p50": round(float(valid.quantile(0.50)), 4),
+        "p95": round(float(valid.quantile(0.95)), 4),
+    }
 
 
 def _load_snapshot(data_dir: str) -> tuple[list[dict], str, str | None]:
@@ -84,19 +140,95 @@ def _signals_to_frame(signals: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _feature_metrics(features: pd.DataFrame) -> tuple[dict[str, int], dict[str, dict[str, Any]]]:
+    """Not-null, semantic counts, and quantiles for snapshot feature rows."""
+    counts: dict[str, int] = {"feature_rows": len(features)}
+    for col in _FEATURE_COLS:
+        if col not in features.columns:
+            counts[col] = 0
+        else:
+            counts[col] = _has_value(features[col])
+
+    counts["has_nonzero_f_rev_growth_yoy"] = (
+        _nonzero(features["f_rev_growth_yoy"])
+        if "f_rev_growth_yoy" in features.columns
+        else 0
+    )
+    counts["has_nonzero_f_rev_accel"] = (
+        _nonzero(features["f_rev_accel"]) if "f_rev_accel" in features.columns else 0
+    )
+    counts["has_e_eps_revision_90d"] = counts.get("e_eps_revision_90d", 0)
+    counts["has_e_rev_revision_90d"] = counts.get("e_rev_revision_90d", 0)
+    counts["has_e_rec_score"] = counts.get("e_rec_score", 0)
+    counts["has_e_price_target_upside"] = counts.get("e_price_target_upside", 0)
+    counts["has_e_eps_surprise_avg4"] = counts.get("e_eps_surprise_avg4", 0)
+    counts["has_nonzero_cat_demand_score"] = (
+        _nonzero(features["cat_demand_score"])
+        if "cat_demand_score" in features.columns
+        else 0
+    )
+    counts["has_positive_cat_demand_score"] = (
+        _positive(features["cat_demand_score"])
+        if "cat_demand_score" in features.columns
+        else 0
+    )
+    counts["has_negative_cat_demand_score"] = (
+        _negative(features["cat_demand_score"])
+        if "cat_demand_score" in features.columns
+        else 0
+    )
+    counts["has_cat_count_90d_gt_0"] = (
+        _gt_zero(features["cat_count_90d"]) if "cat_count_90d" in features.columns else 0
+    )
+    counts["has_nonzero_cat_policy_score"] = (
+        _nonzero(features["cat_policy_score"])
+        if "cat_policy_score" in features.columns
+        else 0
+    )
+    counts["has_positive_cat_policy_score"] = (
+        _positive(features["cat_policy_score"])
+        if "cat_policy_score" in features.columns
+        else 0
+    )
+    counts["has_negative_cat_policy_score"] = (
+        _negative(features["cat_policy_score"])
+        if "cat_policy_score" in features.columns
+        else 0
+    )
+
+    distributions: dict[str, dict[str, Any]] = {}
+    for col in _DISTRIBUTION_COLS:
+        if col in features.columns:
+            distributions[col] = _distribution(features[col])
+        else:
+            distributions[col] = {
+                "non_null": 0,
+                "nonzero": 0,
+                "p05": None,
+                "p50": None,
+                "p95": None,
+            }
+
+    return counts, distributions
+
+
 def _feature_coverage(
     data_dir: str,
     tickers: list[str],
     min_market_cap: float,
     *,
     max_feature_tickers: int | None = None,
-) -> tuple[dict[str, int], bool, int]:
-    """Latest feature rows for snapshot tickers (coverage counts).
+) -> tuple[dict[str, int], dict[str, dict[str, Any]], bool, int]:
+    """Latest feature rows for snapshot tickers (coverage counts + distributions)."""
+    empty_counts = {c: 0 for c in _FEATURE_COLS}
+    empty_counts["feature_rows"] = 0
+    empty_dists = {
+        col: {"non_null": 0, "nonzero": 0, "p05": None, "p50": None, "p95": None}
+        for col in _DISTRIBUTION_COLS
+    }
 
-    Returns (counts, capped, tickers_used).
-    """
     if not tickers:
-        return {c: 0 for c in _FEATURE_COLS}, False, 0
+        return empty_counts, empty_dists, False, 0
 
     capped = False
     used = tickers
@@ -116,15 +248,10 @@ def _feature_coverage(
         tickers=used,
     )
     if features.empty:
-        return {c: 0 for c in _FEATURE_COLS}, capped, len(used)
+        return empty_counts, empty_dists, capped, len(used)
 
-    out: dict[str, int] = {"feature_rows": len(features)}
-    for col in _FEATURE_COLS:
-        if col in features.columns:
-            out[col] = _has_value(features[col])
-        else:
-            out[col] = 0
-    return out, capped, len(used)
+    counts, distributions = _feature_metrics(features)
+    return counts, distributions, capped, len(used)
 
 
 def run_audit(
@@ -142,11 +269,13 @@ def run_audit(
         if not snap_df.empty
         else []
     )
-    feature_counts, feature_capped, feature_tickers_used = _feature_coverage(
-        data_dir,
-        tickers,
-        min_market_cap,
-        max_feature_tickers=max_feature_tickers,
+    feature_counts, feature_distributions, feature_capped, feature_tickers_used = (
+        _feature_coverage(
+            data_dir,
+            tickers,
+            min_market_cap,
+            max_feature_tickers=max_feature_tickers,
+        )
     )
 
     has_ml = 0
@@ -168,6 +297,9 @@ def run_audit(
         "alpha_score_gte_58": _count_scores(snap_df.get("alpha_score", pd.Series(dtype=float)), 58),
         "alpha_score_gte_72": _count_scores(snap_df.get("alpha_score", pd.Series(dtype=float)), 72),
     }
+    for key, val in feature_counts.items():
+        if key.startswith("has_") or key == "feature_rows":
+            counts[key] = val
 
     top25 = []
     if not snap_df.empty:
@@ -192,10 +324,12 @@ def run_audit(
         "feature_coverage_capped": feature_capped,
         "min_market_cap": min_market_cap,
         "counts": counts,
+        "feature_distributions": feature_distributions,
         "top_25_by_alpha_score": top25,
         "notes": [
             "Score-threshold counts come from the alpha snapshot.",
             "Feature-column counts come from build_latest_features() for snapshot tickers.",
+            "has_* counts use not-null; has_nonzero_* / has_positive_* distinguish real signal.",
             "Use --max-feature-tickers to cap slow rebuilds on large snapshots.",
         ],
     }
@@ -235,7 +369,7 @@ def main() -> None:
     print(f"ALPHA FUNNEL AUDIT (variant={report['snapshot_variant']}, as_of={report['as_of_date']})")
     print(f"{'=' * 60}")
     for key, val in counts.items():
-        print(f"  {key:<28} {val:>8}")
+        print(f"  {key:<32} {val:>8}")
     print(f"\nTop 25 by alpha_score:")
     for row in report["top_25_by_alpha_score"]:
         print(
