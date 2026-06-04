@@ -22,7 +22,8 @@ The `OHLCVStore`, `OptionsChainStore`, `OptionsHistoryStore`, `HistoricalIVStore
 | Directional alpha signals (peak) | `backend/data/alpha_signals.parquet` | Single file (big-move buy signals: alpha score, horizon, ML probabilities, demand dimensions, factors) |
 | Directional alpha signals (sustained) | `backend/data/alpha_signals_sustained.parquet` | Single file — `AlphaSignalStore(variant="sustained")`. Same schema, sustained big-move models |
 | Demand: fundamentals | `backend/data/fundamentals/{TICKER}.parquet` | One per ticker (Finnhub `/stock/financials` standardized, primary; as-reported quarterly/annual fallback; dual-class aliasing) |
-| Demand: estimates | `backend/data/estimates/{TICKER}.parquet` | One per ticker (Finnhub Estimates-1: revisions, surprises, recommendations, price targets) |
+| Demand: estimates | `backend/data/estimates/{TICKER}.parquet` | One per ticker (Finnhub Estimates-1: tidy long format — surprises, recommendations, price targets, `eps_est_avg` / `rev_est_avg`) |
+| Demand: estimate snapshots | `backend/data/estimate_snapshots/{TICKER}.parquet` | Wide point-in-time EPS/revenue consensus per ingest day (`EstimateSnapshotStore`); append-only by `snapshot_date` for same-period revision velocity |
 | Demand: short interest | `backend/data/short_interest/{TICKER}.parquet` | One per ticker (Polygon short interest / days-to-cover) |
 | Demand: catalyst signals | `backend/data/catalyst_signals/{TICKER}.parquet` | One per ticker (news/8-K demand catalysts + Benzinga guide-vs-consensus) |
 | ML alpha dataset / results | `backend/data/ml/alpha_dataset.parquet`, `backend/data/ml/alpha_results/` | Demand-feature training panel + demand-gate verdict JSON |
@@ -88,6 +89,7 @@ from tyche.market_data.data_store import TickerMetaStore
 | `audit_demand_coverage.py` | Audit D-FUND/D-EST Parquet hygiene for alpha universe | outputs `data/ml/demand_audit_*` |
 | `audit_finnhub_vs_edgar.py` | Compare SEC vs Finnhub filing dates for STALE tickers | requires `TYCHE_EDGAR_USER_AGENT_EMAIL` |
 | `run_demand_gate.py` | Demand-feature walk-forward ablation + conditional promotion of `big_move_sustained_*` models | `--min-lift 0.005` |
+| `audit_estimate_snapshots.py` | Snapshot cadence + same-period revision availability (`estimate_snapshots/`) | `--tickers MU AVGO` |
 
 ## Tradier Client Setup
 

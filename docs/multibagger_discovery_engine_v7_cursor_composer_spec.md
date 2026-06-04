@@ -54,9 +54,26 @@ Suggested commit (if not yet committed):
 docs: record P0.3 Finnhub estimate snapshot probe (completed)
 ```
 
-## Revised P1 order
+## P1 core — status
 
-Proceed after P0.3 with:
+**Completed** (2026-06-03). Implemented in repo; conservative Alpha unchanged unless `alpha_discovery_enabled=true`.
+
+| Task | Delivered |
+|------|-----------|
+| P1.1 | Discovery config flags in `config.py` |
+| P1.2 | Per-target `scale_pos_weight` in `ml/xgb_baseline.py` |
+| P1.4 | Percentile signals + `build_alpha_score_engine()` in `alpha_engine.py` |
+| P1.7 | Guidance `tanh(log1p)` impact; train scripts log universe floor ($2B default, `--discovery-train` for $250M) |
+| P1.8 | Gated demand-adjusted extension |
+| P1.3 | `__isna` missingness indicators + `BreakoutPredictor` parity |
+| P1.9 | `ml/validation.py` purged walk-forward splits |
+| P1.5-A/B | `EstimateSnapshotStore`, `get_consensus_snapshot_rows()`, daily ingest wiring, `audit_estimate_snapshots.py` |
+
+**Not done (by design):** estimate-ramp unit fix; P1.5-C same-period revision features in ML (`demand_feature_columns()`); P1.5-F ramp calibration.
+
+**Next:** Phase P2 (multi-bagger labels, discovery namespace) per this spec. Operational: let daily `ingest_demand_data` accumulate `estimate_snapshots/` snapshot dates before P1.5-C.
+
+## Revised P1 order (reference)
 
 1. P1.1 config flags
 2. P1.2 rare-class weighting
@@ -66,8 +83,6 @@ Proceed after P0.3 with:
 6. P1.3 missingness indicators and train/serve parity
 7. P1.9 purged walk-forward validation
 8. Revised P1.5 estimate snapshot infrastructure
-
-The exact order can be adjusted, but do not let the estimate-ramp unit fix block P1 core work.
 
 ## Revised P1.5 - Estimate snapshot infrastructure
 

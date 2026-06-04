@@ -45,7 +45,17 @@ def main() -> None:
     parser.add_argument("--train-days", type=int, default=252, help="Walk-forward train window (default 252 ~ 1yr)")
     parser.add_argument("--test-days", type=int, default=63, help="Walk-forward test window (default 63 ~ 3mo)")
     parser.add_argument("--max-tickers", type=int, default=None, help="Limit tickers for quick testing")
-    parser.add_argument("--min-market-cap", type=float, default=4e9, help="Minimum market cap (default 4B)")
+    parser.add_argument(
+        "--min-market-cap",
+        type=float,
+        default=2e9,
+        help="Min market cap (default $2B conservative). Use 250e6–500e6 only for discovery training.",
+    )
+    parser.add_argument(
+        "--discovery-train",
+        action="store_true",
+        help="Use alpha_discovery_train_min_market_cap_millions from config for universe floor",
+    )
     parser.add_argument("--data-dir", type=str, default="data", help="Root data directory")
     parser.add_argument("--save-model", action="store_true", default=True, help="Train + save production big-move models (default True)")
     parser.add_argument("--no-save-model", action="store_false", dest="save_model", help="Skip saving production models")
@@ -65,6 +75,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    from tyche.config import get_settings
     from tyche.ml.dataset import build_dataset, load_dataset, save_dataset
     from tyche.ml.xgb_baseline import (
         ALPHA_SUSTAINED_TARGETS,
@@ -75,6 +86,12 @@ def main() -> None:
         run_demand_baselines,
         train_production_model,
     )
+
+    settings = get_settings()
+    min_cap = args.min_market_cap
+    if args.discovery_train:
+        min_cap = settings.alpha_discovery_train_min_market_cap_millions * 1e6
+    logger.info("train_universe", min_market_cap=min_cap, discovery_train=args.discovery_train)
 
     t0 = time.time()
 
@@ -87,11 +104,11 @@ def main() -> None:
             "building_dataset",
             data_dir=args.data_dir,
             max_tickers=args.max_tickers,
-            min_market_cap=args.min_market_cap,
+            min_market_cap=min_cap,
         )
         dataset = build_dataset(
             data_dir=args.data_dir,
-            min_market_cap=args.min_market_cap,
+            min_market_cap=min_cap,
             max_tickers=args.max_tickers,
             include_neighbors=True,
             include_momentum=True,
@@ -119,6 +136,9 @@ def main() -> None:
             train_days=args.train_days,
             test_days=args.test_days,
             output_dir=args.results_dir,
+            use_class_weighting=settings.alpha_class_weighting_enabled,
+            use_purged_splits=settings.alpha_purged_walk_forward_enabled,
+            use_missingness_indicators=settings.alpha_discovery_enabled,
         )
         if reports:
             _print_demand_gate(reports)
@@ -130,6 +150,8 @@ def main() -> None:
             train_days=args.train_days,
             test_days=args.test_days,
             output_dir=args.results_dir,
+            use_class_weighting=settings.alpha_class_weighting_enabled,
+            use_purged_splits=settings.alpha_purged_walk_forward_enabled,
         )
         if reports:
             _print_go_no_go(reports)
@@ -147,6 +169,10 @@ def main() -> None:
                 target=target,
                 feature_cols=feature_cols,
                 data_dir=args.data_dir,
+                use_class_weighting=settings.alpha_class_weighting_enabled,
+                use_missingness_indicators=(
+                    use_demand and settings.alpha_discovery_enabled
+                ),
             )
             print(f"Saved: data/ml/models/{target}.json")
 

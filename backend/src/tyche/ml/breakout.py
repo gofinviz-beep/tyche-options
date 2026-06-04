@@ -21,7 +21,7 @@ import pandas as pd
 import structlog
 
 from tyche.ml.model_store import ModelMeta, load_model
-from tyche.ml.xgb_baseline import ALPHA_TARGETS
+from tyche.ml.xgb_baseline import ALPHA_TARGETS, add_missingness_indicators
 
 logger = structlog.get_logger()
 
@@ -87,7 +87,17 @@ class BreakoutPredictor:
             X = features.copy()
             for col in meta.feature_cols:
                 if col not in X.columns:
-                    X[col] = _SENTINEL
+                    if col.endswith("__isna"):
+                        X[col] = 1
+                    else:
+                        X[col] = _SENTINEL
+            indicator_bases = {
+                c[: -len("__isna")]
+                for c in meta.feature_cols
+                if c.endswith("__isna")
+            }
+            if indicator_bases:
+                X = add_missingness_indicators(X, sorted(indicator_bases))
             X = X[meta.feature_cols].fillna(_SENTINEL)
             try:
                 results[target] = model.predict_proba(X)[:, 1]

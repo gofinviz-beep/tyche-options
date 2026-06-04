@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import httpx
 import structlog
@@ -302,6 +302,85 @@ class FinnhubClient:
                             {"snapshot_date": snap, "metric": metric, "period": period, "value": val}
                         )
         return rows
+
+    async def get_consensus_snapshot_rows(
+        self,
+        ticker: str,
+        as_of: date | None = None,
+        freq: str = "quarterly",
+    ) -> list[dict]:
+        """Wide point-in-time EPS/revenue consensus rows for EstimateSnapshotStore."""
+        from tyche.market_data.estimate_snapshot_store import payload_hash
+
+        snap = as_of or date.today()
+        sym = ticker.upper()
+        ingested = datetime.now(timezone.utc)
+        out: list[dict] = []
+
+        eps = await self._safe_get(
+            "/stock/eps-estimate", {"symbol": sym, "freq": freq}
+        )
+        if isinstance(eps, dict):
+            for item in eps.get("data", []) or []:
+                period = str(item.get("period", "")).strip()
+                if not period:
+                    continue
+                out.append(
+                    {
+                        "vendor_symbol": sym,
+                        "vendor": "finnhub",
+                        "metric": "eps",
+                        "snapshot_date": snap,
+                        "ingested_at": ingested,
+                        "freq": freq,
+                        "period": period,
+                        "fiscal_year": int(item["year"]) if item.get("year") is not None else None,
+                        "fiscal_quarter": int(item["quarter"])
+                        if item.get("quarter") is not None
+                        else None,
+                        "estimate_avg": self._num(item.get("epsAvg")),
+                        "estimate_high": self._num(item.get("epsHigh")),
+                        "estimate_low": self._num(item.get("epsLow")),
+                        "number_analysts": int(item["numberAnalysts"])
+                        if item.get("numberAnalysts") is not None
+                        else None,
+                        "raw_payload_hash": payload_hash(item),
+                        "source_endpoint": "/stock/eps-estimate",
+                    }
+                )
+
+        rev = await self._safe_get(
+            "/stock/revenue-estimate", {"symbol": sym, "freq": freq}
+        )
+        if isinstance(rev, dict):
+            for item in rev.get("data", []) or []:
+                period = str(item.get("period", "")).strip()
+                if not period:
+                    continue
+                out.append(
+                    {
+                        "vendor_symbol": sym,
+                        "vendor": "finnhub",
+                        "metric": "revenue",
+                        "snapshot_date": snap,
+                        "ingested_at": ingested,
+                        "freq": freq,
+                        "period": period,
+                        "fiscal_year": int(item["year"]) if item.get("year") is not None else None,
+                        "fiscal_quarter": int(item["quarter"])
+                        if item.get("quarter") is not None
+                        else None,
+                        "estimate_avg": self._num(item.get("revenueAvg")),
+                        "estimate_high": self._num(item.get("revenueHigh")),
+                        "estimate_low": self._num(item.get("revenueLow")),
+                        "number_analysts": int(item["numberAnalysts"])
+                        if item.get("numberAnalysts") is not None
+                        else None,
+                        "raw_payload_hash": payload_hash(item),
+                        "source_endpoint": "/stock/revenue-estimate",
+                    }
+                )
+        return out
 
     async def get_price_target(self, ticker: str, as_of: date | None = None) -> list[dict]:
         """Consensus price target (current snapshot)."""

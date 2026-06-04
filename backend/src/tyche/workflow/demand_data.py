@@ -27,6 +27,7 @@ from tyche.market_data.catalyst_store import (
     records_from_classification,
 )
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
+from tyche.market_data.estimate_snapshot_store import EstimateSnapshotStore
 from tyche.market_data.estimates_store import EstimatesStore
 from tyche.market_data.dual_class import finnhub_symbol_candidates
 from tyche.market_data.fundamentals_store import FundamentalsStore
@@ -281,6 +282,7 @@ async def ingest_demand_data(
 
     fund_store = FundamentalsStore(data_dir=settings.data_dir)
     est_store = EstimatesStore(data_dir=settings.data_dir)
+    est_snap_store = EstimateSnapshotStore(data_dir=settings.data_dir)
     si_store = ShortInterestStore(data_dir=settings.data_dir)
     cat_store = CatalystSignalStore(data_dir=settings.data_dir) if benzinga else None
 
@@ -383,8 +385,22 @@ async def ingest_demand_data(
     async def _estimates(ticker: str) -> None:
         try:
             est_rows = await _fetch_estimate_rows(ticker)
+            wrote = False
             if est_rows:
                 await asyncio.to_thread(est_store.write_records, ticker, pd.DataFrame(est_rows))
+                wrote = True
+            if finnhub is not None:
+                for sym in finnhub_symbol_candidates(ticker):
+                    snap_rows = await finnhub.get_consensus_snapshot_rows(sym, as_of=as_of)
+                    if snap_rows:
+                        await asyncio.to_thread(
+                            est_snap_store.write_snapshots,
+                            ticker,
+                            pd.DataFrame(snap_rows),
+                        )
+                        wrote = True
+                        break
+            if wrote:
                 counts["estimates"] += 1
         except Exception:
             logger.warning("demand_estimates_failed", ticker=ticker, exc_info=True)

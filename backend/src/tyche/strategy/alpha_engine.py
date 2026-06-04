@@ -136,6 +136,8 @@ class AlphaSignal:
     demand: DemandDimensions = field(default_factory=DemandDimensions)
     demand_multiplier: float | None = None
     as_of_date: date | None = None
+    score_percentile: float | None = None
+    demand_adjusted_extension_applied: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -156,6 +158,8 @@ class AlphaSignal:
                 d[k] = round(d[k], 4)
         if d["institutional_pct"] is not None:
             d["institutional_pct"] = round(d["institutional_pct"], 4)
+        if d["score_percentile"] is not None:
+            d["score_percentile"] = round(d["score_percentile"], 4)
         d["last_close"] = round(self.last_close, 2)
         d["as_of_date"] = self.as_of_date.isoformat() if self.as_of_date else None
         return d
@@ -184,10 +188,17 @@ class AlphaScoreEngine:
         strong_buy_threshold: float = 72.0,
         buy_threshold: float = 58.0,
         watch_threshold: float = 44.0,
+        *,
+        percentile_signals: bool = False,
+        demand_adjusted_extension: bool = False,
+        demand_mult_ceil_discovery: float = _DEMAND_MULT_CEIL,
     ) -> None:
         self._strong_buy = strong_buy_threshold
         self._buy = buy_threshold
         self._watch = watch_threshold
+        self._percentile_signals = percentile_signals
+        self._demand_adjusted_extension = demand_adjusted_extension
+        self._demand_mult_ceil_discovery = demand_mult_ceil_discovery
 
     def score_from_features(
         self,
@@ -233,21 +244,29 @@ class AlphaScoreEngine:
             else:
                 composite = factor_blend
 
-            # Anti-chase: demote parabolic / over-extended setups so the score
-            # ranks true demand over "already ran". Penalty multiplier in
-            # [_OVEREXTENSION_FLOOR, 1].
-            overext = self._overextension(row)
-            penalty = 1.0 - (1.0 - _OVEREXTENSION_FLOOR) * overext
-            composite *= penalty
-
-            # Regime router + demand sub-model: scale the composite by the
-            # regime-appropriate net demand evidence. Defaults to 1.0 when no
-            # demand data is present (v1-identical).
             regime = self._classify_regime(row)
             dims = self._demand_dimensions(row, regime)
+
+            dae_applied = False
+            if self._demand_adjusted_extension:
+                price_mom = 2.0 * factors.momentum - 1.0
+                demand_mom = dims.net
+                dae = max(-1.0, min(1.0, price_mom - demand_mom))
+                penalty = 1.0 - 0.45 * max(0.0, dae) + 0.30 * max(0.0, -dae)
+                penalty = max(_OVEREXTENSION_FLOOR, min(1.30, penalty))
+                overext = self._overextension(row)
+                dae_applied = True
+            else:
+                overext = self._overextension(row)
+                penalty = 1.0 - (1.0 - _OVEREXTENSION_FLOOR) * overext
+            composite *= penalty
+
+            mult_ceil = _DEMAND_MULT_CEIL
+            if self._demand_adjusted_extension and _present_demand_dimensions(dims) >= 2:
+                mult_ceil = self._demand_mult_ceil_discovery
             demand_mult = max(
                 _DEMAND_MULT_FLOOR,
-                min(_DEMAND_MULT_CEIL, 1.0 + _DEMAND_SENSITIVITY * dims.net),
+                min(mult_ceil, 1.0 + _DEMAND_SENSITIVITY * dims.net),
             )
             composite = min(1.0, composite * demand_mult)
 
@@ -291,9 +310,30 @@ class AlphaScoreEngine:
                 demand=dims,
                 demand_multiplier=round(demand_mult, 4),
                 as_of_date=as_of if isinstance(as_of, date) else None,
+                demand_adjusted_extension_applied=dae_applied,
             ))
 
+        if self._percentile_signals and len(signals) >= 2:
+            self.apply_percentile_signals(signals)
+
         return signals
+
+    def apply_percentile_signals(self, signals: list[AlphaSignal]) -> None:
+        """Re-classify signals by cross-sectional score percentile (discovery)."""
+        if len(signals) < 2:
+            return
+        scores = pd.Series([s.alpha_score for s in signals], dtype=float)
+        pct = scores.rank(pct=True, method="average")
+        for sig, p in zip(signals, pct, strict=True):
+            sig.score_percentile = round(float(p), 4)
+            if p >= 0.99:
+                sig.signal = "strong_buy"
+            elif p >= 0.95:
+                sig.signal = "buy"
+            elif p >= 0.85:
+                sig.signal = "watch"
+            else:
+                sig.signal = "avoid"
 
     @staticmethod
     def _classify_regime(row: pd.Series) -> str:
@@ -515,6 +555,34 @@ class AlphaScoreEngine:
         if alpha_score >= self._watch:
             return "watch"
         return "avoid"
+
+
+def build_alpha_score_engine(
+    *,
+    discovery_enabled: bool = False,
+    percentile_signals: bool = False,
+    demand_adjusted_extension: bool = False,
+    demand_mult_ceil_discovery: float = _DEMAND_MULT_CEIL,
+) -> AlphaScoreEngine:
+    """Construct engine; discovery sub-flags apply only when *discovery_enabled*."""
+    if not discovery_enabled:
+        return AlphaScoreEngine()
+    return AlphaScoreEngine(
+        percentile_signals=percentile_signals,
+        demand_adjusted_extension=demand_adjusted_extension,
+        demand_mult_ceil_discovery=demand_mult_ceil_discovery,
+    )
+
+
+def _present_demand_dimensions(dims: DemandDimensions) -> int:
+    """Count independent demand dimensions with non-neutral evidence."""
+    n = 0
+    for val in (dims.fund, dims.est, dims.catalyst, dims.policy, dims.squeeze):
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            continue
+        if abs(float(val)) > 1e-6:
+            n += 1
+    return n
 
 
 def _opt(val: Any) -> float | None:

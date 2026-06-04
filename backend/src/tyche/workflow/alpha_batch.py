@@ -20,7 +20,8 @@ import structlog
 from tyche.market_data.alpha_store import AlphaSignalStore
 from tyche.ml.dataset import build_latest_features
 from tyche.ml.xgb_baseline import ALPHA_SUSTAINED_TARGETS, ALPHA_TARGETS
-from tyche.strategy.alpha_engine import AlphaScoreEngine
+from tyche.config import TycheSettings
+from tyche.strategy.alpha_engine import AlphaScoreEngine, build_alpha_score_engine
 
 logger = structlog.get_logger()
 
@@ -97,6 +98,7 @@ def run_alpha_batch(
     predictor: Any | None = None,
     persist: bool = True,
     variants: list[str] | None = None,
+    settings: TycheSettings | None = None,
 ) -> dict[str, Any]:
     """Compute and (optionally) persist directional alpha signals.
 
@@ -109,6 +111,13 @@ def run_alpha_batch(
     the "peak" variant; other variants load their own models.
     """
     t0 = time.time()
+    if engine is None and settings is not None:
+        engine = build_alpha_score_engine(
+            discovery_enabled=settings.alpha_discovery_enabled,
+            percentile_signals=settings.alpha_percentile_signals_enabled,
+            demand_adjusted_extension=settings.alpha_demand_adjusted_extension_enabled,
+            demand_mult_ceil_discovery=settings.alpha_demand_mult_ceil_discovery,
+        )
     engine = engine or AlphaScoreEngine()
     variants = variants or ["peak"]
 

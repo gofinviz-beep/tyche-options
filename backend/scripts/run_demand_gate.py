@@ -54,7 +54,17 @@ def main() -> None:
     parser.add_argument(
         "--results-dir", default="data/ml/alpha_results", help="Directory for reports"
     )
-    parser.add_argument("--min-market-cap", type=float, default=4e9)
+    parser.add_argument(
+        "--min-market-cap",
+        type=float,
+        default=2e9,
+        help="Min market cap (default $2B). Use --discovery-train for $250M discovery floor.",
+    )
+    parser.add_argument(
+        "--discovery-train",
+        action="store_true",
+        help="Use alpha_discovery_train_min_market_cap_millions from config",
+    )
     parser.add_argument("--max-tickers", type=int, default=None, help="Limit tickers (smoke)")
     parser.add_argument("--train-days", type=int, default=252)
     parser.add_argument("--test-days", type=int, default=63)
@@ -74,6 +84,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    from tyche.config import get_settings
     from tyche.ml.dataset import build_dataset, load_dataset, save_dataset
     from tyche.ml.xgb_baseline import (
         ALPHA_SUSTAINED_TARGETS,
@@ -81,6 +92,12 @@ def main() -> None:
         run_demand_baselines,
         train_production_model,
     )
+
+    settings = get_settings()
+    min_cap = args.min_market_cap
+    if args.discovery_train:
+        min_cap = settings.alpha_discovery_train_min_market_cap_millions * 1e6
+    logger.info("train_universe", min_market_cap=min_cap, discovery_train=args.discovery_train)
 
     t0 = time.time()
 
@@ -92,12 +109,12 @@ def main() -> None:
         logger.info(
             "building_dataset",
             data_dir=args.data_dir,
-            min_market_cap=args.min_market_cap,
+            min_market_cap=min_cap,
             max_tickers=args.max_tickers,
         )
         dataset = build_dataset(
             data_dir=args.data_dir,
-            min_market_cap=args.min_market_cap,
+            min_market_cap=min_cap,
             max_tickers=args.max_tickers,
             include_neighbors=True,
             include_momentum=True,
@@ -122,6 +139,9 @@ def main() -> None:
         train_days=args.train_days,
         test_days=args.test_days,
         output_dir=args.results_dir,
+        use_class_weighting=settings.alpha_class_weighting_enabled,
+        use_purged_splits=settings.alpha_purged_walk_forward_enabled,
+        use_missingness_indicators=settings.alpha_discovery_enabled,
     )
     if not reports:
         logger.error("no_reports", targets=targets)
@@ -172,6 +192,8 @@ def main() -> None:
                 target=target,
                 feature_cols=feature_cols,
                 data_dir=args.data_dir,
+                use_class_weighting=settings.alpha_class_weighting_enabled,
+                use_missingness_indicators=settings.alpha_discovery_enabled,
             )
             promoted.append(target)
             print(f"Saved: data/ml/models/{target}.json")

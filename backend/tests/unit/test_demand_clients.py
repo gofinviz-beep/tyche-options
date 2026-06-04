@@ -553,7 +553,21 @@ class TestClassifyGuidance:
         assert len(rows) == 1
         assert rows[0]["kind"] == "demand"
         assert rows[0]["tag"] == "guidance_raise"
-        assert rows[0]["signed_impact"] == pytest.approx(0.9)
+        assert rows[0]["signed_impact"] > 0.5
+
+
+class TestGuidanceImpactTransform:
+    def test_tail_preserving_ordering(self) -> None:
+        from tyche.market_data.benzinga import _pct_verdict
+
+        full = 0.10
+        impacts = []
+        for pct in (0.006, 0.05, 0.11, 0.50, 2.00):
+            v = _pct_verdict(1.0 + pct, 1.0, full)
+            assert v is not None
+            impacts.append(v[1])
+        assert impacts[0] < impacts[1] < impacts[2] < impacts[3] < impacts[4]
+        assert all(0.0 <= x <= 1.0 for x in impacts)
 
 
 class TestDeriveGuidanceCatalysts:

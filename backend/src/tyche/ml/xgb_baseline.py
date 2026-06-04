@@ -81,6 +81,52 @@ _MULTICLASS_XGB_PARAMS: dict = {
     "num_class": 3,
 }
 
+# Coverage-sensitive columns for missingness indicators (train/serve parity).
+MISSINGNESS_INDICATOR_COLS: list[str] = [
+    "e_eps_revision_90d",
+    "e_rev_revision_90d",
+    "e_rec_score",
+    "e_price_target_upside",
+    "f_rev_growth_yoy",
+    "si_days_to_cover",
+]
+
+
+def add_missingness_indicators(
+    X: pd.DataFrame,
+    cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Add ``{col}__isna`` indicator columns for present base features."""
+    out = X.copy()
+    for c in cols or MISSINGNESS_INDICATOR_COLS:
+        if c in out.columns:
+            out[f"{c}__isna"] = out[c].isna().astype(np.int8)
+    return out
+
+
+def _scale_pos_weight_for_labels(y: pd.Series) -> float | None:
+    """Rare-class weight for binary targets; capped at 50."""
+    pos = float((y == 1).sum())
+    neg = float((y == 0).sum())
+    if pos <= 0:
+        return None
+    return min(max(neg / pos, 1.0), 50.0)
+
+
+def _prepare_feature_matrix(
+    frame: pd.DataFrame,
+    feature_cols: list[str],
+    *,
+    use_missingness_indicators: bool,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Select features, optionally add missingness indicators, fill sentinel."""
+    cols = [c for c in feature_cols if c in frame.columns]
+    X = frame[cols].copy()
+    if use_missingness_indicators:
+        X = add_missingness_indicators(X, MISSINGNESS_INDICATOR_COLS)
+        cols = list(X.columns)
+    return X.fillna(-999), cols
+
 
 @dataclass
 class ModelResult:
@@ -305,6 +351,11 @@ def walk_forward_evaluate(
     step_days: int | None = None,
     xgb_params: dict | None = None,
     model_name: str = "xgb_baseline",
+    *,
+    use_class_weighting: bool = True,
+    use_missingness_indicators: bool = False,
+    use_purged_splits: bool = False,
+    embargo_days: int | None = None,
 ) -> BaselineReport:
     """Run walk-forward evaluation of an XGBoost model.
 
@@ -374,13 +425,30 @@ def walk_forward_evaluate(
         feature_set=feature_set_name,
     )
 
-    start = 0
-    window_id = 0
+    if use_purged_splits:
+        from tyche.ml.validation import parse_label_horizon_days, purged_walk_forward_splits
 
-    while start + train_days + test_days <= len(all_dates):
-        train_date_list = all_dates[start : start + train_days]
-        test_date_list = all_dates[start + train_days : start + train_days + test_days]
+        embargo = (
+            embargo_days
+            if embargo_days is not None
+            else (parse_label_horizon_days(target) or 0)
+        )
+        date_windows = purged_walk_forward_splits(
+            all_dates, train_days, test_days, embargo, step_days
+        )
+    else:
+        date_windows = []
+        start = 0
+        while start + train_days + test_days <= len(all_dates):
+            date_windows.append(
+                (
+                    all_dates[start : start + train_days],
+                    all_dates[start + train_days : start + train_days + test_days],
+                )
+            )
+            start += step_days
 
+    for window_id, (train_date_list, test_date_list) in enumerate(date_windows):
         train_mask = valid["_date"].isin(set(train_date_list))
         test_mask = valid["_date"].isin(set(test_date_list))
 
@@ -388,26 +456,47 @@ def walk_forward_evaluate(
         test_df = valid[test_mask]
 
         if train_df.empty or test_df.empty:
-            start += step_days
-            window_id += 1
             continue
 
-        X_train = train_df[feature_cols].copy()
         y_train = train_df[target].copy()
-        X_test = test_df[feature_cols].copy()
         y_test = test_df[target].copy()
 
         if is_multiclass:
             y_train = y_train.astype(int) + 1
             y_test = y_test.astype(int) + 1
 
-        X_train = X_train.fillna(-999)
-        X_test = X_test.fillna(-999)
+        X_train, train_cols = _prepare_feature_matrix(
+            train_df,
+            feature_cols,
+            use_missingness_indicators=use_missingness_indicators,
+        )
+        X_test, _ = _prepare_feature_matrix(
+            test_df,
+            feature_cols,
+            use_missingness_indicators=use_missingness_indicators,
+        )
+        for c in train_cols:
+            if c not in X_test.columns:
+                X_test[c] = -999
+        X_test = X_test[train_cols]
+
+        fold_params = dict(params)
+        if use_class_weighting and not is_multiclass:
+            spw = _scale_pos_weight_for_labels(y_train)
+            if spw is not None and "scale_pos_weight" not in fold_params:
+                fold_params["scale_pos_weight"] = spw
+                logger.info(
+                    "walk_forward_scale_pos_weight",
+                    target=target,
+                    window=window_id,
+                    scale_pos_weight=round(spw, 2),
+                )
 
         t0 = time.time()
-        model = xgb.XGBClassifier(**params)
+        model = xgb.XGBClassifier(**fold_params)
         model.fit(
-            X_train, y_train,
+            X_train,
+            y_train,
             eval_set=[(X_test, y_test)],
             verbose=False,
         )
@@ -416,9 +505,24 @@ def walk_forward_evaluate(
         y_pred = model.predict(X_test)
 
         acc = accuracy_score(y_test, y_pred) * 100
-        prec = precision_score(y_test, y_pred, average="binary" if not is_multiclass else "macro", zero_division=0) * 100
-        rec = recall_score(y_test, y_pred, average="binary" if not is_multiclass else "macro", zero_division=0) * 100
-        f1 = f1_score(y_test, y_pred, average="binary" if not is_multiclass else "macro", zero_division=0)
+        prec = precision_score(
+            y_test,
+            y_pred,
+            average="binary" if not is_multiclass else "macro",
+            zero_division=0,
+        ) * 100
+        rec = recall_score(
+            y_test,
+            y_pred,
+            average="binary" if not is_multiclass else "macro",
+            zero_division=0,
+        ) * 100
+        f1 = f1_score(
+            y_test,
+            y_pred,
+            average="binary" if not is_multiclass else "macro",
+            zero_division=0,
+        )
 
         auc_val = 0.0
         try:
@@ -431,7 +535,7 @@ def walk_forward_evaluate(
         except (ValueError, IndexError):
             pass
 
-        importance = dict(zip(feature_cols, model.feature_importances_))
+        importance = dict(zip(train_cols, model.feature_importances_))
 
         result = ModelResult(
             window_id=window_id,
@@ -460,10 +564,8 @@ def walk_forward_evaluate(
             accuracy=round(acc, 1),
             auc=round(auc_val, 4),
             train_time_s=round(train_time, 1),
+            purged=use_purged_splits,
         )
-
-        start += step_days
-        window_id += 1
 
     return report
 
@@ -474,6 +576,9 @@ def train_production_model(
     feature_cols: list[str] | None = None,
     xgb_params: dict | None = None,
     data_dir: str = "data",
+    *,
+    use_class_weighting: bool = True,
+    use_missingness_indicators: bool = False,
 ) -> "xgb.XGBClassifier | None":
     """Train a final production model on the full dataset and persist it.
 
@@ -504,10 +609,27 @@ def train_production_model(
         logger.error("train_production_no_valid_rows", target=target)
         return None
 
-    params = dict(xgb_params or _DEFAULT_XGB_PARAMS)
+    is_multiclass = target.startswith("direction_")
+    params = dict(
+        xgb_params or (_MULTICLASS_XGB_PARAMS if is_multiclass else _DEFAULT_XGB_PARAMS)
+    )
 
-    X = valid[feature_cols].fillna(-999)
+    X, feature_cols = _prepare_feature_matrix(
+        valid,
+        feature_cols,
+        use_missingness_indicators=use_missingness_indicators,
+    )
     y = valid[target]
+
+    if use_class_weighting and not is_multiclass:
+        spw = _scale_pos_weight_for_labels(y)
+        if spw is not None and "scale_pos_weight" not in params:
+            params["scale_pos_weight"] = spw
+            logger.info(
+                "train_scale_pos_weight",
+                target=target,
+                scale_pos_weight=round(spw, 2),
+            )
 
     logger.info(
         "train_production_start",
@@ -622,6 +744,10 @@ def run_demand_baselines(
     train_days: int = 252,
     test_days: int = 63,
     output_dir: str | Path | None = None,
+    *,
+    use_class_weighting: bool = True,
+    use_purged_splits: bool = True,
+    use_missingness_indicators: bool = True,
 ) -> list[BaselineReport]:
     """Ablation: momentum-only vs full Demand Conviction feature set.
 
@@ -651,6 +777,11 @@ def run_demand_baselines(
                 train_days=train_days,
                 test_days=test_days,
                 model_name=f"demand_{variant}_{target}",
+                use_class_weighting=use_class_weighting,
+                use_purged_splits=use_purged_splits,
+                use_missingness_indicators=(
+                    use_missingness_indicators and variant == "demand"
+                ),
             )
             report.feature_set = variant
             report.print_report()
@@ -668,6 +799,9 @@ def run_alpha_baselines(
     train_days: int = 252,
     test_days: int = 63,
     output_dir: str | Path | None = None,
+    *,
+    use_class_weighting: bool = True,
+    use_purged_splits: bool = True,
 ) -> list[BaselineReport]:
     """Walk-forward evaluation for the directional big-move targets.
 
@@ -716,6 +850,8 @@ def run_alpha_baselines(
                 train_days=train_days,
                 test_days=test_days,
                 model_name=model_name,
+                use_class_weighting=use_class_weighting,
+                use_purged_splits=use_purged_splits,
             )
             report.feature_set = variant
             report.print_report()

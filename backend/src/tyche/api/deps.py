@@ -475,10 +475,18 @@ def get_alpha_engine(
     """Provide the directional AlphaScoreEngine singleton."""
     global _alpha_engine
     if _alpha_engine is None:
-        from tyche.strategy.alpha_engine import AlphaScoreEngine
+        from tyche.strategy.alpha_engine import build_alpha_score_engine
 
-        _alpha_engine = AlphaScoreEngine()
-        logger.info("alpha_engine_initialized")
+        _alpha_engine = build_alpha_score_engine(
+            discovery_enabled=settings.alpha_discovery_enabled,
+            percentile_signals=settings.alpha_percentile_signals_enabled,
+            demand_adjusted_extension=settings.alpha_demand_adjusted_extension_enabled,
+            demand_mult_ceil_discovery=settings.alpha_demand_mult_ceil_discovery,
+        )
+        logger.info(
+            "alpha_engine_initialized",
+            discovery=settings.alpha_discovery_enabled,
+        )
     return _alpha_engine
 
 

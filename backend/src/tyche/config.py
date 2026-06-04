@@ -359,6 +359,16 @@ class TycheSettings(BaseModel):
     # The Directional Alpha page exposes a Peak/Sustained toggle to compare them
     # live. When false, only the legacy "peak" snapshot is produced.
     alpha_sustained_enabled: bool = True
+    # --- Directional Alpha discovery mode (gated; conservative path when off) ---
+    alpha_discovery_enabled: bool = False
+    alpha_percentile_signals_enabled: bool = False
+    alpha_demand_adjusted_extension_enabled: bool = False
+    alpha_peer_tier_normalization_enabled: bool = False
+    alpha_class_weighting_enabled: bool = True
+    alpha_purged_walk_forward_enabled: bool = True
+    alpha_discovery_train_min_market_cap_millions: float = 250.0
+    alpha_demand_mult_ceil_discovery: float = 1.45
+    alpha_discovery_snapshot_enabled: bool = False
     bridge_tradier_iv_enabled: bool = True
     correlation_refresh_enabled: bool = True
     etf_refresh_enabled: bool = True

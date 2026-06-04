@@ -15,6 +15,7 @@ Degrades gracefully: an unavailable endpoint (no Benzinga subscription) yields
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from datetime import date, timedelta
 from typing import Any
@@ -176,7 +177,7 @@ def _pct_verdict(now: float | None, prev: float | None, full_pct: float) -> tupl
     if abs(pct) < _GUIDANCE_NOISE:
         return None
     catalyst = "guidance_raise" if pct > 0 else "guidance_cut"
-    impact = min(1.0, max(0.1, abs(pct) / full_pct))
+    impact = math.tanh(math.log1p(abs(pct) / full_pct))
     return catalyst, impact
 
 
