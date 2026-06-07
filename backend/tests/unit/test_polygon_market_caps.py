@@ -452,6 +452,33 @@ class TestWriteMetaPreservesMarketCap:
         assert caps["AAPL"] == 3e12, "Positive update should replace old value"
 
 
+class TestEquityTypeOverrides:
+    """ADR tickers forced to CS for filter_equity_only eligibility."""
+
+    def test_write_meta_applies_arm_cs_override(self, tmp_path):
+        from tyche.market_data.data_store import TickerMetaStore
+        from tyche.market_data.polygon import TickerInfo
+
+        store = TickerMetaStore(data_dir=str(tmp_path))
+        store.write_meta(
+            [
+                TickerInfo(
+                    ticker="ARM",
+                    name="Arm Holdings",
+                    market="stocks",
+                    locale="us",
+                    type="ADRC",
+                    active=True,
+                    primary_exchange="XNAS",
+                    market_cap=3.5e11,
+                ),
+            ]
+        )
+
+        assert store.get_ticker_types(["ARM"])["ARM"] == "CS"
+        assert "ARM" in store.filter_equity_only(["ARM", "AMD"])
+
+
 class TestConfigDefaults:
     """Verify new config fields have correct defaults."""
 

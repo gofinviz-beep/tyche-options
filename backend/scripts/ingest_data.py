@@ -183,6 +183,15 @@ async def _fetch_meta(
             count = meta.write_meta(ticker_infos)
             click.echo(f"  Stored metadata for {count:,} tickers")
 
+            from tyche.market_data.data_store import _fetch_equity_type_override_infos
+
+            override_infos = await _fetch_equity_type_override_infos(polygon)
+            if override_infos:
+                count = meta.write_meta(override_infos)
+                click.echo(
+                    f"  Applied equity type overrides for {len(override_infos):,} tickers"
+                )
+
             if backfill_caps and meta.exists:
                 from tyche.market_data.data_store import _backfill_market_caps
 

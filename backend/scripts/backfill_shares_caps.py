@@ -76,7 +76,7 @@ async def _run(tickers: list[str] | None, concurrency: int, rpm: int) -> None:
     click.echo(f"  Recomputed live market caps for {updated:,} tickers.")
 
     # Quick sanity print for a few well-known names.
-    caps = meta.get_market_caps(["MU", "WMT", "NVDA", "AAPL"])
+    caps = meta.get_market_caps(["MU", "WMT", "NVDA", "AAPL", "ARM"])
     for t, c in caps.items():
         if c:
             click.echo(f"    {t}: ${c / 1e9:,.1f}B")

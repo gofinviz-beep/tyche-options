@@ -56,7 +56,7 @@ docs: record P0.3 Finnhub estimate snapshot probe (completed)
 
 ## P1 core — status
 
-**Completed** (2026-06-03). Implemented in repo; conservative Alpha unchanged unless `alpha_discovery_enabled=true`.
+**Completed** (2026-06-03; validation accepted with caveats 2026-06-06). **Superseded by** [v8 spec](multibagger_discovery_engine_v8_cursor_composer_spec.md). Full note: [docs/alpha/p1_completion_note.md](alpha/p1_completion_note.md).
 
 | Task | Delivered |
 |------|-----------|

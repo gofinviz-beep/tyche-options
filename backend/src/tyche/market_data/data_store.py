@@ -508,6 +508,22 @@ class OHLCVStore:
         return tickers
 
 
+# Polygon classifies some large-cap NASDAQ names as ADRC; treat as CS so they
+# pass filter_equity_only() and participate in scanner/alpha/conviction pipelines.
+EQUITY_TYPE_OVERRIDES: dict[str, str] = {
+    "ARM": "CS",
+}
+
+
+def _apply_equity_type_overrides(df: pd.DataFrame) -> pd.DataFrame:
+    """Force security type for tickers in :data:`EQUITY_TYPE_OVERRIDES`."""
+    for ticker, sec_type in EQUITY_TYPE_OVERRIDES.items():
+        mask = df["ticker"] == ticker
+        if mask.any():
+            df.loc[mask, "type"] = sec_type
+    return df
+
+
 class TickerMetaStore:
     """Manages persisted ticker metadata (market cap, exchange, type).
 
@@ -633,6 +649,7 @@ class TickerMetaStore:
         combined["shares_outstanding"] = pd.to_numeric(
             combined.get("shares_outstanding"), errors="coerce"
         ).fillna(0.0)
+        combined = _apply_equity_type_overrides(combined)
 
         table = pa.Table.from_pandas(combined, schema=TICKER_META_SCHEMA)
         pq.write_table(table, self._parquet_path, compression="snappy")
@@ -1835,6 +1852,40 @@ async def bootstrap_ohlcv(
     }
 
 
+async def _fetch_equity_type_override_infos(
+    polygon: PolygonClient,
+) -> list[TickerInfo]:
+    """Fetch reference rows for ADR names that should be stored as common stock."""
+    from tyche.market_data.polygon import TickerInfo
+
+    infos: list[TickerInfo] = []
+    for ticker in EQUITY_TYPE_OVERRIDES:
+        try:
+            details = await polygon.get_ticker_details(ticker)
+        except Exception:
+            logger.warning(
+                "equity_type_override_fetch_failed",
+                ticker=ticker,
+                exc_info=True,
+            )
+            continue
+        if not details:
+            continue
+        infos.append(
+            TickerInfo(
+                ticker=str(details.get("ticker", ticker)).upper(),
+                name=str(details.get("name", ticker)),
+                market=str(details.get("market", "stocks")),
+                locale=str(details.get("locale", "us")),
+                type=str(details.get("type", "ADRC")),
+                active=bool(details.get("active", True)),
+                primary_exchange=str(details.get("primary_exchange", "")),
+                market_cap=float(details.get("market_cap", 0) or 0),
+            )
+        )
+    return infos
+
+
 async def refresh_ticker_meta(
     polygon: PolygonClient,
     meta_store: TickerMetaStore,
@@ -1859,6 +1910,14 @@ async def refresh_ticker_meta(
         if ticker_infos:
             tickers_meta = meta_store.write_meta(ticker_infos)
             logger.info("refresh_ticker_meta_complete", tickers=tickers_meta)
+        override_infos = await _fetch_equity_type_override_infos(polygon)
+        if override_infos:
+            tickers_meta = meta_store.write_meta(override_infos)
+            logger.info(
+                "refresh_ticker_meta_overrides",
+                tickers=tickers_meta,
+                symbols=sorted(EQUITY_TYPE_OVERRIDES),
+            )
     except Exception:
         logger.warning("refresh_ticker_meta_failed", exc_info=True)
 

@@ -18,7 +18,7 @@ The `OHLCVStore`, `OptionsChainStore`, `OptionsHistoryStore`, `HistoricalIVStore
 |-------|------|--------|
 | Daily OHLCV bars | `backend/data/ohlcv_daily/{TICKER}.parquet` | One Parquet per ticker |
 | Intraday 5-min bars | `backend/data/intraday_5min/{TICKER}.parquet` | One Parquet per ticker |
-| Ticker metadata | `backend/data/ticker_meta.parquet` | Single file (market cap, shares outstanding, type, exchange, sector, SIC, institutional ownership). `market_cap` is derived daily as `shares_outstanding × latest close` (Polygon's static field lags months). |
+| Ticker metadata | `backend/data/ticker_meta.parquet` | Single file (market cap, shares outstanding, type, exchange, sector, SIC, institutional ownership). `market_cap` is derived daily as `shares_outstanding × latest close` (Polygon's static field lags months). `EQUITY_TYPE_OVERRIDES` in `data_store.py` forces selected ADRs (e.g. ARM) to `type=CS` on every meta refresh. |
 | Directional alpha signals (peak) | `backend/data/alpha_signals.parquet` | Single file (big-move buy signals: alpha score, horizon, ML probabilities, demand dimensions, factors) |
 | Directional alpha signals (sustained) | `backend/data/alpha_signals_sustained.parquet` | Single file — `AlphaSignalStore(variant="sustained")`. Same schema, sustained big-move models |
 | Demand: fundamentals | `backend/data/fundamentals/{TICKER}.parquet` | One per ticker (Finnhub `/stock/financials` standardized, primary; as-reported quarterly/annual fallback; dual-class aliasing) |
@@ -81,7 +81,7 @@ from tyche.market_data.data_store import TickerMetaStore
 | Script | Purpose | Example |
 |--------|---------|---------|
 | `ingest_data.py` | OHLCV daily bars from Polygon | `--from 2026-04-20 --to 2026-04-20 --no-conviction` |
-| `ingest_options_flatfiles.py` | Options history from Massive S3 flat files + IV/derived metrics | `--from-ohlcv --include-today --days-back 3` |
+| `ingest_options_flatfiles.py` | Options history from Massive S3 flat files + IV/derived metrics | `--from-ohlcv --include-today --days-back 3`; per-ticker gap fill: `--tickers ARM --days-back 730 --force` |
 | `bridge_tradier_iv.py` | Bridge Tradier snapshots to IV pipeline (same-day) | Run after `ingest_options.py` |
 | `backfill_shares_caps.py` | Fetch shares outstanding + reprice market cap (`shares × close`) | `--tickers MU,NVDA` (default: full universe) |
 | `train_alpha.py` | Train/evaluate directional big-move models (walk-forward) | `--save-model` (also `--feature-set demand`) |
@@ -90,6 +90,14 @@ from tyche.market_data.data_store import TickerMetaStore
 | `audit_finnhub_vs_edgar.py` | Compare SEC vs Finnhub filing dates for STALE tickers | requires `TYCHE_EDGAR_USER_AGENT_EMAIL` |
 | `run_demand_gate.py` | Demand-feature walk-forward ablation + conditional promotion of `big_move_sustained_*` models | `--min-lift 0.005` |
 | `audit_estimate_snapshots.py` | Snapshot cadence + same-period revision availability (`estimate_snapshots/`) | `--tickers MU AVGO` |
+
+## Alpha / Discovery Docs
+
+| Doc | Purpose |
+|-----|---------|
+| `docs/multibagger_discovery_engine_v8_cursor_composer_spec.md` | **Current** implementation spec (P2+ next) |
+| `docs/alpha/p1_completion_note.md` | P1 validation acceptance + artifact locations |
+| `docs/alpha/estimate_snapshot_findings.md` | P0.3 Finnhub probe write-up |
 
 ## Tradier Client Setup
 
