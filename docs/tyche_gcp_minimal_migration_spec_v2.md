@@ -29,6 +29,12 @@ This is an infrastructure spec, separate from the Multi-Bagger Discovery Engine 
 
 **Demand manifest fields:** `guidance_tickers_fetched` (Benzinga returned records) vs `guidance_catalysts_written` (raise/cut rows persisted). `guidance` mirrors `guidance_catalysts_written`.
 
+**Demand gate schedule:** `tyche-run-demand-gate` is **morning only** (not evening). Evening runs `tyche-ingest-demand-data` (estimates/fundamentals ingest); gate runs **after** that data lands, in parallel with flatfiles+alpha, then before publish. Optional — publish proceeds if gate fails.
+
+**Job observability:** `tyche/ops/job_progress.py` emits `job_phase` / `job_progress` to Cloud Logging; subprocess jobs stream stdout (`gcp_jobs._run_subprocess`). See `infra/gcp/README.md` § Observability.
+
+**Local `ingest_data.py`:** passes `storage_context_from_settings()` to `OHLCVStore` / `TickerMetaStore` / `IntradayStore`. `IntradayStore` and `OptionsChainStore` use `context_for_data_access()` for `_MetadataCache` — same pattern as OHLCV; cloud batch jobs do not use `IntradayStore`.
+
 ---
 
 ## 0. North-star design
@@ -495,7 +501,7 @@ Entry point: `backend/scripts/run_gcp_job.py` → `tyche/ops/gcp_jobs.py`. Runti
 | `tyche-ingest-news` | `news_articles/`, `signals/intelligence/news.parquet` |
 | `tyche-ingest-edgar` | `filings_8k/`, `insider_transactions/`, `signals/intelligence/filings.parquet`, `insider.parquet` |
 | `tyche-alpha-batch` | `alpha_signals.parquet`, `alpha_signals_sustained.parquet` |
-| `tyche-run-demand-gate` | `ml/alpha_results/demand_gate_verdict.json` |
+| `tyche-run-demand-gate` | `ml/alpha_results/demand_gate_verdict.json`, optional `ml/models/big_move_sustained_*.json` |
 | `tyche-publish-signals` | `published/routes/*.json`, `published/manifest.json` |
 | `tyche-audit-snapshots` | `reports/estimate_snapshot_audits/`, `reports/job_health/` |
 
@@ -520,6 +526,8 @@ Cloud Workflows run **parallel** evening jobs and **parallel-then-sequential** m
 
 Sources available after market close: Polygon grouped daily, Finnhub estimates, Benzinga guidance (`GET /benzinga/v1/guidance` via Massive key), news, EDGAR.
 
+**Not in evening:** `tyche-run-demand-gate`, `tyche-ingest-options-flatfiles`, `tyche-alpha-batch`, `tyche-publish-signals`, `tyche-audit-snapshots`. Evening is ingest-only (four parallel branches above).
+
 **Morning 2:30 AM PT** — `tyche-morning-pipeline` (`infra/gcp/workflows/morning-pipeline.yaml`):
 
 | Step | Jobs |
@@ -530,11 +538,23 @@ Sources available after market close: Polygon grouped daily, Finnhub estimates, 
 
 Massive options flatfiles land ~2 AM PT; morning window starts at 2:30 AM.
 
+### Demand gate vs publish (morning)
+
+| Job | Blocks UI? | Depends on |
+|-----|------------|------------|
+| `tyche-alpha-batch` | **Yes** — Alpha page reads `alpha_signals*.parquet` | OHLCV + demand stores (evening ingest) |
+| `tyche-publish-signals` | **Yes** — frontend reads `published/routes/*.json` | Alpha batch (+ conviction/intelligence artifacts) |
+| `tyche-run-demand-gate` | **No** — retrains optional `big_move_sustained_*` XGBoost models | Fresh evening demand data; builds/reuses `ml/alpha_dataset.parquet` |
+| `tyche-ingest-options-flatfiles` | **No** for Alpha/publish — IV/options history only | Massive S3 flat file (~2 AM) |
+
+Gate runs **after** evening `ingest-demand-data` (estimates/fundamentals) and **after** the parallel flatfiles+alpha step in the workflow YAML — so it sees fresh demand Parquet and can run while alpha artifacts already exist. Typical cloud runtime **4–8h** (dataset build + 6 walk-forward runs + optional promotion). Manual recovery: alpha done → gate (optional) → publish.
+
 ### Schedule rationale
 
 - **Wall-clock:** evening jobs overlap (~3h demand + parallel news/EDGAR/OHLCV) instead of one 4h+ sequential chain.
 - **Laptop:** with `TYCHE_DATA_BACKEND=gcs`, `scheduler_enabled=false` (default) — APScheduler does not duplicate cloud work.
 - **Publish:** runs only after morning compute; fails loudly if required upstream artifacts are missing.
+- **Local CLI parity:** `scripts/ingest_data.py`, `ingest_demand_data.py`, `ingest_options_flatfiles.py`, `run_demand_gate.py` work on the laptop against `backend/data/` (`local`) or GCS (`gcs` + ADC) — independent of Cloud Run.
 
 ### Workflow gotcha
 

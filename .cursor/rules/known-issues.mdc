@@ -8,6 +8,8 @@ alwaysApply: true
 ## Backend
 
 - **GCP cloud batch (`TYCHE_DATA_BACKEND=gcs`).** Nightly ingest runs in Cloud Run Jobs (evening 6 PM + morning 2:30 AM PT workflows), not on the laptop. APScheduler auto-disables (`scheduler_enabled=false`). Deploy: `infra/gcp/README.md`. Spec: `docs/tyche_gcp_minimal_migration_spec_v2.md`.
+- **`tyche-run-demand-gate` is morning-only, not evening.** Evening runs `ingest-demand-data` (estimates/fundamentals ingest). Gate is optional in `tyche-morning-pipeline` after flatfiles+alpha; failure does not block `publish-signals`. Typical runtime 4–8h on GCS. Publish needs alpha-batch, not gate or flatfiles.
+- **`ingest_data.py` / `IntradayStore` + `_MetadataCache`.** After GCS store migration, `_MetadataCache` requires `(rel_path, StorageContext)`. `IntradayStore` and `OptionsChainStore` resolve ctx via `context_for_data_access()`; `ingest_data.py` passes `storage_context_from_settings()`. Cloud Run batch jobs do not instantiate `IntradayStore`.
 - **No SQLite in cloud intelligence jobs.** News/EDGAR rollups: Parquet articles → in-memory aggregate → `signals/intelligence/*.parquet`. Batched checkpoints every 100 tickers at `signals/intelligence/_checkpoints/*.partial.parquet`. Do not call `rebuild_signals()` / `news.db` in GCS mode.
 - **Cloud Run Jobs use `--tasks=1`.** Parallelism is in-process asyncio + workflow-level job overlap, not multi-container sharding. GCS per-ticker Parquet I/O is the main slowdown vs laptop NVMe — see spec §21 (TODO: multi-task ingest).
 - **Workflow parallel branches need unique step names.** Duplicate `- run:` steps in `parallel` blocks fail deploy with `duplicate step name 'run'`.

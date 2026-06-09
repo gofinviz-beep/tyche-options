@@ -21,13 +21,27 @@ description: >-
 
 ```text
 Cloud Scheduler (Tue–Sat PT)
-  6:00 PM → tyche-evening-pipeline (parallel)
-  2:30 AM → tyche-morning-pipeline (parallel then sequential)
+  6:00 PM → tyche-evening-pipeline (4 parallel — ingest only)
+            ingest-data | ingest-demand-data | ingest-news | ingest-edgar
+            (NOT: flatfiles, alpha, demand-gate, publish)
+  2:30 AM → tyche-morning-pipeline
+            parallel: flatfiles + alpha-batch
+            optional: run-demand-gate (~4–8h; failure OK)
+            sequential: publish-signals → audit-snapshots
     → Cloud Run Jobs (tyche-jobs SA)
     → gs://tyche-data-prod/ (flat paths = backend/data/ layout)
     → runs/{job}/{run_id}/manifest.json
 Local backend: TYCHE_DATA_BACKEND=gcs → reads published/ + signals/ only
+Local CLI: same scripts (ingest_data, demand_data, flatfiles, run_demand_gate)
+           against local data/ or GCS via ADC
 ```
+
+### Publish prerequisites
+
+| Required before publish | Optional |
+|-------------------------|----------|
+| `tyche-alpha-batch` | `tyche-run-demand-gate` (sustained ML models) |
+| Evening ingest (for fresh demand/conviction inputs) | `tyche-ingest-options-flatfiles` (IV/options only) |
 
 ## Jobs (10)
 
@@ -59,6 +73,10 @@ source infra/gcp/config.env
 7. **Flatfiles looked idle** — was subprocess `capture_output=True` + silent OHLCV preload.
    Fixed: `_run_subprocess` streams stdout; `ingest_options_flatfiles.py` logs
    `preload_ohlcv` / `download_dates` / `iv_extraction` via `job_progress`.
+8. **Demand gate is morning-only** — evening runs `ingest-demand-data` (estimates),
+   not `run-demand-gate`. Gate is optional before publish; UI needs alpha-batch + publish.
+9. **`ingest_data.py` locally** — pass `storage_context_from_settings()` to stores;
+   `IntradayStore` needs `ctx` for `_MetadataCache` (cloud jobs don't use intraday).
 
 ## Observability
 

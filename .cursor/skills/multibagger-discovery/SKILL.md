@@ -52,7 +52,9 @@ Live scoring / alpha batch unchanged when `alpha_discovery_enabled=false`. Locke
 
 Batch demand/options/alpha runs in Cloud Run when `TYCHE_DATA_BACKEND=gcs`.
 Use skill `gcp-cloud-ops` for deploy, manifests, workflow issues, and Cloud
-Logging queries (`job_phase` / `job_progress`). `ingest-demand-data` writes
+Logging queries (`job_phase` / `job_progress`). **Evening:** `ingest-demand-data`
+(estimates/fundamentals). **Morning:** optional `run-demand-gate` (~4–8h) after
+flatfiles+alpha — not required for `publish-signals`. `ingest-demand-data` writes
 Benzinga guidance → `catalyst_signals/`; manifest tracks
 `guidance_tickers_fetched` vs `guidance_catalysts_written`.
 

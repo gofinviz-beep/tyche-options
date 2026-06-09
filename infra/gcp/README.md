@@ -31,9 +31,11 @@ Cloud Scheduler (Tue–Sat)
 | Step | Job | Outputs |
 |------|-----|---------|
 | Parallel | `tyche-ingest-options-flatfiles` + `tyche-alpha-batch` | options/IV/derived + `alpha_signals*.parquet` |
-| Optional | `tyche-run-demand-gate` | `ml/alpha_results/` |
+| Optional | `tyche-run-demand-gate` | `ml/alpha_results/`, optional `ml/models/big_move_sustained_*` (~4–8h) |
 | Sequential | `tyche-publish-signals` | `published/routes/*.json` |
 | Sequential | `tyche-audit-snapshots` | estimate snapshot audits |
+
+**Not in evening:** demand gate, flatfiles, alpha, publish. Evening `ingest-demand-data` ingests estimates; gate runs the next morning (optional).
 
 Intelligence rollups are computed **in memory from article/filing Parquet** — no SQLite in
 cloud jobs. Every 100 tickers, checkpoints flush to

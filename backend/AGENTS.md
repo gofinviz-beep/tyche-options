@@ -102,7 +102,9 @@ When `TYCHE_DATA_BACKEND=gcs`, batch ingest runs in **Cloud Run Jobs** — not A
 - **Intelligence:** `ops/intelligence_export.py` — Parquet rollups, no `news.db` in cloud
 - **Publish:** `workflow/publish_signals.py` → `published/routes/*.json`
 - **Storage:** `tyche/storage/StoreBackend` — all stores GCS-aware
-- **Scheduler:** evening 6 PM + morning 2:30 AM PT (Tue–Sat); `scheduler_enabled=false` in GCS mode
+- **Scheduler:** evening 6 PM (ingest-data, ingest-demand-data, news, edgar — **no demand gate**) + morning 2:30 AM (flatfiles + alpha → optional demand-gate → publish → audit); `scheduler_enabled=false` in GCS mode
+- **Demand gate:** morning-only optional job; retrains `big_move_sustained_*` models (~4–8h cloud). Publish needs alpha-batch, not gate.
+- **Local ingest:** `ingest_data.py` uses `storage_context_from_settings()`; `IntradayStore` requires `ctx` for `_MetadataCache`
 
 ## Automated Data Pipelines (local APScheduler)
 

@@ -11,6 +11,10 @@ When `TYCHE_DATA_BACKEND=gcs`, **batch ingest runs in Cloud Run Jobs** — not o
 | **6:00 PM** | `tyche-evening-pipeline` | ingest-data, ingest-demand-data, ingest-news, ingest-edgar |
 | **2:30 AM** | `tyche-morning-pipeline` | options-flatfiles + alpha-batch → demand-gate (optional) → publish-signals → audit |
 
+**Evening does not include demand gate** — only `ingest-data`, `ingest-demand-data`, `ingest-news`, `ingest-edgar`. Gate is morning-only (optional ML retrain after fresh estimates). **Publish does not require gate**; it requires alpha-batch.
+
+**Manual recovery order:** alpha-batch succeeded → `tyche-run-demand-gate` (optional, ~4–8h) → `tyche-publish-signals` → `tyche-audit-snapshots`. Flatfiles can finish in parallel; not a publish prerequisite.
+
 - **Deploy:** `infra/gcp/README.md`
 - **Spec:** `docs/tyche_gcp_minimal_migration_spec_v2.md`
 - **Manifests:** `gs://tyche-data-prod/runs/{job_name}/{run_id}/manifest.json`
@@ -20,6 +24,18 @@ When `TYCHE_DATA_BACKEND=gcs`, **batch ingest runs in Cloud Run Jobs** — not o
 - **TODO:** multi-task sharding for faster GCS ingest (spec §21)
 
 Local backend reads `published/routes/*.json` and `signals/` from GCS via ADC (`gcloud auth application-default login`).
+
+**Local scripts still work** with `TYCHE_DATA_BACKEND=local` (writes `backend/data/`) or `gcs` (writes bucket via ADC). Examples:
+
+```bash
+cd backend
+.venv/bin/python scripts/ingest_data.py --no-conviction
+.venv/bin/python scripts/ingest_demand_data.py --no-fundamentals --no-short-interest --no-guidance  # estimates only
+.venv/bin/python scripts/ingest_options_flatfiles.py --from-ohlcv --include-today --days-back 3
+.venv/bin/python scripts/run_demand_gate.py
+```
+
+`ingest_data.py` passes `storage_context_from_settings()` to OHLCV/meta/intraday stores (required after `_MetadataCache` GCS migration).
 
 ---
 

@@ -29,6 +29,7 @@ sys.path.insert(0, "src")
 
 from tyche.config import TycheSettings, get_settings
 from tyche.conviction.engine import ConvictionEngine
+from tyche.storage.paths import storage_context_from_settings
 from tyche.market_data.data_store import IntradayStore, OHLCVStore, TickerMetaStore, bootstrap_ohlcv
 from tyche.market_data.polygon import PolygonClient
 
@@ -473,9 +474,10 @@ async def _run(
     correlations: bool = False,
 ) -> None:
     settings = get_settings()
-    store = OHLCVStore(data_dir=settings.data_dir)
-    meta_store = TickerMetaStore(data_dir=settings.data_dir)
-    intraday_store = IntradayStore(data_dir=settings.data_dir)
+    ctx = storage_context_from_settings(settings)
+    store = OHLCVStore(data_dir=settings.data_dir, ctx=ctx)
+    meta_store = TickerMetaStore(data_dir=settings.data_dir, ctx=ctx)
+    intraday_store = IntradayStore(data_dir=settings.data_dir, ctx=ctx)
 
     if status:
         _print_status(store, meta_store, intraday_store)

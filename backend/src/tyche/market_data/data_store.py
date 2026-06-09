@@ -39,7 +39,7 @@ from tyche.storage import (
     write_json,
 )
 from tyche.storage.paths import StorageContext
-from tyche.storage.store_io import StoreBackend
+from tyche.storage.store_io import StoreBackend, context_for_data_access
 
 if TYPE_CHECKING:
     from tyche.market_data.polygon import DailyBar, IntradayBar, PolygonClient, TickerInfo
@@ -1106,13 +1106,23 @@ class IntradayStore:
     Per-ticker partitioning enables parallel writes and limits blast radius.
     """
 
-    def __init__(self, data_dir: str = "data", multiplier: int = 5) -> None:
-        self._data_dir = Path(data_dir)
+    def __init__(
+        self,
+        data_dir: str = "data",
+        multiplier: int = 5,
+        ctx: StorageContext | None = None,
+    ) -> None:
+        self._ctx = context_for_data_access(data_dir, ctx)
         self._multiplier = multiplier
-        self._store_dir = self._data_dir / f"intraday_{multiplier}min"
+        local_root = self._ctx.local_root or Path(data_dir)
+        self._data_dir = local_root
+        self._store_dir = local_root / f"intraday_{multiplier}min"
         self._store_dir.mkdir(parents=True, exist_ok=True)
-        self._legacy_path = self._data_dir / f"intraday_{multiplier}min.parquet"
-        self._cache = _MetadataCache(self._store_dir / "_meta.json")
+        self._legacy_path = local_root / f"intraday_{multiplier}min.parquet"
+        self._cache = _MetadataCache(
+            f"intraday_{multiplier}min/_meta.json",
+            self._ctx,
+        )
 
     @property
     def store_dir(self) -> Path:
@@ -1366,11 +1376,17 @@ class OptionsChainStore:
 
     DEDUP_COLS = ["snapshot_date", "expiration", "strike", "option_type"]
 
-    def __init__(self, data_dir: str = "data") -> None:
-        self._data_dir = Path(data_dir)
-        self._store_dir = self._data_dir / "options_chains"
+    def __init__(
+        self,
+        data_dir: str = "data",
+        ctx: StorageContext | None = None,
+    ) -> None:
+        self._ctx = context_for_data_access(data_dir, ctx)
+        local_root = self._ctx.local_root or Path(data_dir)
+        self._data_dir = local_root
+        self._store_dir = local_root / "options_chains"
         self._store_dir.mkdir(parents=True, exist_ok=True)
-        self._cache = _MetadataCache(self._store_dir / "_meta.json")
+        self._cache = _MetadataCache("options_chains/_meta.json", self._ctx)
 
     @property
     def store_dir(self) -> Path:
