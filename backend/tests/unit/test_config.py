@@ -210,3 +210,31 @@ class TestInvalidation:
         invalidate_settings()
         s3 = get_settings()
         assert s3 is not s1
+
+
+class TestSchedulerGcsDefault:
+    def test_scheduler_disabled_when_data_backend_gcs(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("tyche.config._settings_cache", None)
+        monkeypatch.setattr("tyche.config._config_store", None)
+        monkeypatch.setenv("TYCHE_DB_DIR", str(tmp_path))
+        monkeypatch.setenv("TYCHE_DATA_BACKEND", "gcs")
+        monkeypatch.setenv("TYCHE_GCS_BUCKET", "tyche-data-prod")
+
+        settings = get_settings()
+        assert settings.data_backend == "gcs"
+        assert settings.scheduler_enabled is False
+
+
+class TestGcsEnvNormalization:
+    """Inline ``#`` comments in ``.env`` must not become GCS path segments."""
+
+    def test_gcs_prefix_strips_inline_comment(self) -> None:
+        env = _EnvSettings(
+            gcs_prefix="                           # leave EMPTY if upload preserved paths at bucket root",
+        )
+        assert env.gcs_prefix == ""
+
+    def test_gcs_bucket_strips_inline_comment(self) -> None:
+        env = _EnvSettings(gcs_bucket="tyche-data-prod    # e.g. tyche-data-prod")
+        assert env.gcs_bucket == "tyche-data-prod"

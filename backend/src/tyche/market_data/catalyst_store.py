@@ -18,8 +18,10 @@ from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 import structlog
+
+from tyche.storage.paths import StorageContext
+from tyche.storage.store_io import StoreBackend
 
 from tyche.analysis.catalyst_taxonomy import (
     signed_catalyst_impact,
@@ -86,17 +88,16 @@ def records_from_classification(
 class CatalystSignalStore:
     """Per-ticker demand-catalyst / policy event store."""
 
-    def __init__(self, data_dir: str = "data") -> None:
-        self._store_dir = Path(data_dir) / "catalyst_signals"
-        self._store_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        data_dir: str = "data",
+        ctx: StorageContext | None = None,
+    ) -> None:
+        self._io = StoreBackend.create("catalyst_signals", data_dir, ctx)
 
     @property
     def store_dir(self) -> Path:
-        return self._store_dir
-
-    def _ticker_path(self, ticker: str) -> Path:
-        safe = ticker.upper().replace("/", "_").replace(" ", "_")
-        return self._store_dir / f"{safe}.parquet"
+        return self._io.store_dir
 
     def write_records(self, ticker: str, df: pd.DataFrame) -> int:
         """Persist catalyst rows for a ticker. Dedupes on (event_date, kind, ref_id)."""
@@ -114,29 +115,19 @@ class CatalystSignalStore:
         if df.empty:
             return 0
 
-        path = self._ticker_path(ticker)
-        if path.exists():
-            existing = pd.read_parquet(path)
-            existing["event_date"] = pd.to_datetime(existing["event_date"]).dt.date
-            combined = pd.concat([existing, df], ignore_index=True)
-        else:
-            combined = df
-
-        combined = (
-            combined.drop_duplicates(subset=["event_date", "kind", "ref_id"], keep="last")
-            .sort_values("event_date")
-            .reset_index(drop=True)
+        return self._io.merge_write(
+            self._io.ticker_rel(ticker),
+            df,
+            CATALYST_SCHEMA,
+            ["event_date", "kind", "ref_id"],
+            sort_cols=["event_date"],
         )
-        ordered = combined[[f.name for f in CATALYST_SCHEMA]]
-        table = pa.Table.from_pandas(ordered, schema=CATALYST_SCHEMA, preserve_index=False)
-        pq.write_table(table, path, compression="snappy")
-        return len(combined)
 
     def read_ticker(self, ticker: str, as_of: date | None = None) -> pd.DataFrame:
-        path = self._ticker_path(ticker)
-        if not path.exists():
-            return pd.DataFrame(columns=[f.name for f in CATALYST_SCHEMA])
-        df = pd.read_parquet(path)
+        empty = pd.DataFrame(columns=[f.name for f in CATALYST_SCHEMA])
+        df = self._io.read_df(self._io.ticker_rel(ticker))
+        if df is None or df.empty:
+            return empty
         df["event_date"] = pd.to_datetime(df["event_date"]).dt.date
         if as_of is not None:
             df = df[df["event_date"] <= as_of]
@@ -196,8 +187,4 @@ class CatalystSignalStore:
         return out
 
     def get_all_tickers(self) -> list[str]:
-        return sorted(
-            p.stem.upper()
-            for p in self._store_dir.glob("*.parquet")
-            if not p.name.startswith("_")
-        )
+        return self._io.list_ticker_stems()

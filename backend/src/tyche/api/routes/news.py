@@ -18,6 +18,7 @@ from tyche.api.deps import (
 )
 from tyche.config import TycheSettings, get_settings
 from tyche.market_data.news_signals import get_all_signals, get_signal, rebuild_signals
+from tyche.persistence.published_routes import get_intelligence_news_rows
 from tyche.market_data.news_store import NewsArticleStore
 from tyche.schemas.news import (
     NewsArticleResponse,
@@ -34,6 +35,17 @@ async def list_news_signals(
     settings: TycheSettings = Depends(get_settings),
 ) -> list[NewsSignalResponse]:
     """Get all tickers with active news signals."""
+    published = get_intelligence_news_rows(settings=settings)
+    if published is not None:
+        rows, _layer = published
+        threshold = settings.news_risk_threshold
+        return [
+            row.model_copy(
+                update={"has_risk": row.news_impact_score < threshold},
+            )
+            for row in rows
+        ]
+
     signals = await get_all_signals()
     threshold = settings.news_risk_threshold
     return [

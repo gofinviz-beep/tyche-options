@@ -922,95 +922,103 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from tyche.config import ohlcv_refresh_time_before_flatfile
 
     scheduler = get_scheduler()
-    scheduler.schedule_morning_scan(_scheduled_morning_scan)
+    if settings.scheduler_enabled:
+        scheduler.schedule_morning_scan(_scheduled_morning_scan)
 
-    ohlcv_h, ohlcv_m = ohlcv_refresh_time_before_flatfile(
-        settings.flatfile_ingest_time,
-        settings.ohlcv_refresh_offset_minutes,
-    )
-    scheduler.schedule_ohlcv_refresh(
-        _scheduled_ohlcv_refresh,
-        hour=ohlcv_h,
-        minute=ohlcv_m,
-        daily=True,
-    )
-    scheduler.schedule_exit_monitor(_scheduled_exit_monitor)
-
-    if settings.options_snapshot_enabled and settings.tradier_api_token:
-        parts = settings.options_snapshot_time.split(":")
-        snap_h = int(parts[0]) if len(parts) >= 1 else 16
-        snap_m = int(parts[1]) if len(parts) >= 2 else 10
-        scheduler.schedule_options_snapshot(
-            _scheduled_options_snapshot, hour=snap_h, minute=snap_m
+        ohlcv_h, ohlcv_m = ohlcv_refresh_time_before_flatfile(
+            settings.flatfile_ingest_time,
+            settings.ohlcv_refresh_offset_minutes,
         )
-
-    if settings.daily_digest_enabled:
-        parts = settings.daily_digest_time.split(":")
-        digest_h = int(parts[0]) if len(parts) >= 1 else 16
-        digest_m = int(parts[1]) if len(parts) >= 2 else 0
-        scheduler.schedule_daily_digest(
-            _scheduled_daily_digest, hour=digest_h, minute=digest_m
+        scheduler.schedule_ohlcv_refresh(
+            _scheduled_ohlcv_refresh,
+            hour=ohlcv_h,
+            minute=ohlcv_m,
+            daily=True,
         )
+        scheduler.schedule_exit_monitor(_scheduled_exit_monitor)
 
-    if settings.news_ingestion_enabled:
-        scheduler.schedule_news_ingest(
-            _scheduled_news_ingest,
-            interval_minutes=settings.news_ingest_interval_minutes,
+        if settings.options_snapshot_enabled and settings.tradier_api_token:
+            parts = settings.options_snapshot_time.split(":")
+            snap_h = int(parts[0]) if len(parts) >= 1 else 16
+            snap_m = int(parts[1]) if len(parts) >= 2 else 10
+            scheduler.schedule_options_snapshot(
+                _scheduled_options_snapshot, hour=snap_h, minute=snap_m
+            )
+
+        if settings.daily_digest_enabled:
+            parts = settings.daily_digest_time.split(":")
+            digest_h = int(parts[0]) if len(parts) >= 1 else 16
+            digest_m = int(parts[1]) if len(parts) >= 2 else 0
+            scheduler.schedule_daily_digest(
+                _scheduled_daily_digest, hour=digest_h, minute=digest_m
+            )
+
+        if settings.news_ingestion_enabled:
+            scheduler.schedule_news_ingest(
+                _scheduled_news_ingest,
+                interval_minutes=settings.news_ingest_interval_minutes,
+            )
+
+        if settings.edgar_ingestion_enabled and settings.edgar_user_agent_email:
+            scheduler.schedule_edgar_ingest(
+                _scheduled_edgar_ingest,
+                interval_minutes=settings.edgar_ingest_interval_minutes,
+            )
+
+        if settings.ml_retrain_enabled:
+            parts = settings.ml_retrain_time.split(":")
+            retrain_h = int(parts[0]) if len(parts) >= 1 else 2
+            retrain_m = int(parts[1]) if len(parts) >= 2 else 0
+            scheduler.schedule_ml_retrain(
+                _scheduled_ml_retrain,
+                day=settings.ml_retrain_day_of_month,
+                hour=retrain_h,
+                minute=retrain_m,
+            )
+
+        if settings.flatfile_ingest_enabled and settings.massive_s3_access_key:
+            parts = settings.flatfile_ingest_time.split(":")
+            ff_h = int(parts[0]) if len(parts) >= 1 else 2
+            ff_m = int(parts[1]) if len(parts) >= 2 else 0
+            scheduler.schedule_flatfile_ingest(
+                _scheduled_flatfile_ingest, hour=ff_h, minute=ff_m
+            )
+
+        if settings.conviction_batch_after_ohlcv:
+            scheduler.schedule_conviction_batch(_scheduled_conviction_batch)
+
+        if getattr(settings, "alpha_batch_enabled", True) and not settings.alpha_batch_after_flatfile:
+            scheduler.schedule_alpha_batch(_scheduled_alpha_batch)
+
+        if settings.bridge_tradier_iv_enabled and settings.tradier_api_token:
+            scheduler.schedule_bridge_tradier_iv(_scheduled_bridge_tradier_iv)
+
+        if settings.correlation_refresh_enabled:
+            scheduler.schedule_correlation_refresh(_scheduled_correlation_refresh)
+
+        if settings.etf_refresh_enabled:
+            scheduler.schedule_etf_refresh(_scheduled_etf_refresh)
+
+        if settings.quarterly_meta_refresh_enabled:
+            scheduler.schedule_quarterly_meta(_scheduled_quarterly_meta)
+
+        if settings.weekly_meta_refresh_enabled:
+            scheduler.schedule_weekly_meta(_scheduled_weekly_meta)
+
+        if settings.demand_data_enabled:
+            parts = settings.demand_data_refresh_time.split(":")
+            dd_h = int(parts[0]) if len(parts) >= 1 else 3
+            dd_m = int(parts[1]) if len(parts) >= 2 else 0
+            scheduler.schedule_demand_data(_scheduled_demand_data, hour=dd_h, minute=dd_m)
+
+        scheduler.start()
+        logger.info("workflow_scheduler_started", jobs=list(scheduler._jobs.keys()))
+    else:
+        logger.info(
+            "local_scheduler_disabled",
+            data_backend=settings.data_backend,
+            hint="Cloud Run owns batch jobs when data_backend=gcs",
         )
-
-    if settings.edgar_ingestion_enabled and settings.edgar_user_agent_email:
-        scheduler.schedule_edgar_ingest(
-            _scheduled_edgar_ingest,
-            interval_minutes=settings.edgar_ingest_interval_minutes,
-        )
-
-    if settings.ml_retrain_enabled:
-        parts = settings.ml_retrain_time.split(":")
-        retrain_h = int(parts[0]) if len(parts) >= 1 else 2
-        retrain_m = int(parts[1]) if len(parts) >= 2 else 0
-        scheduler.schedule_ml_retrain(
-            _scheduled_ml_retrain,
-            day=settings.ml_retrain_day_of_month,
-            hour=retrain_h,
-            minute=retrain_m,
-        )
-
-    if settings.flatfile_ingest_enabled and settings.massive_s3_access_key:
-        parts = settings.flatfile_ingest_time.split(":")
-        ff_h = int(parts[0]) if len(parts) >= 1 else 2
-        ff_m = int(parts[1]) if len(parts) >= 2 else 0
-        scheduler.schedule_flatfile_ingest(
-            _scheduled_flatfile_ingest, hour=ff_h, minute=ff_m
-        )
-
-    if settings.conviction_batch_after_ohlcv:
-        scheduler.schedule_conviction_batch(_scheduled_conviction_batch)
-
-    if getattr(settings, "alpha_batch_enabled", True) and not settings.alpha_batch_after_flatfile:
-        scheduler.schedule_alpha_batch(_scheduled_alpha_batch)
-
-    if settings.bridge_tradier_iv_enabled and settings.tradier_api_token:
-        scheduler.schedule_bridge_tradier_iv(_scheduled_bridge_tradier_iv)
-
-    if settings.correlation_refresh_enabled:
-        scheduler.schedule_correlation_refresh(_scheduled_correlation_refresh)
-
-    if settings.etf_refresh_enabled:
-        scheduler.schedule_etf_refresh(_scheduled_etf_refresh)
-
-    if settings.quarterly_meta_refresh_enabled:
-        scheduler.schedule_quarterly_meta(_scheduled_quarterly_meta)
-
-    if settings.weekly_meta_refresh_enabled:
-        scheduler.schedule_weekly_meta(_scheduled_weekly_meta)
-
-    if settings.demand_data_enabled:
-        parts = settings.demand_data_refresh_time.split(":")
-        dd_h = int(parts[0]) if len(parts) >= 1 else 3
-        dd_m = int(parts[1]) if len(parts) >= 2 else 0
-        scheduler.schedule_demand_data(_scheduled_demand_data, hour=dd_h, minute=dd_m)
-
-    scheduler.start()
 
     logger.info("tyche_ready")
     yield

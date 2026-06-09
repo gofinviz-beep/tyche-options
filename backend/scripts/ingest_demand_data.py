@@ -93,7 +93,8 @@ def main(
         f"fundamentals={counts['fundamentals']:,} "
         f"estimates={counts['estimates']:,} "
         f"short_interest={counts['short_interest']:,} "
-        f"guidance={counts['guidance']:,}"
+        f"guidance_fetched={counts['guidance_tickers_fetched']:,} "
+        f"guidance_written={counts['guidance_catalysts_written']:,}"
     )
 
 

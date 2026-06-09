@@ -15,6 +15,7 @@ from tyche.api.deps import (
 )
 from tyche.config import TycheSettings, get_settings
 from tyche.market_data.filing_signals import get_all_filing_signals, get_filing_signal
+from tyche.persistence.published_routes import get_intelligence_filing_rows
 from tyche.market_data.filing_store import Filing8KStore, InsiderTxStore
 from tyche.schemas.filing import (
     EdgarIngestResponse,
@@ -28,8 +29,31 @@ router = APIRouter(prefix="/filings", tags=["filings"])
 
 
 @router.get("/signals", response_model=list[FilingSignalResponse])
-async def list_filing_signals() -> list[FilingSignalResponse]:
+async def list_filing_signals(
+    settings: TycheSettings = Depends(get_settings),
+) -> list[FilingSignalResponse]:
     """Get all tickers with active filing signals."""
+    published = get_intelligence_filing_rows(settings=settings)
+    if published is not None:
+        rows, _layer = published
+        return [
+            FilingSignalResponse(
+                ticker=s["ticker"],
+                last_8k_at=s.get("last_8k_at"),
+                last_8k_sentiment=s.get("last_8k_sentiment"),
+                last_8k_impact=s.get("last_8k_impact"),
+                eightk_count_30d=s.get("eightk_count_30d", 0),
+                insider_net_shares_30d=s.get("insider_net_shares_30d", 0.0),
+                insider_buy_count_30d=s.get("insider_buy_count_30d", 0),
+                insider_sell_count_30d=s.get("insider_sell_count_30d", 0),
+                insider_cluster_sell=s.get("insider_cluster_sell", False),
+                last_insider_tx_at=s.get("last_insider_tx_at"),
+                has_risk=_has_filing_risk(s),
+                updated_at=s.get("updated_at"),
+            )
+            for s in rows
+        ]
+
     signals = await get_all_filing_signals()
     return [
         FilingSignalResponse(

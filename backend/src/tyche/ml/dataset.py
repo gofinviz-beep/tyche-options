@@ -14,6 +14,9 @@ import numpy as np
 import pandas as pd
 import structlog
 
+from tyche.storage import read_parquet, write_parquet
+from tyche.storage.store_io import context_for_data_access
+
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.derived_store import DerivedMetricsStore
 from tyche.ml.features import (
@@ -431,15 +434,33 @@ def _filter_equity(
     return result
 
 
-def save_dataset(df: pd.DataFrame, path: str | Path) -> Path:
+def _dataset_storage_target(
+    path: str | Path,
+    data_dir: str = "data",
+) -> tuple[str, object]:
+    """Map ``data/ml/foo.parquet`` style paths to storage-relative URIs."""
+    ctx = context_for_data_access(data_dir)
+    raw = str(path).replace("\\", "/")
+    if raw.startswith("gs://"):
+        return raw, ctx
+    normalized = raw.removeprefix(f"{data_dir}/").removeprefix("data/")
+    return normalized, ctx
+
+
+def save_dataset(
+    df: pd.DataFrame,
+    path: str | Path,
+    *,
+    data_dir: str = "data",
+) -> Path:
     """Persist dataset to Parquet for reproducible experiments."""
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(p, index=False, compression="snappy")
-    logger.info("dataset_saved", path=str(p), rows=len(df))
-    return p
+    rel, ctx = _dataset_storage_target(path, data_dir)
+    write_parquet(df, rel, atomic=True, ctx=ctx)
+    logger.info("dataset_saved", path=rel, rows=len(df))
+    return Path(path)
 
 
-def load_dataset(path: str | Path) -> pd.DataFrame:
+def load_dataset(path: str | Path, *, data_dir: str = "data") -> pd.DataFrame:
     """Load a previously saved dataset."""
-    return pd.read_parquet(path)
+    rel, ctx = _dataset_storage_target(path, data_dir)
+    return read_parquet(rel, ctx=ctx)

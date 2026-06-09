@@ -2,9 +2,29 @@
 
 Complete reference for all automated and manual data pipelines, their schedules, dependencies, and troubleshooting.
 
-## Schedule Overview
+## GCP Cloud Mode (production batch)
 
-All times are US/Eastern. Weekday-only jobs do not fire on weekends or market holidays.
+When `TYCHE_DATA_BACKEND=gcs`, **batch ingest runs in Cloud Run Jobs** — not on the laptop. The local APScheduler is auto-disabled (`scheduler_enabled=false` unless overridden in `config.db`).
+
+| Window (PT, Tue–Sat) | Workflow | Jobs (parallel unless noted) |
+|----------------------|----------|------------------------------|
+| **6:00 PM** | `tyche-evening-pipeline` | ingest-data, ingest-demand-data, ingest-news, ingest-edgar |
+| **2:30 AM** | `tyche-morning-pipeline` | options-flatfiles + alpha-batch → demand-gate (optional) → publish-signals → audit |
+
+- **Deploy:** `infra/gcp/README.md`
+- **Spec:** `docs/tyche_gcp_minimal_migration_spec_v2.md`
+- **Manifests:** `gs://tyche-data-prod/runs/{job_name}/{run_id}/manifest.json`
+- **Intelligence:** Parquet rollups only in cloud (no `news.db`). Checkpoints: `signals/intelligence/_checkpoints/`
+- **Demand guidance:** manifest `extra.guidance_tickers_fetched` vs `guidance_catalysts_written`
+- **TODO:** multi-task sharding for faster GCS ingest (spec §21)
+
+Local backend reads `published/routes/*.json` and `signals/` from GCS via ADC (`gcloud auth application-default login`).
+
+---
+
+## Schedule Overview (local APScheduler)
+
+All times are US/Eastern. **Disabled when `TYCHE_DATA_BACKEND=gcs`.** Weekday-only jobs do not fire on weekends or market holidays.
 
 ### Daily (Weekdays, After Market Close)
 

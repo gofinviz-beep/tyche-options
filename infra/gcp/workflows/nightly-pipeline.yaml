@@ -1,0 +1,136 @@
+# Tyche nightly batch pipeline — sequential Cloud Run Jobs (GCP-G).
+#
+# Deploy: ./infra/gcp/deploy_workflow.sh
+# Trigger: Cloud Scheduler → workflow execution (see deploy_scheduler.sh)
+
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - region: "us-central1"
+          - phase1_jobs:
+              - "tyche-ingest-data"
+              - "tyche-ingest-options-flatfiles"
+              - "tyche-ingest-demand-data"
+              - "tyche-ingest-news"
+              - "tyche-ingest-edgar"
+              - "tyche-alpha-batch"
+          - phase2_optional:
+              - "tyche-run-demand-gate"
+          - phase3_jobs:
+              - "tyche-publish-signals"
+              - "tyche-audit-snapshots"
+          - completed: []
+
+    - run_phase1:
+        for:
+          value: job_id
+          in: ${phase1_jobs}
+          steps:
+            - run_job:
+                call: run_cloud_run_job
+                args:
+                  project_id: ${project_id}
+                  region: ${region}
+                  job_id: ${job_id}
+                  optional: false
+                result: job_result
+            - track:
+                assign:
+                  - completed: ${list.concat(completed, [job_result])}
+
+    - run_phase2:
+        for:
+          value: job_id
+          in: ${phase2_optional}
+          steps:
+            - run_optional:
+                try:
+                  call: run_cloud_run_job
+                  args:
+                    project_id: ${project_id}
+                    region: ${region}
+                    job_id: ${job_id}
+                    optional: true
+                  result: opt_result
+                except:
+                  as: e
+                  steps:
+                    - log_optional_failure:
+                        call: sys.log
+                        args:
+                          text: '${"Optional job failed - " + job_id + " - " + string(e)}'
+                          severity: "WARNING"
+
+    - run_phase3:
+        for:
+          value: job_id
+          in: ${phase3_jobs}
+          steps:
+            - run_final:
+                call: run_cloud_run_job
+                args:
+                  project_id: ${project_id}
+                  region: ${region}
+                  job_id: ${job_id}
+                  optional: false
+                result: final_result
+            - track_final:
+                assign:
+                  - completed: ${list.concat(completed, [final_result])}
+
+    - done:
+        return:
+          status: "success"
+          steps_completed: ${len(completed)}
+
+
+run_cloud_run_job:
+  params: [project_id, region, job_id, optional]
+  steps:
+    - start:
+        call: googleapis.run.v2.projects.locations.jobs.run
+        args:
+          name: ${"projects/" + project_id + "/locations/" + region + "/jobs/" + job_id}
+          body: {}
+        result: run_response
+    - poll:
+        call: googleapis.run.v2.projects.locations.jobs.executions.get
+        args:
+          name: ${run_response.name}
+        result: execution
+    - check:
+        switch:
+          - condition: ${execution.completionTime == null}
+            next: wait
+          - condition: ${execution.failedCount > 0 or execution.cancelledCount > 0}
+            next: fail
+        next: succeed
+    - wait:
+        call: sys.sleep
+        args:
+          seconds: 45
+        next: poll
+    - fail:
+        switch:
+          - condition: ${optional}
+            next: succeed_with_warning
+          - condition: true
+            next: raise_fail
+    - raise_fail:
+        raise:
+          message: '${job_id + " failed"}'
+          data: ${execution}
+    - succeed_with_warning:
+        call: sys.log
+        args:
+          text: '${"Optional job " + job_id + " did not succeed - continuing pipeline"}'
+          severity: "WARNING"
+        next: succeed
+    - succeed:
+        return:
+          job_id: ${job_id}
+          execution: ${execution.name}
+          succeeded: ${execution.succeededCount}

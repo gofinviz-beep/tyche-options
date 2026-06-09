@@ -31,8 +31,10 @@ from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 import structlog
+
+from tyche.storage.paths import StorageContext
+from tyche.storage.store_io import StoreBackend
 
 logger = structlog.get_logger()
 
@@ -54,17 +56,16 @@ class EstimatesStore:
     ``(snapshot_date, metric, period)`` keeping the latest write.
     """
 
-    def __init__(self, data_dir: str = "data") -> None:
-        self._store_dir = Path(data_dir) / "estimates"
-        self._store_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        data_dir: str = "data",
+        ctx: StorageContext | None = None,
+    ) -> None:
+        self._io = StoreBackend.create("estimates", data_dir, ctx)
 
     @property
     def store_dir(self) -> Path:
-        return self._store_dir
-
-    def _ticker_path(self, ticker: str) -> Path:
-        safe = ticker.upper().replace("/", "_").replace(" ", "_")
-        return self._store_dir / f"{safe}.parquet"
+        return self._io.store_dir
 
     def write_records(self, ticker: str, df: pd.DataFrame) -> int:
         """Persist tidy estimate records for a ticker.
@@ -86,28 +87,15 @@ class EstimatesStore:
         if df.empty:
             return 0
 
-        path = self._ticker_path(ticker)
-        if path.exists():
-            existing = pd.read_parquet(path)
-            existing["snapshot_date"] = pd.to_datetime(existing["snapshot_date"]).dt.date
-            combined = pd.concat([existing, df], ignore_index=True)
-        else:
-            combined = df
-
-        combined = (
-            combined.drop_duplicates(
-                subset=["snapshot_date", "metric", "period"], keep="last"
-            )
-            .sort_values(["snapshot_date", "metric", "period"])
-            .reset_index(drop=True)
+        rows = self._io.merge_write(
+            self._io.ticker_rel(ticker),
+            df,
+            ESTIMATES_SCHEMA,
+            ["snapshot_date", "metric", "period"],
+            sort_cols=["snapshot_date", "metric", "period"],
         )
-
-        ordered = combined[[f.name for f in ESTIMATES_SCHEMA]]
-        table = pa.Table.from_pandas(ordered, schema=ESTIMATES_SCHEMA, preserve_index=False)
-        pq.write_table(table, path, compression="snappy")
-
-        logger.debug("estimates_written", ticker=ticker, rows=len(combined))
-        return len(combined)
+        logger.debug("estimates_written", ticker=ticker, rows=rows)
+        return rows
 
     def read_ticker(
         self,
@@ -116,11 +104,10 @@ class EstimatesStore:
         as_of: date | None = None,
     ) -> pd.DataFrame:
         """Read estimate records, optionally filtered by metric / as-of date."""
-        path = self._ticker_path(ticker)
-        if not path.exists():
-            return pd.DataFrame(columns=[f.name for f in ESTIMATES_SCHEMA])
-
-        df = pd.read_parquet(path)
+        empty = pd.DataFrame(columns=[f.name for f in ESTIMATES_SCHEMA])
+        df = self._io.read_df(self._io.ticker_rel(ticker))
+        if df is None or df.empty:
+            return empty
         df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
 
         if metric is not None:
@@ -153,18 +140,11 @@ class EstimatesStore:
         return dict(zip(latest["metric"], latest["value"]))
 
     def get_all_tickers(self) -> list[str]:
-        return sorted(
-            p.stem.upper()
-            for p in self._store_dir.glob("*.parquet")
-            if not p.name.startswith("_")
-        )
+        return self._io.list_ticker_stems()
 
     def get_stats(self) -> dict:
         tickers = self.get_all_tickers()
-        total_rows = 0
-        for t in tickers:
-            try:
-                total_rows += pq.read_metadata(self._ticker_path(t)).num_rows
-            except Exception:
-                continue
+        total_rows = sum(
+            self._io.parquet_rows(self._io.ticker_rel(t)) for t in tickers
+        )
         return {"ticker_count": len(tickers), "total_rows": total_rows}

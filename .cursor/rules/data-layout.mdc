@@ -8,9 +8,11 @@ alwaysApply: true
 
 # Data Directory Layout
 
-**All persisted data lives under `backend/data/`**, NOT at the repo root `data/`.
+**All persisted data lives under `backend/data/`** (local mode), NOT at the repo root `data/`.
 
-The `OHLCVStore`, `OptionsChainStore`, `OptionsHistoryStore`, `HistoricalIVStore`, `DerivedMetricsStore`, and all other data stores resolve paths relative to `backend/data/`.
+With `TYCHE_DATA_BACKEND=gcs`, the same relative paths resolve under `gs://{bucket}/` via `tyche/storage/StoreBackend`. Cloud batch jobs write curated data + `signals/` + `published/`; the laptop reads compact artifacts only.
+
+**GCP batch:** `infra/gcp/README.md`, `docs/tyche_gcp_minimal_migration_spec_v2.md`. Run manifests: `runs/{job_name}/{run_id}/manifest.json`.
 
 ## Directory Map
 
@@ -40,6 +42,8 @@ The `OHLCVStore`, `OptionsChainStore`, `OptionsHistoryStore`, `HistoricalIVStore
 | News articles | `backend/data/news_articles/{TICKER}.parquet` | One Parquet per ticker |
 | 8-K filings | `backend/data/filings_8k/{TICKER}.parquet` | One Parquet per ticker |
 | Insider transactions | `backend/data/insider_transactions/{TICKER}.parquet` | One Parquet per ticker |
+| Intelligence rollups (GCS) | `signals/intelligence/*.parquet` | Cloud aggregate signals; checkpoints at `signals/intelligence/_checkpoints/` |
+| Published route JSON | `published/routes/*.json` | Written by `publish_signals` for UI cache |
 
 ## SQLite Databases
 
@@ -52,7 +56,7 @@ The `OHLCVStore`, `OptionsChainStore`, `OptionsHistoryStore`, `HistoricalIVStore
 | Scans | `backend/db/scans.db` | Scanner results persistence |
 | Candidates | `backend/db/candidates.db` | CSP candidate persistence |
 | Analyses | `backend/db/analyses.db` | LLM analysis persistence |
-| News | `backend/db/news.db` | News/filing signals |
+| News | `backend/db/news.db` | News/filing signals (**local only** — cloud jobs use Parquet rollups) |
 
 ## Python Access
 
@@ -91,10 +95,21 @@ from tyche.market_data.data_store import TickerMetaStore
 | `run_demand_gate.py` | Demand-feature walk-forward ablation + conditional promotion of `big_move_sustained_*` models | `--min-lift 0.005` |
 | `audit_estimate_snapshots.py` | Snapshot cadence + same-period revision availability (`estimate_snapshots/`) | `--tickers MU AVGO` |
 
+## GCP Cloud Jobs
+
+| Script / path | Purpose |
+|---------------|---------|
+| `scripts/run_gcp_job.py` | Local debug entry for Cloud Run job handlers |
+| `tyche/ops/gcp_jobs.py` | Job runners + nightly pipeline |
+| `tyche/ops/intelligence_export.py` | Parquet-only news/filing rollups (batched checkpoints) |
+| `workflow/publish_signals.py` | Route-level JSON publisher |
+| `infra/gcp/deploy_jobs.sh` | Deploy/update Cloud Run Jobs |
+
 ## Alpha / Discovery Docs
 
 | Doc | Purpose |
 |-----|---------|
+| `docs/tyche_gcp_minimal_migration_spec_v2.md` | GCP cloud-computed / locally-viewed architecture |
 | `docs/multibagger_discovery_engine_v8_cursor_composer_spec.md` | **Current** implementation spec (P2+ next) |
 | `docs/alpha/p1_completion_note.md` | P1 validation acceptance + artifact locations |
 | `docs/alpha/estimate_snapshot_findings.md` | P0.3 Finnhub probe write-up |

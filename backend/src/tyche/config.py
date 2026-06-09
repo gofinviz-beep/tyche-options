@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tyche.persistence.config_store import ConfigStore
@@ -63,6 +63,11 @@ _ENV_ONLY_FIELDS: frozenset[str] = frozenset(
         "tradier_sandbox",
         "tradier_base_url",
         "data_dir",
+        "data_backend",
+        "gcs_bucket",
+        "gcs_prefix",
+        "run_env",
+        "load_gcp_secrets",
         "db_dir",
         "polygon_base_url",
         "polygon_rate_limit_rpm",
@@ -80,6 +85,16 @@ _ENV_ONLY_FIELDS: frozenset[str] = frozenset(
         "edgar_user_agent_email",
     }
 )
+
+
+def _strip_inline_env_comment(value: str) -> str:
+    """Drop trailing ``# comment`` from a dotenv value (pydantic does not)."""
+    cleaned = value.strip()
+    if " #" in cleaned:
+        cleaned = cleaned.split(" #", 1)[0].strip()
+    if cleaned.startswith("#"):
+        return ""
+    return cleaned
 
 
 class _EnvSettings(BaseSettings):
@@ -109,6 +124,25 @@ class _EnvSettings(BaseSettings):
     tradier_sandbox: bool = True
     tradier_base_url: str = Field(default="")
     data_dir: str = "data"
+    data_backend: str = "local"
+    gcs_bucket: str = ""
+    gcs_prefix: str = ""
+    run_env: str = "dev"
+    load_gcp_secrets: bool = False
+
+    @field_validator("gcs_bucket", mode="before")
+    @classmethod
+    def _normalize_gcs_bucket(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        return _strip_inline_env_comment(str(value))
+
+    @field_validator("gcs_prefix", mode="before")
+    @classmethod
+    def _normalize_gcs_prefix(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        return _strip_inline_env_comment(str(value)).strip("/")
     db_dir: str = "db"
     polygon_base_url: str = "https://api.polygon.io"
     polygon_rate_limit_rpm: int = 500
@@ -169,7 +203,20 @@ class TycheSettings(BaseModel):
 
     # --- Data Storage (env-only) ---
     data_dir: str = "data"
+    data_backend: str = "local"  # local | gcs
+    gcs_bucket: str | None = None
+    gcs_prefix: str = ""
+    run_env: str = "dev"
+    load_gcp_secrets: bool = False
     db_dir: str = "db"
+
+    # --- Published signals API (GCS mode) ---
+    api_prefer_published_signals: bool = True
+    api_allow_curated_fallback: bool = False
+    published_max_age_minutes: int = 180
+
+    # --- Local APScheduler (disable when Cloud Run owns batch compute) ---
+    scheduler_enabled: bool = True
 
     # --- Universe Filtering ---
     min_market_cap_millions: float = 4000.0
@@ -511,7 +558,11 @@ def _build_settings(env: _EnvSettings, db_values: dict[str, Any]) -> TycheSettin
         if field_name in db_values:
             kwargs[field_name] = db_values[field_name]
 
-    return TycheSettings(**kwargs)
+    settings = TycheSettings(**kwargs)
+    # GCS view-only laptops should not duplicate Cloud Run nightly jobs.
+    if settings.data_backend == "gcs" and "scheduler_enabled" not in db_values:
+        settings = settings.model_copy(update={"scheduler_enabled": False})
+    return settings
 
 
 def get_settings() -> TycheSettings:

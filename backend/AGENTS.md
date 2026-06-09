@@ -92,9 +92,21 @@ Complements (does not replace) the CSP/CC income engine — finds large upside m
 - Ingestion: `python scripts/ingest_data.py --etf --correlations`
 - Leakage prevention: correlation window = `[as_of_date - 60, as_of_date - 1]` (no same-day data)
 
-## Automated Data Pipelines
+## GCP Cloud Batch (production ingest)
 
-All data operations are automated via APScheduler. Full runbook: `docs/data-operations.md`.
+When `TYCHE_DATA_BACKEND=gcs`, batch ingest runs in **Cloud Run Jobs** — not APScheduler.
+
+- **Deploy:** `infra/gcp/README.md` — `deploy_jobs.sh`, `deploy_workflow.sh`, `deploy_scheduler.sh`
+- **Spec:** `docs/tyche_gcp_minimal_migration_spec_v2.md` (§21 TODO: multi-task ingest sharding)
+- **Entry:** `scripts/run_gcp_job.py` → `tyche/ops/gcp_jobs.py` (10 jobs)
+- **Intelligence:** `ops/intelligence_export.py` — Parquet rollups, no `news.db` in cloud
+- **Publish:** `workflow/publish_signals.py` → `published/routes/*.json`
+- **Storage:** `tyche/storage/StoreBackend` — all stores GCS-aware
+- **Scheduler:** evening 6 PM + morning 2:30 AM PT (Tue–Sat); `scheduler_enabled=false` in GCS mode
+
+## Automated Data Pipelines (local APScheduler)
+
+When `TYCHE_DATA_BACKEND=local`, data operations run via APScheduler. Full runbook: `docs/data-operations.md`.
 
 - **Daily after close:** OHLCV refresh (16:02, then reprices market caps from shares × close) → conviction batch (16:08) → exit monitor (16:05), options snapshot (16:10) → bridge Tradier IV (16:45). **Alpha batch** runs chained after the nightly S3 flatfile ingest (`alpha_batch_after_flatfile`, ~02:00 ET) — peak + sustained snapshots — else a standalone 16:20 ET cron.
 - **Daily demand data (03:00 ET, `demand_data_enabled` / `demand_data_refresh_time`):** Finnhub fundamentals + estimates, Polygon short interest, Benzinga guidance → catalysts (`_scheduled_demand_data` → `ingest_demand_data`). Skipped with a warning if credentials are absent.

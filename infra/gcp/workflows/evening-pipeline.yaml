@@ -1,0 +1,105 @@
+# Evening ingest — parallel Cloud Run Jobs (GCP-G).
+# Tue–Sat 6:00 PM PT: OHLCV, demand, news, EDGAR (post–market-close sources).
+
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - region: "us-central1"
+
+    - parallel_evening:
+        parallel:
+          shared: []
+          branches:
+            - ingest_data:
+                steps:
+                  - run_ingest_data:
+                      call: run_cloud_run_job
+                      args:
+                        project_id: ${project_id}
+                        region: ${region}
+                        job_id: "tyche-ingest-data"
+                        optional: false
+            - ingest_demand:
+                steps:
+                  - run_ingest_demand:
+                      call: run_cloud_run_job
+                      args:
+                        project_id: ${project_id}
+                        region: ${region}
+                        job_id: "tyche-ingest-demand-data"
+                        optional: false
+            - ingest_news:
+                steps:
+                  - run_ingest_news:
+                      call: run_cloud_run_job
+                      args:
+                        project_id: ${project_id}
+                        region: ${region}
+                        job_id: "tyche-ingest-news"
+                        optional: false
+            - ingest_edgar:
+                steps:
+                  - run_ingest_edgar:
+                      call: run_cloud_run_job
+                      args:
+                        project_id: ${project_id}
+                        region: ${region}
+                        job_id: "tyche-ingest-edgar"
+                        optional: false
+
+    - done:
+        return:
+          status: "success"
+          window: "evening"
+
+
+run_cloud_run_job:
+  params: [project_id, region, job_id, optional]
+  steps:
+    - start:
+        call: googleapis.run.v2.projects.locations.jobs.run
+        args:
+          name: ${"projects/" + project_id + "/locations/" + region + "/jobs/" + job_id}
+          body: {}
+        result: run_response
+    - poll:
+        call: googleapis.run.v2.projects.locations.jobs.executions.get
+        args:
+          name: ${run_response.name}
+        result: execution
+    - check:
+        switch:
+          - condition: ${execution.completionTime == null}
+            next: wait
+          - condition: ${execution.failedCount > 0 or execution.cancelledCount > 0}
+            next: fail
+        next: succeed
+    - wait:
+        call: sys.sleep
+        args:
+          seconds: 45
+        next: poll
+    - fail:
+        switch:
+          - condition: ${optional}
+            next: succeed_with_warning
+          - condition: true
+            next: raise_fail
+    - raise_fail:
+        raise:
+          message: '${job_id + " failed"}'
+          data: ${execution}
+    - succeed_with_warning:
+        call: sys.log
+        args:
+          text: '${"Optional job " + job_id + " did not succeed - continuing pipeline"}'
+          severity: "WARNING"
+        next: succeed
+    - succeed:
+        return:
+          job_id: ${job_id}
+          execution: ${execution.name}
+          succeeded: ${execution.succeededCount}

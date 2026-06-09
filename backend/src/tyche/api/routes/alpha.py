@@ -24,6 +24,12 @@ from tyche.api.deps import (
 from tyche.config import TycheSettings
 from tyche.market_data.alpha_store import AlphaSignalStore
 from tyche.market_data.data_store import TickerMetaStore
+from tyche.persistence.published_routes import (
+    alpha_needs_signals_fallback,
+    apply_alpha_scan_filters,
+    get_stock_alpha_scan,
+    load_published_route,
+)
 from tyche.schemas.alpha import (
     AlphaBatchResponse,
     AlphaDemandDimensions,
@@ -57,18 +63,27 @@ async def scan_alpha(
     settings: TycheSettings = Depends(get_settings),
     meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
 ) -> AlphaScanResponse:
-    """Return ranked directional alpha signals from the latest batch snapshot."""
-    requested = variant if variant in _VALID_VARIANTS else "peak"
-    store = AlphaSignalStore(data_dir=settings.data_dir, variant=requested)
-    # Graceful fallback: if the requested variant's snapshot hasn't been
-    # produced yet (e.g. sustained disabled or never run), serve peak so the
-    # page is never blank, and report which variant is actually shown.
-    if not store.exists and requested != "peak":
-        store = AlphaSignalStore(data_dir=settings.data_dir, variant="peak")
-    served_variant = store.variant
-    records, as_of, computed_at = store.read_latest()
+    """Return ranked directional alpha signals from published JSON or signal Parquet."""
+    published_env = (
+        load_published_route("stocks_alpha", settings=settings)
+        if settings.api_prefer_published_signals
+        else None
+    )
+    prefer_published = (
+        settings.api_prefer_published_signals
+        and not alpha_needs_signals_fallback(
+            limit=limit,
+            published_row_count=published_env.row_count if published_env else None,
+        )
+    )
 
-    if not records:
+    loaded = get_stock_alpha_scan(
+        settings=settings,
+        variant=variant,
+        prefer_published=prefer_published,
+    )
+    if loaded is None:
+        served_variant = variant if variant in _VALID_VARIANTS else "peak"
         return AlphaScanResponse(
             scanned_at=datetime.now(timezone.utc).isoformat(),
             ml_available=False,
@@ -77,68 +92,59 @@ async def scan_alpha(
             signals=[],
         )
 
-    # Universe guard: common-stock only (drops warrants/units/ADRs/ETFs) with a
-    # known market cap at or above the alpha floor. Applied at read time so the
-    # current snapshot is cleaned immediately and stays clean on every load.
-    floor_millions = (
-        min_market_cap_millions
-        if min_market_cap_millions is not None
-        else settings.alpha_min_market_cap_millions
-    )
-    if meta_store.exists and records:
-        all_tickers = [r["ticker"] for r in records]
-        eligible = set(meta_store.filter_equity_only(all_tickers))
-        caps = meta_store.get_market_caps(all_tickers)
-        floor = floor_millions * 1_000_000
-        records = [
-            r for r in records
-            if r["ticker"] in eligible and (caps.get(r["ticker"]) or 0) >= floor
-        ]
-
-    if signal and signal in _VALID_SIGNALS:
-        records = [r for r in records if r.get("signal") == signal]
-    if horizon:
-        records = [r for r in records if r.get("horizon") == horizon]
-    if min_score > 0:
-        records = [r for r in records if (r.get("alpha_score") or 0) >= min_score]
-
-    records.sort(key=lambda r: r.get("alpha_score") or 0, reverse=True)
-
-    strong_buy = sum(1 for r in records if r.get("signal") == "strong_buy")
-    buy = sum(1 for r in records if r.get("signal") == "buy")
-
-    display = records[:limit]
-    tickers = [r["ticker"] for r in display]
-    market_caps = meta_store.get_market_caps(tickers) if meta_store.exists else {}
-    sectors = meta_store.get_sectors(tickers) if meta_store.exists else {}
-    inst_pcts = meta_store.get_institutional_pcts(tickers) if meta_store.exists else {}
-    watchlist = frozenset(s.upper() for s in (settings.watchlist_symbols or []))
-
-    ml_available = any(
-        r.get("breakout_prob_swing") is not None for r in display
-    )
-
-    signals = [
-        _record_to_response(
-            r,
-            market_cap=market_caps.get(r["ticker"]),
-            institutional_pct=inst_pcts.get(r["ticker"]),
-            sector=sectors.get(r["ticker"]),
-            is_watchlist=r["ticker"] in watchlist,
+    scan, layer = loaded
+    if layer == "signals" and min_market_cap_millions is not None:
+        scan = _refilter_alpha_scan_cap(
+            scan,
+            min_market_cap_millions=min_market_cap_millions,
+            meta_store=meta_store,
+            settings=settings,
         )
-        for r in display
-    ]
 
+    return apply_alpha_scan_filters(
+        scan,
+        signal=signal,
+        horizon=horizon,
+        min_score=min_score,
+        min_market_cap_millions=min_market_cap_millions,
+        limit=limit,
+    )
+
+
+def _refilter_alpha_scan_cap(
+    scan: AlphaScanResponse,
+    *,
+    min_market_cap_millions: float,
+    meta_store: TickerMetaStore,
+    settings: TycheSettings,
+) -> AlphaScanResponse:
+    """Re-apply a custom market-cap floor when serving from the signal store."""
+    if min_market_cap_millions == settings.alpha_min_market_cap_millions:
+        return scan
+    if not meta_store.exists:
+        return scan
+
+    floor = min_market_cap_millions * 1_000_000
+    tickers = [s.ticker for s in scan.signals]
+    eligible = set(meta_store.filter_equity_only(tickers))
+    caps = meta_store.get_market_caps(tickers)
+    kept = [
+        s
+        for s in scan.signals
+        if s.ticker in eligible and (caps.get(s.ticker) or 0) >= floor
+    ]
+    strong_buy = sum(1 for s in kept if s.signal == "strong_buy")
+    buy = sum(1 for s in kept if s.signal == "buy")
     return AlphaScanResponse(
-        scanned_at=datetime.now(timezone.utc).isoformat(),
-        as_of_date=as_of,
-        computed_at=computed_at,
-        ml_available=ml_available,
-        variant=served_variant,
-        total=len(records),
+        scanned_at=scan.scanned_at,
+        as_of_date=scan.as_of_date,
+        computed_at=scan.computed_at,
+        ml_available=scan.ml_available,
+        variant=scan.variant,
+        total=len(kept),
         strong_buy_count=strong_buy,
         buy_count=buy,
-        signals=signals,
+        signals=kept,
     )
 
 

@@ -15,23 +15,34 @@ from typing import Any
 import pandas as pd
 import structlog
 
+from tyche.storage import exists as storage_exists, read_parquet, write_parquet
+from tyche.storage.paths import StorageContext
+from tyche.storage.store_io import StoreBackend
+
 logger = structlog.get_logger()
 
 
 class AlphaSignalStore:
     """Parquet-backed store for the latest directional alpha scan."""
 
-    def __init__(self, data_dir: str = "data", variant: str = "peak") -> None:
-        # "peak" keeps the historical filename for backward compatibility; other
-        # variants (e.g. "sustained") get a suffixed snapshot so both can coexist
-        # and the page toggle can switch between them instantly.
+    def __init__(
+        self,
+        data_dir: str = "data",
+        variant: str = "peak",
+        ctx: StorageContext | None = None,
+        rel_path: str | None = None,
+    ) -> None:
         self._variant = variant or "peak"
-        name = (
-            "alpha_signals.parquet"
-            if self._variant == "peak"
-            else f"alpha_signals_{self._variant}.parquet"
-        )
-        self._path = Path(data_dir) / name
+        if rel_path:
+            name = rel_path
+        else:
+            name = (
+                "alpha_signals.parquet"
+                if self._variant == "peak"
+                else f"alpha_signals_{self._variant}.parquet"
+            )
+        self._io = StoreBackend.create("", data_dir, ctx)
+        self._rel_path = name
 
     @property
     def variant(self) -> str:
@@ -39,11 +50,11 @@ class AlphaSignalStore:
 
     @property
     def path(self) -> Path:
-        return self._path
+        return self._io.store_dir / self._rel_path
 
     @property
     def exists(self) -> bool:
-        return self._path.exists()
+        return storage_exists(self._rel_path, ctx=self._io.ctx)
 
     def write(self, signal_dicts: list[dict[str, Any]], as_of: date) -> None:
         """Persist a full scan snapshot, replacing any previous snapshot."""
@@ -52,13 +63,9 @@ class AlphaSignalStore:
             return
 
         df = pd.DataFrame(signal_dicts)
-        # Flatten the nested factors dict into columns for columnar storage.
         if "factors" in df.columns:
             factors = pd.json_normalize(df["factors"]).add_prefix("factor_")
             df = pd.concat([df.drop(columns=["factors"]), factors], axis=1)
-        # Flatten the per-dimension demand breakdown the same way. Uses a
-        # distinct prefix so it doesn't collide with the top-level
-        # ``demand_multiplier`` column.
         if "demand" in df.columns:
             demand = pd.json_normalize(df["demand"]).add_prefix("ddim_")
             df = pd.concat([df.drop(columns=["demand"]), demand], axis=1)
@@ -66,25 +73,27 @@ class AlphaSignalStore:
         df["as_of_date"] = as_of.isoformat()
         df["computed_at"] = datetime.now(timezone.utc).isoformat()
 
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(self._path, index=False, compression="snappy")
+        write_parquet(
+            df,
+            self._rel_path,
+            atomic=True,
+            ctx=self._io.ctx,
+        )
         logger.info("alpha_store_written", rows=len(df), as_of=as_of.isoformat())
 
     def read_latest(self) -> tuple[list[dict[str, Any]], str | None, str | None]:
-        """Return (signals, as_of_date, computed_at) from the snapshot.
-
-        Re-nests the factor_* columns back into a ``factors`` dict so the
-        payload matches ``AlphaSignal.to_dict()``.
-        """
+        """Return (signals, as_of_date, computed_at) from the snapshot."""
         if not self.exists:
             return [], None, None
 
-        df = pd.read_parquet(self._path)
+        df = read_parquet(self._rel_path, ctx=self._io.ctx)
         if df.empty:
             return [], None, None
 
         as_of = str(df["as_of_date"].iloc[0]) if "as_of_date" in df.columns else None
-        computed_at = str(df["computed_at"].iloc[0]) if "computed_at" in df.columns else None
+        computed_at = (
+            str(df["computed_at"].iloc[0]) if "computed_at" in df.columns else None
+        )
 
         factor_cols = [c for c in df.columns if c.startswith("factor_")]
         demand_cols = [c for c in df.columns if c.startswith("ddim_")]
@@ -99,9 +108,9 @@ class AlphaSignalStore:
                     continue
                 val = row[col]
                 if col in factor_cols:
-                    factors[col[len("factor_"):]] = _clean(val)
+                    factors[col[len("factor_") :]] = _clean(val)
                 elif col in demand_cols:
-                    demand[col[len("ddim_"):]] = _clean(val)
+                    demand[col[len("ddim_") :]] = _clean(val)
                 else:
                     rec[col] = _clean(val)
             rec["factors"] = factors

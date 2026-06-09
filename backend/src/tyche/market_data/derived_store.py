@@ -11,14 +11,16 @@ and volatility risk premium.
 from __future__ import annotations
 
 import math
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 import structlog
+
+from tyche.storage.paths import StorageContext
+from tyche.storage.store_io import StoreBackend
 
 logger = structlog.get_logger()
 
@@ -33,59 +35,44 @@ DERIVED_METRICS_SCHEMA = pa.schema(
     ]
 )
 
-_ROLLING_WINDOW = 252  # ~1 year of trading days for IV Rank/Percentile
-_RV_WINDOW = 20  # 20-day realised volatility
+_ROLLING_WINDOW = 252
+_RV_WINDOW = 20
 
 
 class DerivedMetricsStore:
-    """Manages per-ticker Parquet files of derived volatility metrics.
+    """Manages per-ticker Parquet files of derived volatility metrics."""
 
-    Layout: ``data/derived/{TICKER}.parquet``
-    """
-
-    def __init__(self, data_dir: str = "data") -> None:
-        self._store_dir = Path(data_dir) / "derived"
-        self._store_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        data_dir: str = "data",
+        ctx: StorageContext | None = None,
+    ) -> None:
+        self._io = StoreBackend.create("derived", data_dir, ctx)
 
     @property
     def store_dir(self) -> Path:
-        return self._store_dir
+        return self._io.store_dir
 
-    def _ticker_path(self, ticker: str) -> Path:
-        safe = ticker.upper().replace("/", "_").replace(" ", "_")
-        return self._store_dir / f"{safe}.parquet"
+    def _ticker_rel(self, ticker: str) -> str:
+        return self._io.ticker_rel(ticker)
 
     def write_metrics(self, ticker: str, df: pd.DataFrame) -> int:
-        """Persist a DataFrame of derived metrics for a ticker.
-
-        Merges with existing data and deduplicates on ``date``.
-        Returns the total row count after write.
-        """
+        """Persist derived metrics, merging with existing data on ``date``."""
         if df.empty:
             return 0
 
         df = df.copy()
         df["date"] = pd.to_datetime(df["date"]).dt.date
 
-        path = self._ticker_path(ticker)
-        if path.exists():
-            existing = pd.read_parquet(path)
-            existing["date"] = pd.to_datetime(existing["date"]).dt.date
-            combined = pd.concat([existing, df], ignore_index=True)
-        else:
-            combined = df
-
-        combined = (
-            combined.drop_duplicates(subset=["date"], keep="last")
-            .sort_values("date")
-            .reset_index(drop=True)
+        rows = self._io.merge_write(
+            self._ticker_rel(ticker),
+            df,
+            DERIVED_METRICS_SCHEMA,
+            ["date"],
+            sort_cols=["date"],
         )
-
-        table = pa.Table.from_pandas(combined, schema=DERIVED_METRICS_SCHEMA)
-        pq.write_table(table, path, compression="snappy")
-
-        logger.debug("derived_metrics_written", ticker=ticker, rows=len(combined))
-        return len(combined)
+        logger.debug("derived_metrics_written", ticker=ticker, rows=rows)
+        return rows
 
     def read_ticker(
         self,
@@ -94,18 +81,16 @@ class DerivedMetricsStore:
         end_date: date | None = None,
     ) -> pd.DataFrame:
         """Read derived metrics for a single ticker."""
-        path = self._ticker_path(ticker)
-        if not path.exists():
-            return pd.DataFrame(columns=[f.name for f in DERIVED_METRICS_SCHEMA])
+        empty = pd.DataFrame(columns=[f.name for f in DERIVED_METRICS_SCHEMA])
+        df = self._io.read_df(self._ticker_rel(ticker))
+        if df is None or df.empty:
+            return empty
 
-        df = pd.read_parquet(path)
         df["date"] = pd.to_datetime(df["date"]).dt.date
-
         if start_date:
             df = df[df["date"] >= start_date]
         if end_date:
             df = df[df["date"] <= end_date]
-
         return df
 
     def read_latest_batch(
@@ -113,42 +98,34 @@ class DerivedMetricsStore:
         tickers: list[str],
         as_of_date: date,
     ) -> dict[str, dict]:
-        """Read the latest derived metrics row for each ticker on or before as_of_date.
-
-        Returns:
-            ``{ticker: {iv_rank, iv_percentile, atm_iv, vrp}}`` for tickers
-            that have data.  Tickers without a Parquet file or without any
-            row on/before ``as_of_date`` are silently omitted.
-        """
+        """Read latest derived metrics on or before *as_of_date* per ticker."""
         result: dict[str, dict] = {}
         for ticker in tickers:
-            path = self._ticker_path(ticker)
-            if not path.exists():
-                continue
             try:
-                df = pd.read_parquet(path)
-                df["date"] = pd.to_datetime(df["date"]).dt.date
-                df = df[df["date"] <= as_of_date]
+                df = self.read_ticker(ticker, end_date=as_of_date)
                 if df.empty:
                     continue
                 row = df.sort_values("date").iloc[-1]
                 result[ticker.upper()] = {
-                    "iv_rank": None if pd.isna(row.get("iv_rank")) else float(row["iv_rank"]),
-                    "iv_percentile": None if pd.isna(row.get("iv_percentile")) else float(row["iv_percentile"]),
-                    "atm_iv": None if pd.isna(row.get("atm_iv")) else float(row["atm_iv"]),
+                    "iv_rank": None
+                    if pd.isna(row.get("iv_rank"))
+                    else float(row["iv_rank"]),
+                    "iv_percentile": None
+                    if pd.isna(row.get("iv_percentile"))
+                    else float(row["iv_percentile"]),
+                    "atm_iv": None
+                    if pd.isna(row.get("atm_iv"))
+                    else float(row["atm_iv"]),
                     "vrp": None if pd.isna(row.get("vrp")) else float(row["vrp"]),
                 }
             except Exception:
-                logger.warning("derived_metrics_read_failed", ticker=ticker, exc_info=True)
-                continue
+                logger.warning(
+                    "derived_metrics_read_failed", ticker=ticker, exc_info=True
+                )
         return result
 
     def get_all_tickers(self) -> list[str]:
-        return sorted(
-            p.stem.upper()
-            for p in self._store_dir.glob("*.parquet")
-            if not p.name.startswith("_")
-        )
+        return self._io.list_ticker_stems()
 
     def get_ticker_count(self) -> int:
         return len(self.get_all_tickers())
@@ -158,14 +135,9 @@ class DerivedMetricsStore:
         if not tickers:
             return {"ticker_count": 0, "total_rows": 0}
 
-        total_rows = 0
-        for t in tickers:
-            path = self._ticker_path(t)
-            try:
-                total_rows += pq.read_metadata(path).num_rows
-            except Exception:
-                continue
-
+        total_rows = sum(
+            self._io.parquet_rows(self._ticker_rel(t)) for t in tickers
+        )
         return {"ticker_count": len(tickers), "total_rows": total_rows}
 
     @staticmethod
@@ -173,17 +145,7 @@ class DerivedMetricsStore:
         iv_df: pd.DataFrame,
         ohlcv_df: pd.DataFrame,
     ) -> pd.DataFrame:
-        """Compute IV Rank, IV Percentile, RV(20d), and VRP from raw data.
-
-        Args:
-            iv_df: Historical IV data for one ticker (from HistoricalIVStore).
-                   Must contain columns ``date`` and ``implied_volatility``.
-            ohlcv_df: OHLCV data for the same ticker (from OHLCVStore).
-                      Must contain columns ``date`` and ``close``.
-
-        Returns:
-            DataFrame with columns matching ``DERIVED_METRICS_SCHEMA``.
-        """
+        """Compute IV Rank, IV Percentile, RV(20d), and VRP from raw data."""
         if iv_df.empty:
             return pd.DataFrame(columns=[f.name for f in DERIVED_METRICS_SCHEMA])
 
@@ -223,11 +185,11 @@ class DerivedMetricsStore:
             return result
 
         merged["iv_percentile"] = _percentile_rank(merged["atm_iv"])
-
         merged["vrp"] = merged["atm_iv"] - merged["rv_20d"]
 
-        result = merged[["date", "atm_iv", "iv_rank", "iv_percentile", "rv_20d", "vrp"]].copy()
+        result = merged[
+            ["date", "atm_iv", "iv_rank", "iv_percentile", "rv_20d", "vrp"]
+        ].copy()
         result["date"] = result["date"].dt.date
         result = result.dropna(subset=["atm_iv"]).reset_index(drop=True)
-
         return result

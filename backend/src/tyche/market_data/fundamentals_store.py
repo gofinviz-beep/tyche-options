@@ -21,8 +21,10 @@ from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 import structlog
+
+from tyche.storage.paths import StorageContext
+from tyche.storage.store_io import StoreBackend
 
 logger = structlog.get_logger()
 
@@ -81,17 +83,16 @@ class FundamentalsStore:
     restatements — a later filing for the same period replaces the earlier).
     """
 
-    def __init__(self, data_dir: str = "data") -> None:
-        self._store_dir = Path(data_dir) / "fundamentals"
-        self._store_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        data_dir: str = "data",
+        ctx: StorageContext | None = None,
+    ) -> None:
+        self._io = StoreBackend.create("fundamentals", data_dir, ctx)
 
     @property
     def store_dir(self) -> Path:
-        return self._store_dir
-
-    def _ticker_path(self, ticker: str) -> Path:
-        safe = ticker.upper().replace("/", "_").replace(" ", "_")
-        return self._store_dir / f"{safe}.parquet"
+        return self._io.store_dir
 
     @staticmethod
     def _coerce(df: pd.DataFrame) -> pd.DataFrame:
@@ -150,26 +151,15 @@ class FundamentalsStore:
         df = self._coerce(df)
         df["ticker"] = ticker.upper()
 
-        path = self._ticker_path(ticker)
-        if path.exists():
-            existing = pd.read_parquet(path)
-            existing["period_end"] = pd.to_datetime(existing["period_end"]).dt.date
-            combined = pd.concat([existing, df], ignore_index=True)
-        else:
-            combined = df
-
-        combined = (
-            combined.drop_duplicates(subset=["period_end", "timeframe"], keep="last")
-            .sort_values(["timeframe", "period_end"])
-            .reset_index(drop=True)
+        rows = self._io.merge_write(
+            self._io.ticker_rel(ticker),
+            df,
+            FUNDAMENTALS_SCHEMA,
+            ["period_end", "timeframe"],
+            sort_cols=["timeframe", "period_end"],
         )
-
-        ordered = combined[[f.name for f in FUNDAMENTALS_SCHEMA]]
-        table = pa.Table.from_pandas(ordered, schema=FUNDAMENTALS_SCHEMA, preserve_index=False)
-        pq.write_table(table, path, compression="snappy")
-
-        logger.debug("fundamentals_written", ticker=ticker, rows=len(combined))
-        return len(combined)
+        logger.debug("fundamentals_written", ticker=ticker, rows=rows)
+        return rows
 
     def read_ticker(
         self,
@@ -186,11 +176,10 @@ class FundamentalsStore:
             as_of: When set, only rows whose ``filing_date`` is on or before
                 this date are returned (leakage-safe).
         """
-        path = self._ticker_path(ticker)
-        if not path.exists():
-            return pd.DataFrame(columns=[f.name for f in FUNDAMENTALS_SCHEMA])
-
-        df = pd.read_parquet(path)
+        empty = pd.DataFrame(columns=[f.name for f in FUNDAMENTALS_SCHEMA])
+        df = self._io.read_df(self._io.ticker_rel(ticker))
+        if df is None or df.empty:
+            return empty
         df["period_end"] = pd.to_datetime(df["period_end"]).dt.date
         df["filing_date"] = pd.to_datetime(df["filing_date"]).dt.date
 
@@ -202,11 +191,7 @@ class FundamentalsStore:
         return df.sort_values("period_end").reset_index(drop=True)
 
     def get_all_tickers(self) -> list[str]:
-        return sorted(
-            p.stem.upper()
-            for p in self._store_dir.glob("*.parquet")
-            if not p.name.startswith("_")
-        )
+        return self._io.list_ticker_stems()
 
     def get_latest_period_end(self, ticker: str) -> date | None:
         """Return the most recent ``period_end`` stored for a ticker."""
@@ -219,8 +204,5 @@ class FundamentalsStore:
         tickers = self.get_all_tickers()
         total_rows = 0
         for t in tickers:
-            try:
-                total_rows += pq.read_metadata(self._ticker_path(t)).num_rows
-            except Exception:
-                continue
+            total_rows += self._io.parquet_rows(self._io.ticker_rel(t))
         return {"ticker_count": len(tickers), "total_rows": total_rows}

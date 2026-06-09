@@ -207,7 +207,18 @@ def main() -> None:
     }
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
-    (results_dir / "demand_gate_verdict.json").write_text(json.dumps(summary, indent=2))
+    from tyche.storage import write_json
+    from tyche.storage.paths import join_uri
+    from tyche.storage.store_io import context_for_data_access
+
+    ctx = context_for_data_access(args.data_dir)
+    results_rel = str(args.results_dir).replace("\\", "/")
+    for prefix in (f"{args.data_dir}/", "data/"):
+        if results_rel.startswith(prefix):
+            results_rel = results_rel[len(prefix) :]
+            break
+    verdict_rel = join_uri(results_rel, "demand_gate_verdict.json")
+    write_json(summary, verdict_rel, atomic=True, ctx=ctx)
 
     print(f"\nReports + verdict: {args.results_dir}/")
     print(f"DEMAND_GATE_DONE {json.dumps(summary)}")

@@ -368,9 +368,18 @@ async def get_stock_recommendations_endpoint(
 )
 async def get_conviction_snapshots_endpoint(
     as_of_date: str | None = Query(None, description="Date in YYYY-MM-DD format (default: latest trading day)"),
+    settings: TycheSettings = Depends(get_settings),
     meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
 ) -> list[ConvictionSnapshotResponse]:
-    """Get all conviction snapshots for a given date from the DB."""
+    """Get all conviction snapshots for a given date from published JSON or DB."""
+    from tyche.persistence.published_routes import get_stocks_conviction_rows
+
+    if as_of_date is None:
+        published = get_stocks_conviction_rows(settings=settings)
+        if published is not None:
+            rows, _layer = published
+            return rows
+
     if as_of_date:
         target = date.fromisoformat(as_of_date)
     else:

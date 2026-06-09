@@ -6,11 +6,14 @@ import pytest
 from sqlalchemy import select, text
 
 from tyche.models.scan import ScanRun
+from tyche.models.filing import FilingSignal
+from tyche.models.news import NewsSignal
 from tyche.persistence.database import (
     _engines,
     _sessions,
     create_tables_for_models,
     dispose_engine,
+    ensure_news_db,
     get_session,
     init_db,
     init_scanner_dbs,
@@ -110,3 +113,12 @@ class TestDisposeEngine:
         register_engine("b", "sqlite+aiosqlite:///:memory:")
         await dispose_engine("a")
         assert "b" in _engines
+
+
+class TestEnsureNewsDb:
+    @pytest.mark.asyncio
+    async def test_creates_news_and_filing_tables(self, tmp_path) -> None:
+        await ensure_news_db(str(tmp_path))
+        async with get_session("news") as session:
+            await session.execute(select(NewsSignal))
+            await session.execute(select(FilingSignal))

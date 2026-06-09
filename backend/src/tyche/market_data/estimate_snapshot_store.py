@@ -16,8 +16,10 @@ from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 import structlog
+
+from tyche.storage.paths import StorageContext
+from tyche.storage.store_io import StoreBackend
 
 logger = structlog.get_logger()
 
@@ -55,13 +57,12 @@ _DEDUP_COLS = [
 class EstimateSnapshotStore:
     """Wide-format consensus snapshot store (does not replace tidy EstimatesStore)."""
 
-    def __init__(self, data_dir: str = "data") -> None:
-        self._store_dir = Path(data_dir) / "estimate_snapshots"
-        self._store_dir.mkdir(parents=True, exist_ok=True)
-
-    def _ticker_path(self, ticker: str) -> Path:
-        safe = ticker.upper().replace("/", "_").replace(" ", "_")
-        return self._store_dir / f"{safe}.parquet"
+    def __init__(
+        self,
+        data_dir: str = "data",
+        ctx: StorageContext | None = None,
+    ) -> None:
+        self._io = StoreBackend.create("estimate_snapshots", data_dir, ctx)
 
     def write_snapshots(self, ticker: str, df: pd.DataFrame) -> int:
         """Upsert snapshot rows; never drops prior ``snapshot_date`` values."""
@@ -76,27 +77,15 @@ class EstimateSnapshotStore:
         else:
             df["ingested_at"] = pd.to_datetime(df["ingested_at"], utc=True)
 
-        path = self._ticker_path(ticker)
-        if path.exists():
-            existing = pd.read_parquet(path)
-            existing["snapshot_date"] = pd.to_datetime(existing["snapshot_date"]).dt.date
-            combined = pd.concat([existing, df], ignore_index=True)
-        else:
-            combined = df
-
-        combined = (
-            combined.drop_duplicates(subset=_DEDUP_COLS, keep="last")
-            .sort_values(["snapshot_date", "metric", "period"])
-            .reset_index(drop=True)
+        rows = self._io.merge_write(
+            self._io.ticker_rel(ticker),
+            df,
+            ESTIMATE_SNAPSHOT_SCHEMA,
+            _DEDUP_COLS,
+            sort_cols=["snapshot_date", "metric", "period"],
         )
-
-        ordered = combined[[f.name for f in ESTIMATE_SNAPSHOT_SCHEMA]]
-        table = pa.Table.from_pandas(
-            ordered, schema=ESTIMATE_SNAPSHOT_SCHEMA, preserve_index=False
-        )
-        pq.write_table(table, path, compression="snappy")
-        logger.debug("estimate_snapshots_written", ticker=ticker, rows=len(combined))
-        return len(combined)
+        logger.debug("estimate_snapshots_written", ticker=ticker, rows=rows)
+        return rows
 
     def read_ticker(
         self,
@@ -104,11 +93,10 @@ class EstimateSnapshotStore:
         metric: str | None = None,
         as_of: date | None = None,
     ) -> pd.DataFrame:
-        path = self._ticker_path(ticker)
-        if not path.exists():
-            return pd.DataFrame(columns=[f.name for f in ESTIMATE_SNAPSHOT_SCHEMA])
-
-        df = pd.read_parquet(path)
+        empty = pd.DataFrame(columns=[f.name for f in ESTIMATE_SNAPSHOT_SCHEMA])
+        df = self._io.read_df(self._io.ticker_rel(ticker))
+        if df is None or df.empty:
+            return empty
         df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
         if metric is not None:
             df = df[df["metric"] == metric]
@@ -117,11 +105,7 @@ class EstimateSnapshotStore:
         return df.sort_values(["snapshot_date", "metric", "period"]).reset_index(drop=True)
 
     def get_all_tickers(self) -> list[str]:
-        return sorted(
-            p.stem.upper()
-            for p in self._store_dir.glob("*.parquet")
-            if not p.name.startswith("_")
-        )
+        return self._io.list_ticker_stems()
 
 
 def payload_hash(payload: object) -> str:

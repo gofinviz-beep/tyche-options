@@ -164,7 +164,7 @@ async def _guidance_catalyst_records(
     est_store: EstimatesStore | None = None,
     fund_store: FundamentalsStore | None = None,
     as_of: date | None = None,
-) -> pd.DataFrame | None:
+) -> tuple[pd.DataFrame | None, bool]:
     """Fetch corporate guidance and map raises/cuts to catalyst rows.
 
     Uses ``derive_guidance_catalysts`` which compares each forward guide to
@@ -173,14 +173,16 @@ async def _guidance_catalyst_records(
     year-ago guide for the same fiscal period — capturing both beat-and-raise
     surprises and demand ramps.
 
-    Returns a DataFrame ready for ``CatalystSignalStore.write_records`` or
-    ``None`` when there's nothing directional to record.
+    Returns ``(dataframe, fetched)`` where *fetched* is True when Benzinga
+    returned at least one guidance record (including reiterations). *dataframe*
+    is ready for ``CatalystSignalStore.write_records`` or ``None`` when there's
+    nothing directional to record.
     """
     from tyche.market_data.benzinga import derive_guidance_catalysts
 
     recs = await benzinga.get_corporate_guidance(ticker)
     if not recs:
-        return None
+        return None, False
 
     consensus = _build_consensus_by_period(est_store, ticker, as_of=as_of)
     fye_month = _infer_fye_month(fund_store, ticker, as_of=as_of)
@@ -208,7 +210,7 @@ async def _guidance_catalyst_records(
             )
         )
 
-    return pd.DataFrame(rows) if rows else None
+    return (pd.DataFrame(rows) if rows else None), True
 
 
 async def ingest_demand_data(
@@ -225,7 +227,10 @@ async def ingest_demand_data(
 ) -> dict[str, int]:
     """Ingest demand data for the universe (or an explicit ticker list).
 
-    Returns a summary dict of per-source ticker counts written.
+    Returns a summary dict of per-source ticker counts. Guidance exposes both
+    ``guidance_tickers_fetched`` (Benzinga returned records) and
+    ``guidance_catalysts_written`` (directional raise/cut rows persisted).
+    ``guidance`` mirrors ``guidance_catalysts_written`` for backward compatibility.
     """
     as_of = as_of or date.today()
     concurrency = concurrency or settings.demand_data_concurrency
@@ -243,6 +248,8 @@ async def ingest_demand_data(
             "fundamentals": 0,
             "estimates": 0,
             "short_interest": 0,
+            "guidance_tickers_fetched": 0,
+            "guidance_catalysts_written": 0,
             "guidance": 0,
         }
 
@@ -291,6 +298,8 @@ async def ingest_demand_data(
         "fundamentals": 0,
         "estimates": 0,
         "short_interest": 0,
+        "guidance_tickers_fetched": 0,
+        "guidance_catalysts_written": 0,
         "guidance": 0,
     }
 
@@ -407,16 +416,18 @@ async def ingest_demand_data(
 
     async def _guidance(ticker: str) -> None:
         try:
-            recs = await _guidance_catalyst_records(
+            recs, fetched = await _guidance_catalyst_records(
                 benzinga,
                 ticker,
                 est_store=est_store,
                 fund_store=fund_store,
                 as_of=as_of,
             )
+            if fetched:
+                counts["guidance_tickers_fetched"] += 1
             if recs is not None and not recs.empty:
                 await asyncio.to_thread(cat_store.write_records, ticker, recs)
-                counts["guidance"] += 1
+                counts["guidance_catalysts_written"] += 1
         except Exception:
             logger.warning("demand_guidance_failed", ticker=ticker, exc_info=True)
 
@@ -463,5 +474,6 @@ async def ingest_demand_data(
     # rate limit, so the three budgets saturate independently.
     await asyncio.gather(*pipelines)
 
+    counts["guidance"] = counts["guidance_catalysts_written"]
     logger.info("demand_data_ingest_complete", **counts)
     return counts

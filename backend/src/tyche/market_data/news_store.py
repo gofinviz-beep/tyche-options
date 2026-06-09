@@ -12,12 +12,13 @@ ticker's Parquet file.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 import structlog
+
+from tyche.storage.paths import StorageContext
+from tyche.storage.store_io import StoreBackend
 
 logger = structlog.get_logger()
 
@@ -39,7 +40,46 @@ NEWS_ARTICLE_SCHEMA = pa.schema(
     ]
 )
 
-_CLASSIFICATION_COLS = ("event_type", "sentiment", "impact_score", "relevance", "classified_at")
+_CLASSIFICATION_COLS = (
+    "event_type",
+    "sentiment",
+    "impact_score",
+    "relevance",
+    "classified_at",
+)
+
+
+def _empty_articles_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=[f.name for f in NEWS_ARTICLE_SCHEMA])
+
+
+def _normalize_article_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return _empty_articles_df()
+    out = df.copy()
+    if "published_at" in out.columns:
+        out["published_at"] = pd.to_datetime(out["published_at"], utc=True)
+    if "classified_at" in out.columns:
+        out["classified_at"] = pd.to_datetime(out["classified_at"], utc=True)
+    return out
+
+
+def _prepare_new_articles(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    out = df.copy()
+    out["ticker"] = ticker.upper()
+    if "published_at" in out.columns:
+        out["published_at"] = pd.to_datetime(out["published_at"], utc=True)
+    for col in _CLASSIFICATION_COLS:
+        if col not in out.columns:
+            if col == "impact_score":
+                out[col] = float("nan")
+            elif col == "classified_at":
+                out[col] = pd.NaT
+            else:
+                out[col] = None
+    if "classified_at" in out.columns:
+        out["classified_at"] = pd.to_datetime(out["classified_at"], utc=True)
+    return out
 
 
 class NewsArticleStore:
@@ -48,17 +88,33 @@ class NewsArticleStore:
     Layout: ``data/news_articles/{TICKER}.parquet``
     """
 
-    def __init__(self, data_dir: str = "data") -> None:
-        self._store_dir = Path(data_dir) / "news_articles"
-        self._store_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        data_dir: str = "data",
+        ctx: StorageContext | None = None,
+    ) -> None:
+        self._io = StoreBackend.create("news_articles", data_dir, ctx)
 
     @property
-    def store_dir(self) -> Path:
-        return self._store_dir
+    def store_dir(self):
+        return self._io.store_dir
 
-    def _ticker_path(self, ticker: str) -> Path:
-        safe = ticker.upper().replace("/", "_").replace(" ", "_")
-        return self._store_dir / f"{safe}.parquet"
+    def _read_ticker_df(self, ticker: str) -> pd.DataFrame:
+        df = self._io.read_df(self._io.ticker_rel(ticker))
+        if df is None or df.empty:
+            return _empty_articles_df()
+        return _normalize_article_df(df)
+
+    def _write_ticker_df(self, ticker: str, df: pd.DataFrame) -> int:
+        if df.empty:
+            return 0
+        ordered = df[[f.name for f in NEWS_ARTICLE_SCHEMA]]
+        self._io.write_df(
+            self._io.ticker_rel(ticker),
+            ordered,
+            schema=NEWS_ARTICLE_SCHEMA,
+        )
+        return len(ordered)
 
     def write_articles(self, ticker: str, articles: list[dict]) -> int:
         """Persist articles for a ticker, merging with existing data.
@@ -68,74 +124,22 @@ class NewsArticleStore:
         if not articles:
             return 0
 
-        df = pd.DataFrame(articles)
-        df["ticker"] = ticker.upper()
-
-        if "published_at" in df.columns:
-            df["published_at"] = pd.to_datetime(df["published_at"], utc=True)
-
-        for col in _CLASSIFICATION_COLS:
-            if col not in df.columns:
-                if col == "impact_score":
-                    df[col] = float("nan")
-                elif col == "classified_at":
-                    df[col] = pd.NaT
-                else:
-                    df[col] = None
-
-        if "classified_at" in df.columns:
-            df["classified_at"] = pd.to_datetime(df["classified_at"], utc=True)
-
-        path = self._ticker_path(ticker)
-        if path.exists():
-            existing = pd.read_parquet(path)
-            existing["published_at"] = pd.to_datetime(
-                existing["published_at"], utc=True
-            )
-            if "classified_at" in existing.columns:
-                existing["classified_at"] = pd.to_datetime(
-                    existing["classified_at"], utc=True
-                )
-            combined = pd.concat([existing, df], ignore_index=True)
-        else:
-            combined = df
-
-        combined = (
-            combined.drop_duplicates(subset=["article_id"], keep="last")
-            .sort_values("published_at")
-            .reset_index(drop=True)
+        df = _prepare_new_articles(pd.DataFrame(articles), ticker)
+        return self._io.merge_write(
+            self._io.ticker_rel(ticker),
+            df,
+            NEWS_ARTICLE_SCHEMA,
+            ["article_id"],
+            sort_cols=["published_at"],
         )
-
-        schema_cols = [f.name for f in NEWS_ARTICLE_SCHEMA]
-        for col in schema_cols:
-            if col not in combined.columns:
-                if col == "impact_score":
-                    combined[col] = float("nan")
-                elif col in ("published_at", "classified_at"):
-                    combined[col] = pd.NaT
-                else:
-                    combined[col] = None
-
-        combined = combined[schema_cols]
-
-        table = pa.Table.from_pandas(combined, schema=NEWS_ARTICLE_SCHEMA, preserve_index=False)
-        pq.write_table(table, path, compression="snappy")
-
-        logger.debug("news_articles_written", ticker=ticker, rows=len(combined))
-        return len(combined)
 
     def read_articles(
         self, ticker: str, since: datetime | None = None
     ) -> pd.DataFrame:
         """Read articles for a ticker, optionally filtered by publish date."""
-        path = self._ticker_path(ticker)
-        if not path.exists():
-            return pd.DataFrame(columns=[f.name for f in NEWS_ARTICLE_SCHEMA])
-
-        df = pd.read_parquet(path)
-        df["published_at"] = pd.to_datetime(df["published_at"], utc=True)
-        if "classified_at" in df.columns:
-            df["classified_at"] = pd.to_datetime(df["classified_at"], utc=True)
+        df = self._read_ticker_df(ticker)
+        if df.empty:
+            return df
 
         if since is not None:
             if since.tzinfo is None:
@@ -161,18 +165,10 @@ class NewsArticleStore:
     def update_classification(
         self, ticker: str, article_id: str, classification: dict
     ) -> bool:
-        """Update classification fields for a single article.
-
-        Returns True if the article was found and updated.
-        """
-        path = self._ticker_path(ticker)
-        if not path.exists():
+        """Update classification fields for a single article."""
+        df = self._read_ticker_df(ticker)
+        if df.empty:
             return False
-
-        df = pd.read_parquet(path)
-        df["published_at"] = pd.to_datetime(df["published_at"], utc=True)
-        if "classified_at" in df.columns:
-            df["classified_at"] = pd.to_datetime(df["classified_at"], utc=True)
 
         mask = df["article_id"] == article_id
         if not mask.any():
@@ -183,33 +179,16 @@ class NewsArticleStore:
                 df.loc[mask, key] = value
 
         df.loc[mask, "classified_at"] = datetime.now(tz=timezone.utc)
-
-        schema_cols = [f.name for f in NEWS_ARTICLE_SCHEMA]
-        df = df[schema_cols]
-        table = pa.Table.from_pandas(df, schema=NEWS_ARTICLE_SCHEMA, preserve_index=False)
-        pq.write_table(table, path, compression="snappy")
+        self._write_ticker_df(ticker, df)
         return True
 
     def bulk_update_classifications(
         self, ticker: str, classifications: dict[str, dict]
     ) -> int:
-        """Update classification for multiple articles in one read-write cycle.
-
-        Args:
-            ticker: The ticker symbol.
-            classifications: Mapping of article_id -> classification dict.
-
-        Returns:
-            Number of articles updated.
-        """
-        path = self._ticker_path(ticker)
-        if not path.exists():
+        """Update classification for multiple articles in one read-write cycle."""
+        df = self._read_ticker_df(ticker)
+        if df.empty:
             return 0
-
-        df = pd.read_parquet(path)
-        df["published_at"] = pd.to_datetime(df["published_at"], utc=True)
-        if "classified_at" in df.columns:
-            df["classified_at"] = pd.to_datetime(df["classified_at"], utc=True)
 
         now = datetime.now(tz=timezone.utc)
         updated = 0
@@ -224,32 +203,25 @@ class NewsArticleStore:
             updated += 1
 
         if updated > 0:
-            schema_cols = [f.name for f in NEWS_ARTICLE_SCHEMA]
-            df = df[schema_cols]
-            table = pa.Table.from_pandas(
-                df, schema=NEWS_ARTICLE_SCHEMA, preserve_index=False
-            )
-            pq.write_table(table, path, compression="snappy")
+            self._write_ticker_df(ticker, df)
 
         return updated
 
     def list_tickers(self) -> list[str]:
         """List all tickers with stored articles."""
-        return sorted(
-            p.stem for p in self._store_dir.glob("*.parquet")
-        )
+        return self._io.list_ticker_stems()
 
     def read_all_recent(self, hours: int = 48) -> pd.DataFrame:
         """Read recent articles across all tickers."""
         frames: list[pd.DataFrame] = []
         cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
-        for path in self._store_dir.glob("*.parquet"):
-            ticker = path.stem
+        for rel in self._io.iter_parquet_rels():
+            ticker = rel.rsplit("/", 1)[-1].replace(".parquet", "")
             df = self.read_articles(ticker, since=cutoff)
             if not df.empty:
                 frames.append(df)
         if not frames:
-            return pd.DataFrame(columns=[f.name for f in NEWS_ARTICLE_SCHEMA])
+            return _empty_articles_df()
         return (
             pd.concat(frames, ignore_index=True)
             .drop_duplicates(subset=["article_id", "ticker"], keep="last")

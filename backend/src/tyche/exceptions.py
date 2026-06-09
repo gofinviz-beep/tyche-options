@@ -130,6 +130,10 @@ class EdgarAPIError(MarketDataError):
         super().__init__(f"EDGAR API {status_code}: {message}")
 
 
+class PublishError(TycheError):
+    """Publisher failed — missing required upstream or validation error."""
+
+
 class DataStoreError(TycheError):
     """Error reading/writing local data cache."""
 

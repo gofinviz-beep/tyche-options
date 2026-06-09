@@ -31,6 +31,15 @@ import pyarrow.parquet as pq
 import structlog
 
 from tyche.exceptions import DataStoreError, InsufficientDataError
+from tyche.storage import (
+    exists as storage_exists,
+    parquet_num_rows,
+    read_json,
+    read_parquet as storage_read_parquet,
+    write_json,
+)
+from tyche.storage.paths import StorageContext
+from tyche.storage.store_io import StoreBackend
 
 if TYPE_CHECKING:
     from tyche.market_data.polygon import DailyBar, IntradayBar, PolygonClient, TickerInfo
@@ -156,52 +165,70 @@ def _ticker_path(base_dir: Path, ticker: str) -> Path:
 
 
 class _MetadataCache:
-    """Lightweight JSON cache for aggregate store stats.
+    """Lightweight JSON cache for aggregate store stats."""
 
-    Avoids scanning thousands of Parquet files just to answer
-    "how many tickers / what's the date range / how many rows?"
-    Updated on every write; fast to read for API status endpoints.
-    """
-
-    def __init__(self, cache_path: Path) -> None:
-        self._path = cache_path
+    def __init__(self, rel_path: str, ctx: StorageContext) -> None:
+        self._rel = rel_path
+        self._ctx = ctx
 
     def read(self) -> dict:
-        if not self._path.exists():
+        if not storage_exists(self._rel, ctx=self._ctx):
             return {}
         try:
-            return json.loads(self._path.read_text())
+            data = read_json(self._rel, ctx=self._ctx)
+            return data if isinstance(data, dict) else {}
         except Exception:
             return {}
 
     def write(self, data: dict) -> None:
         try:
-            self._path.write_text(json.dumps(data, default=str))
+            write_json(data, self._rel, atomic=False, ctx=self._ctx)
         except Exception as exc:
             logger.warning("metadata_cache_write_error", error=str(exc))
 
-    def rebuild(self, store_dir: Path, dedup_col: str = "date") -> dict:
+    def rebuild(
+        self,
+        store: StoreBackend | Path,
+        dedup_col: str = "date",
+    ) -> dict:
         """Full scan of all Parquet files to rebuild cache. Slow but accurate."""
         earliest: date | None = None
         latest: date | None = None
         total_rows = 0
         ticker_count = 0
 
-        for path in store_dir.glob("*.parquet"):
-            try:
-                meta = pq.read_metadata(path)
-                total_rows += meta.num_rows
-                ticker_count += 1
-                table = pq.read_table(path, columns=[dedup_col])
-                if table.num_rows > 0:
-                    dates = table.column(dedup_col).to_pylist()
+        if isinstance(store, StoreBackend):
+            for rel in store.iter_parquet_rels():
+                try:
+                    total_rows += parquet_num_rows(rel, ctx=store.ctx)
+                    ticker_count += 1
+                    df = storage_read_parquet(rel, columns=[dedup_col], ctx=store.ctx)
+                    if df.empty:
+                        continue
+                    dates = pd.to_datetime(df[dedup_col]).dt.date.tolist()
                     fmin, fmax = min(dates), max(dates)
                     if earliest is None or fmin < earliest:
                         earliest = fmin
                     if latest is None or fmax > latest:
                         latest = fmax
-            except Exception:
-                continue
+                except Exception:
+                    continue
+        else:
+            for path in store.glob("*.parquet"):
+                try:
+                    meta = pq.read_metadata(path)
+                    total_rows += meta.num_rows
+                    ticker_count += 1
+                    table = pq.read_table(path, columns=[dedup_col])
+                    if table.num_rows > 0:
+                        dates = table.column(dedup_col).to_pylist()
+                        fmin, fmax = min(dates), max(dates)
+                        if earliest is None or fmin < earliest:
+                            earliest = fmin
+                        if latest is None or fmax > latest:
+                            latest = fmax
+                except Exception:
+                    continue
 
         data = {
             "ticker_count": ticker_count,
@@ -220,28 +247,36 @@ class OHLCVStore:
     Each file contains only that ticker's daily bars, deduplicated on date.
     """
 
-    def __init__(self, data_dir: str = "data") -> None:
-        self._data_dir = Path(data_dir)
-        self._store_dir = self._data_dir / "ohlcv_daily"
-        self._store_dir.mkdir(parents=True, exist_ok=True)
-        self._legacy_path = self._data_dir / "ohlcv_daily.parquet"
-        self._cache = _MetadataCache(self._store_dir / "_meta.json")
+    def __init__(
+        self,
+        data_dir: str = "data",
+        ctx: StorageContext | None = None,
+    ) -> None:
+        self._io = StoreBackend.create(
+            "ohlcv_daily",
+            data_dir,
+            ctx,
+            ticker_normalize="as_is",
+            upper_stems=False,
+        )
+        self._legacy_rel = "ohlcv_daily.parquet"
+        self._cache = _MetadataCache(self._io.rel("_meta.json"), self._io.ctx)
 
     @property
     def store_dir(self) -> Path:
-        return self._store_dir
+        return self._io.store_dir
 
     @property
     def exists(self) -> bool:
-        return any(self._store_dir.glob("*.parquet"))
+        return self._io.has_any_parquet()
 
     @property
     def has_legacy_file(self) -> bool:
-        return self._legacy_path.exists()
+        return storage_exists(self._legacy_rel, ctx=self._io.ctx)
 
     def rebuild_cache(self) -> dict:
         """Force a full scan and rebuild the metadata cache."""
-        return self._cache.rebuild(self._store_dir, dedup_col="date")
+        return self._cache.rebuild(self._io, dedup_col="date")
 
     def _ensure_cache(self) -> dict:
         """Return cached metadata, rebuilding lazily if missing."""
@@ -257,11 +292,11 @@ class OHLCVStore:
 
         Returns the number of ticker files created.
         """
-        if not self._legacy_path.exists():
+        if not self.has_legacy_file:
             return 0
 
-        logger.info("ohlcv_migrate_start", legacy_path=str(self._legacy_path))
-        df = pd.read_parquet(self._legacy_path)
+        logger.info("ohlcv_migrate_start", legacy_path=self._legacy_rel)
+        df = storage_read_parquet(self._legacy_rel, ctx=self._io.ctx)
         df["date"] = pd.to_datetime(df["date"]).dt.date
         count = 0
 
@@ -273,18 +308,19 @@ class OHLCVStore:
                 .sort_values("date")
                 .reset_index(drop=True)
             )
-            path = _ticker_path(self._store_dir, ticker_str)
-            table = pa.Table.from_pandas(ticker_df, schema=OHLCV_SCHEMA)
-            pq.write_table(table, path, compression="snappy")
+            self._io.write_df(
+                self._io.ticker_rel(ticker_str),
+                ticker_df,
+                schema=OHLCV_SCHEMA,
+            )
             count += 1
 
-        self._legacy_path.rename(self._legacy_path.with_suffix(".parquet.bak"))
+        legacy_local = self._io.store_dir.parent / "ohlcv_daily.parquet"
+        if legacy_local.exists():
+            legacy_local.rename(legacy_local.with_suffix(".parquet.bak"))
         logger.info("ohlcv_migrate_complete", tickers=count)
         self.rebuild_cache()
         return count
-
-    def _ticker_path(self, ticker: str) -> Path:
-        return _ticker_path(self._store_dir, ticker)
 
     def get_latest_date(self) -> date | None:
         """Return the most recent date across all ticker files (cached)."""
@@ -340,9 +376,9 @@ class OHLCVStore:
             )
             new_df["date"] = pd.to_datetime(new_df["date"]).dt.date
 
-            path = self._ticker_path(ticker)
-            if path.exists():
-                existing_df = pd.read_parquet(path)
+            rel = self._io.ticker_rel(ticker)
+            existing_df = self._io.read_df(rel)
+            if existing_df is not None and not existing_df.empty:
                 existing_df["date"] = pd.to_datetime(existing_df["date"]).dt.date
                 combined = pd.concat([existing_df, new_df], ignore_index=True)
                 combined = combined.drop_duplicates(subset=["date"], keep="last")
@@ -352,8 +388,7 @@ class OHLCVStore:
                 rows_added = len(combined)
 
             combined = combined.sort_values("date").reset_index(drop=True)
-            table = pa.Table.from_pandas(combined, schema=OHLCV_SCHEMA)
-            pq.write_table(table, path, compression="snappy")
+            self._io.write_df(rel, combined, schema=OHLCV_SCHEMA)
             total_added += rows_added
 
         self._update_cache_after_write(bars, total_added, len(by_ticker))
@@ -387,7 +422,7 @@ class OHLCVStore:
         cached["earliest_date"] = earliest.isoformat()
         cached["latest_date"] = latest.isoformat()
         cached["total_rows"] = cached.get("total_rows", 0) + rows_added
-        cached["ticker_count"] = len(list(self._store_dir.glob("*.parquet")))
+        cached["ticker_count"] = len(self._io.list_ticker_stems())
         self._cache.write(cached)
 
     def read_ticker(
@@ -400,13 +435,12 @@ class OHLCVStore:
 
         Returns DataFrame with columns: date, open, high, low, close, volume, vwap
         """
-        path = self._ticker_path(ticker)
-        if not path.exists():
-            return pd.DataFrame(
-                columns=["date", "open", "high", "low", "close", "volume", "vwap"]
-            )
-
-        df = pd.read_parquet(path)
+        empty = pd.DataFrame(
+            columns=["date", "open", "high", "low", "close", "volume", "vwap"]
+        )
+        df = self._io.read_df(self._io.ticker_rel(ticker))
+        if df is None or df.empty:
+            return empty
         df["date"] = pd.to_datetime(df["date"]).dt.date
         if start_date:
             df = df[df["date"] >= start_date]
@@ -431,9 +465,7 @@ class OHLCVStore:
 
     def get_all_tickers(self) -> list[str]:
         """Return sorted list of all tickers in the store."""
-        return sorted(
-            p.stem for p in self._store_dir.glob("*.parquet")
-        )
+        return self._io.list_ticker_stems()
 
     def get_row_count(self) -> int:
         """Return total number of rows across all ticker files (cached)."""
@@ -446,10 +478,10 @@ class OHLCVStore:
         Used by backtest and screen_universe which need cross-ticker views.
         """
         frames: list[pd.DataFrame] = []
-        for path in self._store_dir.glob("*.parquet"):
+        for rel in self._io.iter_parquet_rels():
             try:
-                df = pd.read_parquet(path)
-                df["ticker"] = path.stem
+                df = storage_read_parquet(rel, ctx=self._io.ctx)
+                df["ticker"] = Path(rel).stem
                 frames.append(df)
             except Exception:
                 continue
@@ -531,18 +563,21 @@ class TickerMetaStore:
     Refreshed on each bootstrap to keep market caps current.
     """
 
-    def __init__(self, data_dir: str = "data") -> None:
-        self._data_dir = Path(data_dir)
-        self._data_dir.mkdir(parents=True, exist_ok=True)
-        self._parquet_path = self._data_dir / "ticker_meta.parquet"
+    def __init__(
+        self,
+        data_dir: str = "data",
+        ctx: StorageContext | None = None,
+    ) -> None:
+        self._io = StoreBackend.create("", data_dir, ctx)
+        self._meta_rel = "ticker_meta.parquet"
 
     @property
     def parquet_path(self) -> Path:
-        return self._parquet_path
+        return self._io.store_dir / "ticker_meta.parquet"
 
     @property
     def exists(self) -> bool:
-        return self._parquet_path.exists()
+        return self._io.exists(self._meta_rel)
 
     def write_meta(self, tickers: list[TickerInfo]) -> int:
         """Write ticker metadata, upserting on ticker symbol.
@@ -573,7 +608,8 @@ class TickerMetaStore:
         )
 
         if self.exists:
-            existing_df = pd.read_parquet(self._parquet_path)
+            existing_df = self._io.read_df(self._meta_rel)
+            assert existing_df is not None
             existing_df = _auto_migrate_meta_columns(existing_df)
 
             # Build preservation maps before overwrite: keep existing positive
@@ -651,13 +687,12 @@ class TickerMetaStore:
         ).fillna(0.0)
         combined = _apply_equity_type_overrides(combined)
 
-        table = pa.Table.from_pandas(combined, schema=TICKER_META_SCHEMA)
-        pq.write_table(table, self._parquet_path, compression="snappy")
+        self._io.write_df(self._meta_rel, combined, schema=TICKER_META_SCHEMA)
 
         logger.info(
             "ticker_meta_write",
             tickers_stored=len(combined),
-            path=str(self._parquet_path),
+            path=str(self.parquet_path),
         )
         return len(combined)
 
@@ -671,7 +706,8 @@ class TickerMetaStore:
                     "sic_code", "sic_description", "sector", "shares_outstanding",
                 ]
             )
-        df = pd.read_parquet(self._parquet_path)
+        df = self._io.read_df(self._meta_rel)
+        assert df is not None
         return _auto_migrate_meta_columns(df)
 
     def get_market_caps(self, tickers: list[str] | None = None) -> dict[str, float]:
@@ -683,7 +719,8 @@ class TickerMetaStore:
         if not self.exists:
             return {}
 
-        df = pd.read_parquet(self._parquet_path, columns=["ticker", "market_cap"])
+        df = self._io.read_df(self._meta_rel, columns=["ticker", "market_cap"])
+        assert df is not None
         if tickers:
             df = df[df["ticker"].isin(tickers)]
         return dict(zip(df["ticker"], df["market_cap"]))
@@ -695,9 +732,11 @@ class TickerMetaStore:
         if not self.exists:
             return {}
         try:
-            df = pd.read_parquet(
-                self._parquet_path, columns=["ticker", "shares_outstanding"]
+            df = self._io.read_df(
+                self._meta_rel, columns=["ticker", "shares_outstanding"]
             )
+            if df is None:
+                return {}
         except (ValueError, KeyError):
             return {}
         if tickers:
@@ -713,7 +752,8 @@ class TickerMetaStore:
         if not self.exists or not shares:
             return 0
 
-        df = pd.read_parquet(self._parquet_path)
+        df = self._io.read_df(self._meta_rel)
+        assert df is not None
         df = _auto_migrate_meta_columns(df)
         updated = 0
         for ticker, sh in shares.items():
@@ -725,8 +765,7 @@ class TickerMetaStore:
                 updated += 1
 
         df["last_updated"] = pd.to_datetime(df["last_updated"]).dt.date
-        table = pa.Table.from_pandas(df, schema=TICKER_META_SCHEMA)
-        pq.write_table(table, self._parquet_path, compression="snappy")
+        self._io.write_df(self._meta_rel, df, schema=TICKER_META_SCHEMA)
 
         logger.info("ticker_meta_shares_updated", updated=updated, total=len(shares))
         return updated
@@ -736,7 +775,8 @@ class TickerMetaStore:
         if not self.exists:
             return {}
 
-        df = pd.read_parquet(self._parquet_path, columns=["ticker", "exchange"])
+        df = self._io.read_df(self._meta_rel, columns=["ticker", "exchange"])
+        assert df is not None
         if tickers:
             df = df[df["ticker"].isin(tickers)]
         return dict(zip(df["ticker"], df["exchange"]))
@@ -749,7 +789,8 @@ class TickerMetaStore:
         if not self.exists or not caps:
             return 0
 
-        df = pd.read_parquet(self._parquet_path)
+        df = self._io.read_df(self._meta_rel)
+        assert df is not None
         df = _auto_migrate_meta_columns(df)
         updated = 0
         for ticker, cap in caps.items():
@@ -759,8 +800,7 @@ class TickerMetaStore:
                 updated += 1
 
         df["last_updated"] = pd.to_datetime(df["last_updated"]).dt.date
-        table = pa.Table.from_pandas(df, schema=TICKER_META_SCHEMA)
-        pq.write_table(table, self._parquet_path, compression="snappy")
+        self._io.write_df(self._meta_rel, df, schema=TICKER_META_SCHEMA)
 
         logger.info("ticker_meta_caps_updated", updated=updated, total_caps=len(caps))
         return updated
@@ -770,7 +810,8 @@ class TickerMetaStore:
         if not self.exists:
             return {}
 
-        df = pd.read_parquet(self._parquet_path, columns=["ticker", "type"])
+        df = self._io.read_df(self._meta_rel, columns=["ticker", "type"])
+        assert df is not None
         if tickers:
             df = df[df["ticker"].isin(tickers)]
         return dict(zip(df["ticker"], df["type"]))
@@ -793,7 +834,9 @@ class TickerMetaStore:
 
         cols = ["ticker", "institutional_pct"]
         try:
-            df = pd.read_parquet(self._parquet_path, columns=cols)
+            df = self._io.read_df(self._meta_rel, columns=cols)
+            if df is None:
+                return {}
         except Exception:
             return {}
         if tickers:
@@ -809,7 +852,8 @@ class TickerMetaStore:
         if not self.exists or not pcts:
             return 0
 
-        df = pd.read_parquet(self._parquet_path)
+        df = self._io.read_df(self._meta_rel)
+        assert df is not None
         df = _auto_migrate_meta_columns(df)
 
         updated = 0
@@ -822,8 +866,7 @@ class TickerMetaStore:
         df["last_updated"] = pd.to_datetime(df["last_updated"]).dt.date
         if "institutional_pct" in df.columns:
             df["institutional_pct"] = pd.to_numeric(df["institutional_pct"], errors="coerce")
-        table = pa.Table.from_pandas(df, schema=TICKER_META_SCHEMA)
-        pq.write_table(table, self._parquet_path, compression="snappy")
+        self._io.write_df(self._meta_rel, df, schema=TICKER_META_SCHEMA)
 
         logger.info("ticker_meta_institutional_updated", updated=updated, total=len(pcts))
         return updated
@@ -834,7 +877,9 @@ class TickerMetaStore:
             return {}
 
         try:
-            df = pd.read_parquet(self._parquet_path, columns=["ticker", "sector"])
+            df = self._io.read_df(self._meta_rel, columns=["ticker", "sector"])
+            if df is None:
+                return {}
         except Exception:
             return {}
         if tickers:
@@ -848,7 +893,9 @@ class TickerMetaStore:
             return {}
 
         try:
-            df = pd.read_parquet(self._parquet_path, columns=["ticker", "name"])
+            df = self._io.read_df(self._meta_rel, columns=["ticker", "name"])
+            if df is None:
+                return {}
         except Exception:
             return {}
         if tickers:
@@ -867,7 +914,9 @@ class TickerMetaStore:
 
         cols = ["ticker", "market_cap", "exchange", "name", "sector"]
         try:
-            df = pd.read_parquet(self._parquet_path, columns=cols)
+            df = self._io.read_df(self._meta_rel, columns=cols)
+            if df is None:
+                return {}
         except Exception:
             return {}
 
@@ -896,7 +945,8 @@ class TickerMetaStore:
         if not self.exists or not sic_data:
             return 0
 
-        df = pd.read_parquet(self._parquet_path)
+        df = self._io.read_df(self._meta_rel)
+        assert df is not None
         df = _auto_migrate_meta_columns(df)
 
         updated = 0
@@ -910,8 +960,7 @@ class TickerMetaStore:
                 updated += 1
 
         df["last_updated"] = pd.to_datetime(df["last_updated"]).dt.date
-        table = pa.Table.from_pandas(df, schema=TICKER_META_SCHEMA)
-        pq.write_table(table, self._parquet_path, compression="snappy")
+        self._io.write_df(self._meta_rel, df, schema=TICKER_META_SCHEMA)
 
         logger.info("ticker_meta_sic_updated", updated=updated, total=len(sic_data))
         return updated
@@ -920,11 +969,7 @@ class TickerMetaStore:
         """Return count of tickers in the metadata store."""
         if not self.exists:
             return 0
-        try:
-            meta = pq.read_metadata(self._parquet_path)
-            return meta.num_rows
-        except Exception:
-            return 0
+        return parquet_num_rows(self._meta_rel, ctx=self._io.ctx)
 
 
 class ConvictionSignalStore:

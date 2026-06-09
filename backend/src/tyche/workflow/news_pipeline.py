@@ -102,14 +102,24 @@ async def _run_news_pipeline_locked(settings: TycheSettings) -> NewsPipelineResu
         else:
             logger.info("news_pipeline_no_classifier")
 
-        from tyche.market_data.news_signals import rebuild_signals
+        if settings.data_backend == "gcs":
+            from tyche.ops.intelligence_export import export_news_signals_from_parquet
 
-        rebuilt = await rebuild_signals(
-            store=store,
-            tickers=tickers,
-            lookback_hours=settings.news_lookback_hours,
-        )
-        result.signals_rebuilt = rebuilt
+            export_summary = await export_news_signals_from_parquet(
+                store=store,
+                tickers=tickers,
+                settings=settings,
+            )
+            result.signals_rebuilt = int(export_summary.get("rows", 0))
+        else:
+            from tyche.market_data.news_signals import rebuild_signals
+
+            rebuilt = await rebuild_signals(
+                store=store,
+                tickers=tickers,
+                lookback_hours=settings.news_lookback_hours,
+            )
+            result.signals_rebuilt = rebuilt
 
     except Exception as exc:
         msg = f"News pipeline error: {exc}"

@@ -102,15 +102,28 @@ async def _run_edgar_pipeline_locked(settings: TycheSettings) -> EdgarPipelineRe
         else:
             logger.info("edgar_pipeline_no_classifier")
 
-        from tyche.market_data.filing_signals import rebuild_filing_signals
+        if settings.data_backend == "gcs":
+            from tyche.ops.intelligence_export import export_filing_signals_from_parquet
 
-        rebuilt = await rebuild_filing_signals(
-            filing_store=filing_store,
-            insider_store=insider_store,
-            tickers=tickers,
-            lookback_days=settings.edgar_lookback_days,
-        )
-        result.signals_rebuilt = rebuilt
+            export_summary = await export_filing_signals_from_parquet(
+                filing_store=filing_store,
+                insider_store=insider_store,
+                tickers=tickers,
+                settings=settings,
+            )
+            result.signals_rebuilt = int(
+                export_summary.get("filings", {}).get("rows", 0)
+            )
+        else:
+            from tyche.market_data.filing_signals import rebuild_filing_signals
+
+            rebuilt = await rebuild_filing_signals(
+                filing_store=filing_store,
+                insider_store=insider_store,
+                tickers=tickers,
+                lookback_days=settings.edgar_lookback_days,
+            )
+            result.signals_rebuilt = rebuilt
 
     except Exception as exc:
         msg = f"EDGAR pipeline error: {exc}"

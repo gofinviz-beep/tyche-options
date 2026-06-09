@@ -48,6 +48,13 @@ Live scoring / alpha batch unchanged when `alpha_discovery_enabled=false`. Locke
 - Estimate snapshots: `backend/data/estimate_snapshots/{TICKER}.parquet` (append by `snapshot_date`)
 - Demand gate: `backend/data/ml/alpha_results/demand_gate_verdict.json`
 
+## GCP cloud ingest
+
+Batch demand/options/alpha runs in Cloud Run when `TYCHE_DATA_BACKEND=gcs`.
+Use skill `gcp-cloud-ops` for deploy, manifests, and workflow issues.
+`ingest-demand-data` writes Benzinga guidance → `catalyst_signals/`; manifest
+tracks `guidance_tickers_fetched` vs `guidance_catalysts_written`.
+
 ## Execution rules (from v8 contract)
 
 - One task = one commit-sized diff.

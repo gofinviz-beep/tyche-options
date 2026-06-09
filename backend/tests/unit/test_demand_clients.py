@@ -896,3 +896,59 @@ class TestInferFyeMonth:
         store = FundamentalsStore(data_dir=str(tmp_path))
         assert _infer_fye_month(store, "ZZZZ") is None
         assert _infer_fye_month(None, "ZZZZ") is None
+
+
+class TestGuidanceCatalystRecords:
+    @pytest.mark.asyncio
+    async def test_empty_api_response_not_fetched(self, benzinga):
+        from tyche.workflow.demand_data import _guidance_catalyst_records
+
+        benzinga.get_corporate_guidance = AsyncMock(return_value=[])
+        df, fetched = await _guidance_catalyst_records(benzinga, "MU")
+        assert df is None
+        assert fetched is False
+
+    @pytest.mark.asyncio
+    async def test_reiteration_fetched_but_not_written(self, benzinga):
+        from tyche.workflow.demand_data import _guidance_catalyst_records
+
+        benzinga.get_corporate_guidance = AsyncMock(
+            return_value=[
+                {
+                    "benzinga_id": "x",
+                    "date": "2026-01-15",
+                    "positioning": "primary",
+                    "estimated_revenue_guidance": 7470000000,
+                    "min_revenue_guidance": 7380000000,
+                    "max_revenue_guidance": 7526000000,
+                    "previous_min_revenue_guidance": 7380000000,
+                    "previous_max_revenue_guidance": 7526000000,
+                }
+            ]
+        )
+        df, fetched = await _guidance_catalyst_records(benzinga, "BBWI")
+        assert fetched is True
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_raise_written(self, benzinga):
+        from tyche.workflow.demand_data import _guidance_catalyst_records
+
+        benzinga.get_corporate_guidance = AsyncMock(
+            return_value=[
+                {
+                    "benzinga_id": "y",
+                    "date": "2026-01-15",
+                    "positioning": "primary",
+                    "min_revenue_guidance": 10800.0,
+                    "max_revenue_guidance": 11200.0,
+                    "previous_min_revenue_guidance": 9800.0,
+                    "previous_max_revenue_guidance": 10200.0,
+                }
+            ]
+        )
+        df, fetched = await _guidance_catalyst_records(benzinga, "ACME")
+        assert fetched is True
+        assert df is not None
+        assert not df.empty
+        assert df.iloc[0]["tag"] == "guidance_raise"

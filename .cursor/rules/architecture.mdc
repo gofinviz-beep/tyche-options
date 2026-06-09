@@ -19,6 +19,9 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 - `conviction/engine.py` — `ConvictionEngine` + `ConvictionSignal`. Backward-compatible wrapper that delegates to `ConvictionFeatureEngine` + `CSPEligibilityPolicy`. Re-exports `TrendState`, `GateResult`, `compute_ema`, `compute_slope` so all existing `from tyche.conviction.engine import ...` statements continue to work. The primary screening gate for the options pipeline.
 - `strategy/allocator.py` — MILP optimizer (scipy). Maximizes risk-adjusted premium across CSPs and CCs. Risk weight includes conviction, EMA extension, liquidity, and **delta penalty** (lower |delta| preferred to minimize assignment).
 - `strategy/engine.py` — Orchestrates CSP/CC candidate scanning via broker API. Supports `max_expiration_dates`, `strike_range_pct`, and `expiration_mode` (`friday_target` default: day-of-week-aware expiration selection).
+- `storage/` — `StoreBackend`, `parquet_io`, `paths.StorageContext`. `data_backend=local|gcs` switches all Parquet I/O. Tests force local via `PYTEST_CURRENT_TEST`.
+- `ops/gcp_jobs.py` + `ops/run_manifest.py` + `ops/intelligence_export.py` — Cloud Run Job handlers, run manifests, Parquet-only intelligence rollups (batched GCS checkpoints).
+- `workflow/publish_signals.py` — downsamples signals/curated data to `published/routes/*.json` for GCS-served UI.
 - `market_data/data_store.py` — OHLCVStore + IntradayStore (per-ticker Parquet dirs) + TickerMetaStore + OptionsChainStore (per-ticker options chain snapshots from Tradier) + ConvictionSignalStore (Parquet disk cache for FeatureSignal data) + `_MetadataCache` for fast status queries. `bootstrap_ohlcv(include_today=True)` fetches grouped daily bars only (no ticker metadata). `refresh_ticker_meta()` is a separate function for infrequent metadata refresh (market cap, type, exchange); applies `EQUITY_TYPE_OVERRIDES` (ADR→CS) on every `write_meta()`. `TickerMetaStore` also stores `sic_code`, `sic_description`, and `sector` (GICS-style) with `get_sectors()` / `update_sic_data()` methods. Auto-migration via `_auto_migrate_meta_columns()`.
 - `market_data/polygon.py` — Polygon.io client for historical bars and ticker reference. NOT used for live trading. Includes `get_batch_ticker_details_concurrent()` for bulk SIC code + market cap fetching.
 - `market_data/sic_sectors.py` — SIC code to GICS-style sector mapping. `sic_to_sector()` maps SEC SIC codes to the 11 GICS sector names. Used during sector backfill (`ingest_data.py --sector`) and stored in `ticker_meta.parquet`.
@@ -127,7 +130,11 @@ The Scanner calls Conviction Engine internally — no need to run conviction fir
 - **Health endpoints.** `GET /health` (liveness, shallow), `GET /health/ready` (readiness, checks DB connectivity).
 - **Start scripts:** `./scripts/start-backend.sh`, `./scripts/start-frontend.sh`, `./scripts/start-all.sh`
 
-## Scheduled Jobs (APScheduler, US/Eastern)
+## GCP Batch Jobs (when `TYCHE_DATA_BACKEND=gcs`)
+
+Cloud Workflows orchestrate Cloud Run Jobs — see `infra/gcp/README.md`. Evening 6 PM PT (parallel): ingest-data, ingest-demand-data, ingest-news, ingest-edgar. Morning 2:30 AM PT: options-flatfiles + alpha-batch → publish-signals → audit. Laptop APScheduler disabled. **TODO:** multi-task sharding (spec §21).
+
+## Scheduled Jobs (APScheduler, US/Eastern — local mode only)
 
 | Time | Job | What it does |
 |---|---|---|

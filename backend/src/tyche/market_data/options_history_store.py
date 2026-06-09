@@ -1,31 +1,17 @@
-"""Per-ticker Parquet store for full historical options chain data.
-
-Storage layout:
-  data/options_history/{TICKER}.parquet — one file per ticker
-
-Each file contains daily OHLCV bars for every options contract that
-traded on our filtered universe of underlying tickers.  This broad
-dataset supports IV Rank (via ATM put extraction), skew analysis,
-term structure, put/call volume ratios, and other future metrics.
-
-Deduplication key: ``(date, option_ticker)`` — at most one bar per
-contract per trading day.
-
-A lightweight progress tracker (``_progress.json``) records which
-trading dates have been fully ingested so the flat-file script can
-resume after interruption.
-"""
+"""Per-ticker Parquet store for full historical options chain data."""
 
 from __future__ import annotations
 
-import json
 from datetime import date
 from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 import structlog
+
+from tyche.storage import read_json, write_json
+from tyche.storage.paths import StorageContext
+from tyche.storage.store_io import StoreBackend
 
 logger = structlog.get_logger()
 
@@ -48,35 +34,30 @@ OPTIONS_HISTORY_SCHEMA = pa.schema(
 )
 
 _DEDUP_COLS = ["date", "option_ticker"]
+_PROGRESS_REL = "options_history/_progress.json"
 
 
 class OptionsHistoryStore:
-    """Manages per-ticker Parquet files of full historical options data.
+    """Manages per-ticker Parquet files of full historical options data."""
 
-    Layout: ``data/options_history/{TICKER}.parquet``
-    """
-
-    def __init__(self, data_dir: str = "data") -> None:
-        self._store_dir = Path(data_dir) / "options_history"
-        self._store_dir.mkdir(parents=True, exist_ok=True)
-        self._progress_path = self._store_dir / "_progress.json"
+    def __init__(
+        self,
+        data_dir: str = "data",
+        ctx: StorageContext | None = None,
+    ) -> None:
+        self._io = StoreBackend.create("options_history", data_dir, ctx)
 
     @property
     def store_dir(self) -> Path:
-        return self._store_dir
+        return self._io.store_dir
 
-    # ── ticker file helpers ──────────────────────────────────────────
-
-    def _ticker_path(self, ticker: str) -> Path:
-        safe = ticker.upper().replace("/", "_").replace(" ", "_")
-        return self._store_dir / f"{safe}.parquet"
+    @property
+    def _progress_path(self) -> Path:
+        """Local path for tests/tools that write progress JSON directly."""
+        return self._io.store_dir / "_progress.json"
 
     def write_ticker_data(self, ticker: str, df: pd.DataFrame) -> int:
-        """Append options data for a ticker, merging with existing file.
-
-        Deduplicates on ``(date, option_ticker)``.
-        Returns the total row count after write.
-        """
+        """Append options data for a ticker, merging with existing file."""
         if df.empty:
             return 0
 
@@ -85,41 +66,17 @@ class OptionsHistoryStore:
             if col in new_df.columns:
                 new_df[col] = pd.to_datetime(new_df[col]).dt.date
 
-        path = self._ticker_path(ticker)
-        if path.exists():
-            existing = pd.read_parquet(path)
-            for col in ("date", "expiration"):
-                if col in existing.columns:
-                    existing[col] = pd.to_datetime(existing[col]).dt.date
-            combined = pd.concat([existing, new_df], ignore_index=True)
-        else:
-            combined = new_df
-
-        combined = (
-            combined.drop_duplicates(subset=_DEDUP_COLS, keep="last")
-            .sort_values(["date", "option_ticker"])
-            .reset_index(drop=True)
+        rows = self._io.merge_write(
+            self._io.ticker_rel(ticker),
+            new_df,
+            OPTIONS_HISTORY_SCHEMA,
+            _DEDUP_COLS,
+            sort_cols=["date", "option_ticker"],
         )
-
-        table = pa.Table.from_pandas(combined, schema=OPTIONS_HISTORY_SCHEMA)
-        pq.write_table(table, path, compression="snappy")
-
-        logger.debug(
-            "options_history_written",
-            ticker=ticker,
-            rows=len(combined),
-        )
-        return len(combined)
+        logger.debug("options_history_written", ticker=ticker, rows=rows)
+        return rows
 
     def write_batch(self, batch: dict[str, pd.DataFrame]) -> dict[str, int]:
-        """Write data for multiple tickers at once.
-
-        Args:
-            batch: Mapping of underlying ticker → DataFrame of option rows.
-
-        Returns:
-            Mapping of ticker → final row count.
-        """
         results: dict[str, int] = {}
         for ticker, df in batch.items():
             results[ticker] = self.write_ticker_data(ticker, df)
@@ -131,75 +88,56 @@ class OptionsHistoryStore:
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> pd.DataFrame:
-        """Read options history for a single ticker."""
-        path = self._ticker_path(ticker)
-        if not path.exists():
-            return pd.DataFrame(columns=[f.name for f in OPTIONS_HISTORY_SCHEMA])
+        empty = pd.DataFrame(columns=[f.name for f in OPTIONS_HISTORY_SCHEMA])
+        df = self._io.read_df(self._io.ticker_rel(ticker))
+        if df is None or df.empty:
+            return empty
 
-        df = pd.read_parquet(path)
         df["date"] = pd.to_datetime(df["date"]).dt.date
-
         if start_date:
             df = df[df["date"] >= start_date]
         if end_date:
             df = df[df["date"] <= end_date]
-
         return df
 
     def get_all_tickers(self) -> list[str]:
-        """Return all tickers with options history on disk."""
-        return sorted(
-            p.stem.upper()
-            for p in self._store_dir.glob("*.parquet")
-            if not p.name.startswith("_")
-        )
+        return self._io.list_ticker_stems()
 
     def get_ticker_count(self) -> int:
         return len(self.get_all_tickers())
 
     def get_stats(self) -> dict:
-        """Summary statistics for the store."""
         tickers = self.get_all_tickers()
         if not tickers:
             return {"ticker_count": 0, "total_rows": 0}
 
-        total_rows = 0
-        for t in tickers:
-            path = self._ticker_path(t)
-            try:
-                total_rows += pq.read_metadata(path).num_rows
-            except Exception:
-                continue
-
+        total_rows = sum(
+            self._io.parquet_rows(self._io.ticker_rel(t)) for t in tickers
+        )
         return {
             "ticker_count": len(tickers),
             "total_rows": total_rows,
             "completed_dates": len(self.get_completed_dates()),
         }
 
-    # ── progress tracking ────────────────────────────────────────────
-
     def get_completed_dates(self) -> set[str]:
-        """Return set of ISO date strings that have been fully ingested."""
-        if not self._progress_path.exists():
+        if not self._io.exists(_PROGRESS_REL):
             return set()
         try:
-            data = json.loads(self._progress_path.read_text())
-            return set(data.get("completed_dates", []))
-        except (json.JSONDecodeError, OSError):
+            data = read_json(_PROGRESS_REL, ctx=self._io.ctx)
+            if isinstance(data, dict):
+                return set(data.get("completed_dates", []))
+        except Exception:
             return set()
+        return set()
 
     def mark_dates_completed(self, dates: list[str]) -> None:
-        """Atomically add dates to the completed set."""
         completed = self.get_completed_dates()
         completed.update(dates)
-
-        tmp_path = self._progress_path.with_suffix(".tmp")
-        payload = json.dumps(
+        write_json(
             {"completed_dates": sorted(completed)},
-            indent=2,
+            _PROGRESS_REL,
+            atomic=True,
+            ctx=self._io.ctx,
         )
-        tmp_path.write_text(payload)
-        tmp_path.replace(self._progress_path)
-
         logger.debug("progress_updated", new_dates=len(dates), total=len(completed))

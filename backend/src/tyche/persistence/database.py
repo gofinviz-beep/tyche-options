@@ -89,6 +89,19 @@ def init_news_db(db_dir: str) -> None:
     register_engine("news", f"sqlite+aiosqlite:///{file_path}")
 
 
+async def ensure_news_db(db_dir: str) -> None:
+    """Register news.db and create NewsSignal + FilingSignal tables.
+
+    Cloud Run jobs and standalone scripts have no FastAPI lifespan — they must
+    call this before rebuild_signals / export_intelligence_signals.
+    """
+    init_news_db(db_dir)
+    from tyche.models.filing import FilingSignal
+    from tyche.models.news import NewsSignal
+
+    await create_tables_for_models("news", NewsSignal, FilingSignal)
+
+
 def init_backtest_db(db_dir: str) -> None:
     """Register the backtest-domain engine (pullback events + profiles).
 

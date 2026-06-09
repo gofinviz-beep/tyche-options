@@ -1,0 +1,38 @@
+# Tyche batch jobs image (GCP-F). Cloud Run Jobs execute:
+#   python scripts/run_gcp_job.py <job-name>
+#
+# Build (from backend/) — MUST be linux/amd64 for Cloud Run:
+#   docker buildx build --platform linux/amd64 -f Dockerfile.jobs \
+#     -t REGION-docker.pkg.dev/PROJECT/tyche/jobs:latest --push .
+#
+# Runtime uses workload identity (tyche-jobs SA) — no JSON key mount.
+
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY scripts ./scripts
+
+RUN pip install --upgrade pip \
+    && pip install -e ".[ml]" \
+    && pip install google-cloud-secret-manager
+
+# Cloud Run Jobs env (override at deploy time):
+#   TYCHE_DATA_BACKEND=gcs
+#   TYCHE_GCS_BUCKET=tyche-data-prod
+#   TYCHE_GCP_PROJECT_ID=tyche-platform
+#   TYCHE_RUN_ENV=prod
+#   TYCHE_LOAD_GCP_SECRETS=true
+
+ENTRYPOINT ["python", "scripts/run_gcp_job.py"]
