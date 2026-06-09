@@ -748,6 +748,7 @@ def run_demand_baselines(
     use_class_weighting: bool = True,
     use_purged_splits: bool = True,
     use_missingness_indicators: bool = True,
+    job_name: str | None = None,
 ) -> list[BaselineReport]:
     """Ablation: momentum-only vs full Demand Conviction feature set.
 
@@ -768,8 +769,22 @@ def run_demand_baselines(
     demand_cols = demand_feature_columns()
 
     reports: list[BaselineReport] = []
+    total_runs = len(available_targets) * 2
+    run_idx = 0
     for target in available_targets:
         for variant, cols in (("momentum", momentum_cols), ("demand", demand_cols)):
+            run_idx += 1
+            if job_name:
+                from tyche.ops.job_progress import log_job_phase, log_job_progress
+
+                log_job_phase(
+                    job_name,
+                    "walk_forward",
+                    target=target,
+                    variant=variant,
+                    run=run_idx,
+                    total_runs=total_runs,
+                )
             report = walk_forward_evaluate(
                 dataset=dataset,
                 target=target,
@@ -786,6 +801,16 @@ def run_demand_baselines(
             report.feature_set = variant
             report.print_report()
             reports.append(report)
+            if job_name:
+                log_job_progress(
+                    job_name,
+                    "walk_forward",
+                    done=run_idx,
+                    total=total_runs,
+                    target=target,
+                    variant=variant,
+                    mean_auc=round(report.mean_auc, 4),
+                )
 
     if output_dir:
         _save_reports(reports, output_dir)

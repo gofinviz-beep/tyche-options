@@ -54,6 +54,7 @@ def build_dataset(
     include_momentum: bool = True,
     include_demand: bool = True,
     max_tickers: int | None = None,
+    job_name: str | None = None,
 ) -> pd.DataFrame:
     """Build the full tabular dataset from on-disk stores.
 
@@ -98,10 +99,29 @@ def build_dataset(
 
     frames: list[pd.DataFrame] = []
     skipped = 0
+    feat_start = time.monotonic()
 
     for i, ticker in enumerate(equity_tickers):
-        if (i + 1) % 100 == 0:
-            logger.info("dataset_progress", processed=i + 1, total=len(equity_tickers))
+        done = i + 1
+        if done == 1 or done % 50 == 0 or done == len(equity_tickers):
+            if job_name:
+                from tyche.ops.job_progress import log_job_progress
+
+                log_job_progress(
+                    job_name,
+                    "build_dataset",
+                    done=done,
+                    total=len(equity_tickers),
+                    start_time=feat_start,
+                    rows=len(frames),
+                    skipped=skipped,
+                )
+            else:
+                logger.info(
+                    "dataset_progress",
+                    processed=done,
+                    total=len(equity_tickers),
+                )
 
         try:
             ohlcv = ohlcv_store.read_ticker(ticker, start_date=start_date, end_date=end_date)
@@ -145,6 +165,10 @@ def build_dataset(
 
     dataset = pd.concat(frames, ignore_index=True)
 
+    if job_name:
+        from tyche.ops.job_progress import log_job_phase
+
+        log_job_phase(job_name, "relational_features", rows=len(dataset))
     dataset = apply_relational_features(
         dataset,
         ohlcv_store=ohlcv_store,
@@ -158,6 +182,15 @@ def build_dataset(
         include_momentum=include_momentum,
         include_demand=include_demand,
     )
+    if job_name:
+        from tyche.ops.job_progress import log_job_phase
+
+        log_job_phase(
+            job_name,
+            "relational_features",
+            status="complete",
+            rows=len(dataset),
+        )
 
     elapsed = time.time() - t0
     logger.info(
@@ -321,6 +354,7 @@ def build_latest_features(
     min_market_cap: float = MIN_MARKET_CAP,
     tickers: list[str] | None = None,
     max_tickers: int | None = None,
+    job_name: str | None = None,
 ) -> pd.DataFrame:
     """Build the latest-date feature row per ticker for live alpha inference.
 
@@ -354,6 +388,11 @@ def build_latest_features(
 
     frames: list[pd.DataFrame] = []
     total = len(candidates)
+    import time
+
+    from tyche.ops.job_progress import log_job_progress
+
+    feat_start = time.monotonic()
     for i, ticker in enumerate(candidates, start=1):
         try:
             ohlcv = ohlcv_store.read_ticker(ticker)
@@ -376,8 +415,18 @@ def build_latest_features(
             frames.append(last)
         except Exception:
             logger.warning("latest_features_ticker_failed", ticker=ticker, exc_info=True)
-        if i % 500 == 0:
-            logger.info("latest_features_progress", done=i, total=total, rows=len(frames))
+        if i == 1 or i % 250 == 0 or i == total:
+            if job_name:
+                log_job_progress(
+                    job_name,
+                    "build_features",
+                    done=i,
+                    total=total,
+                    start_time=feat_start,
+                    rows=len(frames),
+                )
+            else:
+                logger.info("latest_features_progress", done=i, total=total, rows=len(frames))
 
     if not frames:
         return pd.DataFrame()
@@ -387,12 +436,25 @@ def build_latest_features(
     # _apply_demand_features — do NOT call it again here; a second pass
     # merge_asof's onto existing f_/si_ columns and produces _x/_y suffixes
     # that end up NaN (universe-wide ddim_fund=0 at serving).
+    if job_name:
+        from tyche.ops.job_progress import log_job_phase
+
+        log_job_phase(job_name, "relational_features", rows=len(latest))
     latest = apply_relational_features(
         latest,
         ohlcv_store=ohlcv_store,
         data_dir=data_dir,
     )
     logger.info("latest_features_complete", tickers=len(latest))
+    if job_name:
+        from tyche.ops.job_progress import log_job_phase
+
+        log_job_phase(
+            job_name,
+            "relational_features",
+            status="complete",
+            tickers=len(latest),
+        )
     return latest
 
 

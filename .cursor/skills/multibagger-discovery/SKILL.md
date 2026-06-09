@@ -51,9 +51,10 @@ Live scoring / alpha batch unchanged when `alpha_discovery_enabled=false`. Locke
 ## GCP cloud ingest
 
 Batch demand/options/alpha runs in Cloud Run when `TYCHE_DATA_BACKEND=gcs`.
-Use skill `gcp-cloud-ops` for deploy, manifests, and workflow issues.
-`ingest-demand-data` writes Benzinga guidance → `catalyst_signals/`; manifest
-tracks `guidance_tickers_fetched` vs `guidance_catalysts_written`.
+Use skill `gcp-cloud-ops` for deploy, manifests, workflow issues, and Cloud
+Logging queries (`job_phase` / `job_progress`). `ingest-demand-data` writes
+Benzinga guidance → `catalyst_signals/`; manifest tracks
+`guidance_tickers_fetched` vs `guidance_catalysts_written`.
 
 ## Execution rules (from v8 contract)
 

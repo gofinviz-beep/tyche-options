@@ -100,7 +100,8 @@ from tyche.market_data.data_store import TickerMetaStore
 | Script / path | Purpose |
 |---------------|---------|
 | `scripts/run_gcp_job.py` | Local debug entry for Cloud Run job handlers |
-| `tyche/ops/gcp_jobs.py` | Job runners + nightly pipeline |
+| `tyche/ops/gcp_jobs.py` | Job runners + nightly pipeline (subprocess stdout streaming) |
+| `tyche/ops/job_progress.py` | `job_phase` / `job_progress` structlog helpers for Cloud Logging |
 | `tyche/ops/intelligence_export.py` | Parquet-only news/filing rollups (batched checkpoints) |
 | `workflow/publish_signals.py` | Route-level JSON publisher |
 | `infra/gcp/deploy_jobs.sh` | Deploy/update Cloud Run Jobs |

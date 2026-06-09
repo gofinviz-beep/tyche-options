@@ -56,6 +56,37 @@ source infra/gcp/config.env
 4. **Apple Silicon** — must build `--platform linux/amd64` via deploy script.
 5. **APScheduler off** when `data_backend=gcs` (`scheduler_enabled=false`).
 6. **Guidance manifest** — `guidance_tickers_fetched` vs `guidance_catalysts_written`.
+7. **Flatfiles looked idle** — was subprocess `capture_output=True` + silent OHLCV preload.
+   Fixed: `_run_subprocess` streams stdout; `ingest_options_flatfiles.py` logs
+   `preload_ohlcv` / `download_dates` / `iv_extraction` via `job_progress`.
+
+## Observability
+
+All batch jobs emit structlog events via `tyche/ops/job_progress.py`:
+
+| Event | Purpose |
+|-------|---------|
+| `gcp_job_start` / `gcp_job_complete` | Container lifecycle (`run_gcp_job.py`) |
+| `job_phase` | Step boundary (start / complete / skip) |
+| `job_progress` | Loop progress: done, total, pct, eta_min |
+
+**Cloud Logging queries** (see `infra/gcp/README.md`):
+
+```text
+resource.type="cloud_run_job"
+jsonPayload.event="job_progress"
+```
+
+Filter by job: `jsonPayload.job="ingest-options-flatfiles"`.
+
+**Phase map:** ingest-data (`bootstrap_ohlcv`, `recompute_market_caps`);
+flatfiles (`preload_ohlcv`, `download_dates`, `iv_extraction`);
+alpha-batch (`build_features`, `score_variant`);
+demand gate (`build_dataset`, `walk_forward`, `promote_models`);
+publish-signals (per-route phases).
+
+Manifests (`runs/{job}/{run_id}/manifest.json`) are post-hoc summaries only —
+use Cloud Logging for live state.
 
 ## Debug
 

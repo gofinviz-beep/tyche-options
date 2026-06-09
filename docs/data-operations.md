@@ -16,6 +16,7 @@ When `TYCHE_DATA_BACKEND=gcs`, **batch ingest runs in Cloud Run Jobs** — not o
 - **Manifests:** `gs://tyche-data-prod/runs/{job_name}/{run_id}/manifest.json`
 - **Intelligence:** Parquet rollups only in cloud (no `news.db`). Checkpoints: `signals/intelligence/_checkpoints/`
 - **Demand guidance:** manifest `extra.guidance_tickers_fetched` vs `guidance_catalysts_written`
+- **Live progress:** Cloud Logging `job_phase` / `job_progress` events from `tyche/ops/job_progress.py` — see `infra/gcp/README.md` § Observability. Subprocess jobs (flatfiles, demand gate) stream stdout line-by-line (no end-of-job buffer).
 - **TODO:** multi-task sharding for faster GCS ingest (spec §21)
 
 Local backend reads `published/routes/*.json` and `signals/` from GCS via ADC (`gcloud auth application-default login`).
@@ -349,6 +350,13 @@ curl http://localhost:8000/api/v1/system/scheduler/status
    All scheduled jobs will begin firing at their configured times.
 
 ## Troubleshooting
+
+### Cloud Run job appears idle (no logs for hours)
+
+- **Check Cloud Logging** (not just the manifest): filter `jsonPayload.event="job_progress"` or `jsonPayload.job="ingest-options-flatfiles"`.
+- **Expected phases:** flatfiles → `preload_ohlcv` (can take 30–60 min on GCS), then `download_dates`, then `iv_extraction`. Alpha → `build_features` every 250 tickers.
+- **If only `gcp_job_start`:** image may be stale — redeploy with `./infra/gcp/deploy_jobs.sh --build`.
+- **Post-hoc summary:** `gsutil cat gs://tyche-data-prod/runs/{job_name}/*/manifest.json | tail -1`
 
 ### Conviction data is stale
 - **Check:** Look at the `as_of_date` on the Stocks Conviction page, or `curl http://localhost:8000/api/v1/conviction/version`.

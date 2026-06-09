@@ -185,3 +185,63 @@ export TYCHE_GCP_PROJECT_ID=tyche-platform
 Once cloud jobs are verified, disable APScheduler jobs in Settings (or set
 `flatfile_ingest_enabled=false`, `demand_data_enabled=false`, etc.) so your
 laptop does not duplicate nightly work.
+
+## Observability (Cloud Logging)
+
+Long-running jobs emit structured **`job_phase`** (step boundaries) and
+**`job_progress`** (done/total, pct, ETA) events via structlog. Subprocess
+scripts (flatfiles, demand gate) stream stdout line-by-line instead of
+buffering until exit.
+
+**Lifecycle**
+
+| Event | When |
+|-------|------|
+| `gcp_job_start` | Container entry (`run_gcp_job.py`) |
+| `job_phase` | Phase start / complete / skip |
+| `job_progress` | Loop progress (every N tickers/dates) |
+| `gcp_job_complete` | Job finished |
+
+**Useful Logs Explorer queries** (project `tyche-platform`):
+
+```text
+resource.type="cloud_run_job"
+jsonPayload.event="job_phase"
+```
+
+```text
+resource.type="cloud_run_job"
+jsonPayload.event="job_progress"
+```
+
+```text
+resource.type="cloud_run_job"
+jsonPayload.job="ingest-options-flatfiles"
+jsonPayload.phase=("preload_ohlcv" OR "download_dates" OR "iv_extraction")
+```
+
+```text
+resource.type="cloud_run_job"
+jsonPayload.job="alpha-batch"
+jsonPayload.phase="build_features"
+```
+
+```text
+resource.type="cloud_run_job"
+jsonPayload.event="gcp_job_start"
+```
+
+**Phase map by job**
+
+| Job | Phases |
+|-----|--------|
+| `ingest-data` | `bootstrap_ohlcv`, `recompute_market_caps` |
+| `ingest-options-flatfiles` | `preload_ohlcv`, `download_dates`, `iv_extraction` |
+| `ingest-demand-data` | `ingest` + per-source (`fundamentals`, `estimates`, …) |
+| `alpha-batch` | `build_features`, `relational_features`, `score_variant` |
+| `run-demand-gate` | `build_dataset`, `demand_ablation`, `walk_forward`, `promote_models` |
+| `publish-signals` | `stocks_alpha`, `stocks_conviction`, `intelligence`, … |
+| `ingest-news` / `ingest-edgar` | `pipeline` + intelligence checkpoint progress |
+
+Run manifests remain at `gs://tyche-data-prod/runs/{job}/{run_id}/manifest.json`
+for post-hoc summaries; live progress is in Cloud Logging.

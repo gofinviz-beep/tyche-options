@@ -444,7 +444,15 @@ async def ingest_demand_data(
         for coro in asyncio.as_completed(tasks):
             await coro
             done += 1
-            if done % 250 == 0:
+            if done == 1 or done % 100 == 0 or done == len(universe):
+                from tyche.ops.job_progress import log_job_progress
+
+                log_job_progress(
+                    "ingest-demand-data",
+                    label,
+                    done=done,
+                    total=len(universe),
+                )
                 logger.info(
                     "demand_source_progress", source=label, done=done, total=len(universe)
                 )
@@ -461,6 +469,18 @@ async def ingest_demand_data(
     if do_guidance and benzinga is not None and cat_store is not None:
         pipelines.append(_drain("guidance", _guidance, concurrency))
 
+    from tyche.ops.job_progress import log_job_phase
+
+    log_job_phase(
+        "ingest-demand-data",
+        "ingest",
+        status="start",
+        tickers=len(universe),
+        concurrency=concurrency,
+        parallel_sources=len(pipelines),
+        fundamentals_source=fund_source,
+        finnhub_rpm=settings.finnhub_rate_limit_rpm if finnhub is not None else None,
+    )
     logger.info(
         "demand_data_ingest_start",
         tickers=len(universe),
@@ -475,5 +495,6 @@ async def ingest_demand_data(
     await asyncio.gather(*pipelines)
 
     counts["guidance"] = counts["guidance_catalysts_written"]
+    log_job_phase("ingest-demand-data", "ingest", status="complete", **counts)
     logger.info("demand_data_ingest_complete", **counts)
     return counts

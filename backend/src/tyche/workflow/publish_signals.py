@@ -977,9 +977,20 @@ def run_publish_signals(config: PublishConfig | None = None) -> PublishResult:
     warnings: list[str] = []
     errors: list[str] = []
 
+    from tyche.ops.job_progress import log_job_phase
+
     try:
+        log_job_phase("publish-signals", "stocks_alpha")
         alpha = publish_stocks_alpha(config=cfg, run_id=run_id, settings=settings)
         routes.append(alpha)
+        log_job_phase(
+            "publish-signals",
+            "stocks_alpha",
+            status="complete",
+            rows=alpha.row_count,
+        )
+
+        log_job_phase("publish-signals", "stocks_conviction")
         job_manifest.input_paths.extend(alpha.source_paths)
         warnings.extend(alpha.warnings)
 
@@ -987,9 +998,16 @@ def run_publish_signals(config: PublishConfig | None = None) -> PublishResult:
             config=cfg, run_id=run_id, settings=settings
         )
         routes.append(conviction)
+        log_job_phase(
+            "publish-signals",
+            "stocks_conviction",
+            status="complete",
+            rows=conviction.row_count,
+        )
         if conviction.source_paths:
             job_manifest.input_paths.extend(conviction.source_paths)
 
+        log_job_phase("publish-signals", "stocks_summary")
         routes.append(
             publish_stocks_summary(
                 alpha_result=alpha,
@@ -1016,11 +1034,20 @@ def run_publish_signals(config: PublishConfig | None = None) -> PublishResult:
             )
         )
 
+        log_job_phase("publish-signals", "intelligence")
         news = publish_intelligence_news(
             config=cfg, run_id=run_id, settings=settings
         )
         filings = publish_intelligence_filings(config=cfg, run_id=run_id)
         insider = publish_intelligence_insider(config=cfg, run_id=run_id)
+        log_job_phase(
+            "publish-signals",
+            "intelligence",
+            status="complete",
+            news_rows=news.row_count,
+            filings_rows=filings.row_count,
+            insider_rows=insider.row_count,
+        )
         routes.extend([news, filings, insider])
         routes.append(
             publish_intelligence_summary(

@@ -35,7 +35,11 @@ sys.path.insert(0, "src")
 
 import structlog
 
+from tyche.ops.job_progress import log_job_phase, log_job_progress
+
 logger = structlog.get_logger()
+
+JOB_NAME = "run-demand-gate"
 
 
 def main() -> None:
@@ -103,9 +107,24 @@ def main() -> None:
 
     # 1. Dataset (build once, or reuse).
     if args.dataset:
+        log_job_phase(JOB_NAME, "load_dataset", path=args.dataset)
         logger.info("loading_dataset", path=args.dataset)
         dataset = load_dataset(args.dataset)
+        log_job_phase(
+            JOB_NAME,
+            "load_dataset",
+            status="complete",
+            rows=len(dataset),
+            tickers=int(dataset["ticker"].nunique()),
+        )
     else:
+        log_job_phase(
+            JOB_NAME,
+            "build_dataset",
+            data_dir=args.data_dir,
+            min_market_cap=min_cap,
+            max_tickers=args.max_tickers,
+        )
         logger.info(
             "building_dataset",
             data_dir=args.data_dir,
@@ -119,6 +138,7 @@ def main() -> None:
             include_neighbors=True,
             include_momentum=True,
             include_demand=True,
+            job_name=JOB_NAME,
         )
         if dataset.empty:
             logger.error("dataset_is_empty")
@@ -133,6 +153,7 @@ def main() -> None:
 
     # 2. Ablation on the sustained targets.
     targets = args.targets or ALPHA_SUSTAINED_TARGETS
+    log_job_phase(JOB_NAME, "demand_ablation", targets=targets)
     reports = run_demand_baselines(
         dataset=dataset,
         targets=targets,
@@ -142,6 +163,13 @@ def main() -> None:
         use_class_weighting=settings.alpha_class_weighting_enabled,
         use_purged_splits=settings.alpha_purged_walk_forward_enabled,
         use_missingness_indicators=settings.alpha_discovery_enabled,
+        job_name=JOB_NAME,
+    )
+    log_job_phase(
+        JOB_NAME,
+        "demand_ablation",
+        status="complete",
+        reports=len(reports),
     )
     if not reports:
         logger.error("no_reports", targets=targets)
@@ -177,13 +205,27 @@ def main() -> None:
     # 3. Conditional promotion (sustained artifacts only — non-destructive).
     promoted: list[str] = []
     if args.no_promote:
+        log_job_phase(JOB_NAME, "promote_models", status="skip", reason="no_promote")
         print("\n--no-promote set: ablation only, no models trained.")
     else:
         feature_cols = demand_feature_columns()
+        promote_targets = [t for t, v in verdict.items() if v["decision"] == "GO"]
+        log_job_phase(
+            JOB_NAME,
+            "promote_models",
+            candidates=len(promote_targets),
+        )
         for target, v in verdict.items():
             if v["decision"] != "GO":
                 print(f"\n  SKIP {target} (lift {v['lift']:+.4f} < {args.min_lift:+.4f})")
                 continue
+            log_job_progress(
+                JOB_NAME,
+                "promote_models",
+                done=len(promoted) + 1,
+                total=max(len(promote_targets), 1),
+                target=target,
+            )
             print(f"\n{'=' * 72}")
             print(f"PROMOTE {target} — train production model on demand features")
             print(f"{'=' * 72}")
@@ -197,6 +239,12 @@ def main() -> None:
             )
             promoted.append(target)
             print(f"Saved: data/ml/models/{target}.json")
+        log_job_phase(
+            JOB_NAME,
+            "promote_models",
+            status="complete",
+            promoted=len(promoted),
+        )
 
     summary = {
         "elapsed_s": round(time.time() - t0, 1),

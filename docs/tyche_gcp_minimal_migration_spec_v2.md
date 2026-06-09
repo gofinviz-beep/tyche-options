@@ -831,6 +831,8 @@ Verify sample readback.
 ```text
 DONE: Dockerfile.jobs, deploy_jobs.sh, run_gcp_job.py, gcp_jobs.py (10 jobs incl. ingest-news, ingest-edgar).
 Runtime SA: tyche-jobs@tyche-platform.iam.gserviceaccount.com. Secrets via Secret Manager.
+Observability: tyche/ops/job_progress.py emits job_phase + job_progress to Cloud Logging;
+  subprocess scripts stream stdout (gcp_jobs._run_subprocess). Runbook: infra/gcp/README.md § Observability.
 ```
 
 ### GCP-G — Workflows, Scheduler, manifests ✅
@@ -864,6 +866,7 @@ Do not require local backend/data.
 [x] Cloud Workflows + Scheduler (6 PM + 2:30 AM PT Tue–Sat).
 [x] Secrets in Secret Manager.
 [x] Run manifests written (incl. guidance_fetched vs guidance_written).
+[x] Structured job progress logging (job_phase / job_progress) for all Cloud Run jobs.
 [x] ingest_demand_data success on full universe (~3h cloud).
 [ ] publish_signals + full evening/morning cycle verified end-to-end.
 [ ] Local backend reads GCS published/signals via ADC (TYCHE_DATA_BACKEND=gcs).

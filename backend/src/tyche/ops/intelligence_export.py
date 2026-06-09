@@ -138,6 +138,12 @@ async def _export_batched(
     pending = [t for t in tickers if t.upper() not in done]
 
     batches_written = 0
+    total_batches = max(1, (len(pending) + batch_size - 1) // batch_size)
+    import time
+
+    from tyche.ops.job_progress import log_job_progress
+
+    prog_start = time.monotonic()
     for offset in range(0, len(pending), batch_size):
         batch_tickers = pending[offset : offset + batch_size]
         batch_rows = await build_batch(batch_tickers)
@@ -146,6 +152,18 @@ async def _export_batched(
             _write_checkpoint_rows, checkpoint_rel, accumulated, ctx=ctx
         )
         batches_written += 1
+        done_tickers = len(done) + min(offset + batch_size, len(pending))
+        log_job_progress(
+            "intelligence-export",
+            checkpoint_rel.rsplit("/", 1)[-1].replace(".partial.parquet", ""),
+            done=done_tickers,
+            total=len(tickers),
+            start_time=prog_start,
+            batch_rows=len(batch_rows),
+            accumulated_rows=len(accumulated),
+            batches_written=batches_written,
+            total_batches=total_batches,
+        )
         logger.info(
             "intelligence_checkpoint_written",
             checkpoint=checkpoint_rel,

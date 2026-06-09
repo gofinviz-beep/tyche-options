@@ -1768,6 +1768,8 @@ def recompute_market_caps_from_shares(
     meta_store: TickerMetaStore,
     ohlcv_store: "OHLCVStore",
     tickers: list[str] | None = None,
+    *,
+    progress_job: str | None = None,
 ) -> int:
     """Derive a live market cap = shares_outstanding x latest daily close.
 
@@ -1785,7 +1787,16 @@ def recompute_market_caps_from_shares(
         return 0
 
     cap_updates: dict[str, float] = {}
-    for ticker, sh in shares.items():
+    share_items = list(shares.items())
+    total = len(share_items)
+    import time
+
+    prog_start = time.monotonic()
+    if progress_job:
+        from tyche.ops.job_progress import log_job_phase, log_job_progress
+
+        log_job_phase(progress_job, "recompute_market_caps", tickers_with_shares=total)
+    for i, (ticker, sh) in enumerate(share_items, start=1):
         if sh is None or sh <= 0:
             continue
         try:
@@ -1800,8 +1811,26 @@ def recompute_market_caps_from_shares(
             continue
         if close > 0:
             cap_updates[ticker] = sh * close
+        if progress_job and (i == 1 or i % 500 == 0 or i == total):
+            log_job_progress(
+                progress_job,
+                "recompute_market_caps",
+                done=i,
+                total=total,
+                start_time=prog_start,
+                caps_computed=len(cap_updates),
+            )
 
     updated = meta_store.update_market_caps(cap_updates) if cap_updates else 0
+    if progress_job:
+        from tyche.ops.job_progress import log_job_phase
+
+        log_job_phase(
+            progress_job,
+            "recompute_market_caps",
+            status="complete",
+            updated=updated,
+        )
     logger.info(
         "market_cap_recompute_complete",
         updated=updated,
@@ -1821,6 +1850,8 @@ async def bootstrap_ohlcv(
     backfill_market_caps: bool = True,
     market_cap_concurrency: int = 20,
     market_cap_rpm: int = 500,
+    *,
+    progress_job: str | None = None,
 ) -> dict[str, int]:
     """Bootstrap the OHLCV store by fetching grouped daily bars from Polygon.
 
@@ -1862,24 +1893,50 @@ async def bootstrap_ohlcv(
 
     total_bars = 0
     dates_fetched = 0
+    total_dates = len(dates_to_fetch)
+    import time as _time
 
-    for fetch_date in dates_to_fetch:
+    prog_start = _time.monotonic()
+    if progress_job:
+        from tyche.ops.job_progress import log_job_phase, log_job_progress
+
+        log_job_phase(
+            progress_job,
+            "bootstrap_ohlcv",
+            dates_to_fetch=total_dates,
+            from_date=dates_to_fetch[0].isoformat() if dates_to_fetch else None,
+            to_date=dates_to_fetch[-1].isoformat() if dates_to_fetch else None,
+        )
+
+    for i, fetch_date in enumerate(dates_to_fetch, start=1):
         try:
             bars = await polygon.get_grouped_daily(fetch_date)
             if bars:
                 stored = store.write_bars(bars)
                 total_bars += stored
                 dates_fetched += 1
-                logger.debug(
+                logger.info(
                     "bootstrap_date_complete",
                     date=fetch_date.isoformat(),
                     bars=len(bars),
+                    stored=stored,
                 )
         except Exception:
             logger.warning(
                 "bootstrap_date_failed",
                 date=fetch_date.isoformat(),
                 exc_info=True,
+            )
+        if progress_job and (i == 1 or i == total_dates):
+            log_job_progress(
+                progress_job,
+                "bootstrap_ohlcv",
+                done=i,
+                total=total_dates,
+                start_time=prog_start,
+                dates_fetched=dates_fetched,
+                bars_stored=total_bars,
+                last_date=fetch_date.isoformat(),
             )
 
     ticker_count = store.get_ticker_count()

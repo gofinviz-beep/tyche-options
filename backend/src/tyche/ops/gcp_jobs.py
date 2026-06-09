@@ -70,14 +70,29 @@ def _run_subprocess(
     *,
     cwd: Path | None = None,
 ) -> tuple[int, str]:
-    proc = subprocess.run(
+    """Run a script and stream stdout to the container log (Cloud Logging).
+
+    Previously used ``capture_output=True``, which hid all subprocess logs until
+    the job finished — flatfiles/IV could look idle for hours on GCS.
+    """
+    proc = subprocess.Popen(
         cmd,
         cwd=str(cwd or _backend_dir()),
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
+        bufsize=1,
     )
-    output = (proc.stdout or "") + (proc.stderr or "")
-    return proc.returncode, output
+    lines: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        lines.append(line)
+        # Pass through immediately so Cloud Run logs show live progress.
+        sys.stdout.write(line)
+        sys.stdout.flush()
+    proc.wait()
+    output = "".join(lines)
+    return proc.returncode or 0, output
 
 
 async def run_ingest_data(
@@ -118,17 +133,30 @@ async def run_ingest_data(
     store = OHLCVStore(data_dir=settings.data_dir, ctx=ctx)
     meta = TickerMetaStore(data_dir=settings.data_dir, ctx=ctx)
 
+    from tyche.ops.job_progress import log_job_phase
+
     try:
+        log_job_phase("ingest-data", "bootstrap_ohlcv", tickers=store.get_ticker_count())
         result = await bootstrap_ohlcv(
             polygon,
             store,
             days=5,
             include_today=True,
+            progress_job="ingest-data",
         )
+        log_job_phase("ingest-data", "bootstrap_ohlcv", status="complete", **result)
+        log_job_phase("ingest-data", "recompute_market_caps")
         caps_updated = await asyncio.to_thread(
             recompute_market_caps_from_shares,
             meta,
             store,
+            progress_job="ingest-data",
+        )
+        log_job_phase(
+            "ingest-data",
+            "recompute_market_caps",
+            status="complete",
+            updated=caps_updated,
         )
         manifest.output_paths = ["ohlcv_daily/", "ticker_meta.parquet"]
         manifest.extra = {**result, "market_caps_repriced": caps_updated}
@@ -190,6 +218,9 @@ async def run_ingest_options_flatfiles(
         "derived/",
     ]
 
+    from tyche.ops.job_progress import log_job_phase
+
+    log_job_phase("ingest-options-flatfiles", "subprocess", cmd=" ".join(cmd[-6:]))
     code, output = await asyncio.to_thread(_run_subprocess, cmd)
     manifest.extra["output_tail"] = output[-2000:] if len(output) > 2000 else output
     if code != 0:
@@ -197,6 +228,7 @@ async def run_ingest_options_flatfiles(
         manifest.finish(status="failed")
         rel = manifest.write(ctx=ctx)
         raise RuntimeError(f"ingest_options_flatfiles failed (exit {code})")
+    log_job_phase("ingest-options-flatfiles", "subprocess", status="complete")
 
     manifest.finish(status="success")
     rel = manifest.write(ctx=ctx)
@@ -281,12 +313,21 @@ def run_alpha_batch_job(
         demand_adjusted_extension=settings.alpha_demand_adjusted_extension_enabled,
         demand_mult_ceil_discovery=settings.alpha_demand_mult_ceil_discovery,
     )
+    from tyche.ops.job_progress import log_job_phase
+
+    log_job_phase("alpha-batch", "execute", variants=variants, min_market_cap=floor)
     summary = run_alpha_batch(
         data_dir=settings.data_dir,
         min_market_cap=floor,
         variants=variants,
         settings=settings,
         engine=engine,
+    )
+    log_job_phase(
+        "alpha-batch",
+        "execute",
+        status=summary.get("status", "ok"),
+        signals=summary.get("signals", 0),
     )
     manifest.output_paths = [
         "alpha_signals.parquet",
@@ -331,9 +372,18 @@ async def run_ingest_news(
         rel = manifest.write(ctx=ctx)
         return JobResult("ingest-news", rid, "failed", rel, {"error": "no_polygon_key"})
 
+    from tyche.ops.job_progress import log_job_phase
     from tyche.workflow.news_pipeline import run_news_pipeline
 
+    log_job_phase("ingest-news", "pipeline", status="start")
     pipeline = await run_news_pipeline(settings)
+    log_job_phase(
+        "ingest-news",
+        "pipeline",
+        status="complete",
+        articles_classified=pipeline.articles_classified,
+        total_persisted=pipeline.total_persisted,
+    )
 
     manifest.extra = {
         "pipeline": {
@@ -382,9 +432,18 @@ async def run_ingest_edgar(
         rel = manifest.write(ctx=ctx)
         return JobResult("ingest-edgar", rid, "failed", rel, {"error": "no_edgar_email"})
 
+    from tyche.ops.job_progress import log_job_phase
     from tyche.workflow.edgar_pipeline import run_edgar_pipeline
 
+    log_job_phase("ingest-edgar", "pipeline", status="start")
     pipeline = await run_edgar_pipeline(settings)
+    log_job_phase(
+        "ingest-edgar",
+        "pipeline",
+        status="complete",
+        eightk_persisted=pipeline.eightk_persisted,
+        insider_tx_persisted=pipeline.insider_tx_persisted,
+    )
 
     manifest.extra = {
         "pipeline": {
@@ -442,6 +501,9 @@ async def run_demand_gate_job(
         "ml/models/",
     ]
 
+    from tyche.ops.job_progress import log_job_phase
+
+    log_job_phase("run-demand-gate", "subprocess", status="start")
     code, output = await asyncio.to_thread(_run_subprocess, cmd)
     manifest.extra["output_tail"] = output[-3000:] if len(output) > 3000 else output
     if code != 0:
@@ -449,6 +511,7 @@ async def run_demand_gate_job(
         manifest.finish(status="failed")
         rel = manifest.write(ctx=ctx)
         raise RuntimeError(f"run_demand_gate failed (exit {code})")
+    log_job_phase("run-demand-gate", "subprocess", status="complete")
 
     manifest.finish(status="success")
     rel = manifest.write(ctx=ctx)
@@ -478,6 +541,9 @@ def run_publish_signals_job(
         settings=settings,
     )
 
+    from tyche.ops.job_progress import log_job_phase
+
+    log_job_phase("publish-signals", "execute", status="start")
     try:
         result = run_publish_signals(config)
     except PublishError as exc:
@@ -496,6 +562,12 @@ def run_publish_signals_job(
         "manifest": result.manifest_rel,
         "warnings": result.warnings,
     }
+    log_job_phase(
+        "publish-signals",
+        "execute",
+        status="complete",
+        routes=len(result.routes),
+    )
     return JobResult(
         "publish-signals",
         rid,
@@ -606,7 +678,23 @@ async def execute_job(job_name: str, *, run_id: str | None = None) -> JobResult:
     if job_name not in _JOB_RUNNERS:
         raise ValueError(f"Unknown job: {job_name}. Choose from: {', '.join(JOB_NAMES)}")
 
+    from tyche.ops.job_progress import log_job_phase
+
+    log_job_phase(job_name, "execute", status="start", run_id=run_id)
     runner = _JOB_RUNNERS[job_name]
-    if asyncio.iscoroutinefunction(runner):
-        return await runner(run_id=run_id)
-    return runner(run_id=run_id)
+    try:
+        if asyncio.iscoroutinefunction(runner):
+            result = await runner(run_id=run_id)
+        else:
+            result = runner(run_id=run_id)
+    except Exception:
+        log_job_phase(job_name, "execute", status="failed", run_id=run_id)
+        raise
+    log_job_phase(
+        job_name,
+        "execute",
+        status=result.status,
+        run_id=result.run_id,
+        manifest=result.manifest_rel,
+    )
+    return result

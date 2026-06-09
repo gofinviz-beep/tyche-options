@@ -62,8 +62,11 @@ from tyche.market_data.historical_iv_store import HistoricalIVStore
 from tyche.market_data.iv_calculator import compute_iv
 from tyche.market_data.occ_parser import parse_occ_columns
 from tyche.market_data.options_history_store import OptionsHistoryStore
+from tyche.ops.job_progress import log_job_phase, log_job_progress
 
 logger = structlog.get_logger()
+
+JOB_NAME = "ingest-options-flatfiles"
 
 S3_PREFIX = "us_options_opra/day_aggs_v1"
 
@@ -493,23 +496,19 @@ def _run_download_phase(
             if len(buffer_dates) >= flush_interval or i == total:
                 _flush_buffer()
 
-            if i % 10 == 0 or i == total:
-                elapsed = time.monotonic() - start_time
-                rate = i / elapsed * 60 if elapsed > 0 else 0
-                remaining = total - i
-                eta_min = remaining / rate if rate > 0 else 0
+            if i == 1 or i % 5 == 0 or i == total:
                 dl_gb = stats["bytes_downloaded"] / (1024 ** 3)
-                logger.info(
-                    "download_progress",
+                log_job_progress(
+                    JOB_NAME,
+                    "download_dates",
                     done=i,
                     total=total,
+                    start_time=start_time,
                     dates_processed=stats["dates_processed"],
                     dates_skipped=stats["dates_skipped"],
                     rows_buffered=stats["rows_buffered"],
                     tickers=len(stats["tickers_touched"]),
                     downloaded_gb=round(dl_gb, 2),
-                    elapsed_min=round(elapsed / 60, 1),
-                    eta_min=round(eta_min, 1),
                 )
 
     stats["tickers_touched_set"] = stats["tickers_touched"]
@@ -566,14 +565,16 @@ def _run_iv_extraction(
                     derived_store.write_metrics(ticker, metrics_df)
                     stats["derived_tickers"] += 1
 
-        if i % 50 == 0 or i == total:
-            elapsed = time.monotonic() - start_time
-            logger.info(
-                "iv_extraction_progress",
+        if i == 1 or i % 50 == 0 or i == total:
+            log_job_progress(
+                JOB_NAME,
+                "iv_extraction",
                 done=i,
                 total=total,
+                start_time=start_time,
                 iv_points=stats["iv_points"],
-                elapsed_min=round(elapsed / 60, 1),
+                tickers_with_iv=stats["tickers_processed"],
+                derived_tickers=stats["derived_tickers"],
             )
 
     return stats
@@ -590,12 +591,31 @@ def _load_ohlcv_closes(
     Used for DTE calculation and ATM selection.
     """
     result: dict[str, dict[date, float]] = {}
-    for t in tickers:
+    total = len(tickers)
+    start = time.monotonic()
+    log_job_phase(JOB_NAME, "preload_ohlcv", tickers=total)
+    for i, t in enumerate(tickers, start=1):
         df = ohlcv_store.read_ticker(t)
         if df.empty:
             continue
         df["date"] = pd.to_datetime(df["date"]).dt.date
         result[t] = dict(zip(df["date"], df["close"].astype(float)))
+        if i % 250 == 0 or i == total:
+            log_job_progress(
+                JOB_NAME,
+                "preload_ohlcv",
+                done=i,
+                total=total,
+                loaded=len(result),
+                start_time=start,
+            )
+    log_job_phase(
+        JOB_NAME,
+        "preload_ohlcv",
+        status="complete",
+        loaded=len(result),
+        elapsed_min=round((time.monotonic() - start) / 60, 1),
+    )
     return result
 
 
@@ -715,15 +735,23 @@ def main(
         click.echo("All dates already completed. Use --force to re-process.")
         return
 
-    click.echo("Pre-loading OHLCV closes...")
+    log_job_phase(
+        JOB_NAME,
+        "plan",
+        status="complete",
+        tickers=len(ticker_list),
+        trading_dates=len(all_dates),
+        date_start=all_dates[0].isoformat() if all_dates else None,
+        date_end=all_dates[-1].isoformat() if all_dates else None,
+        concurrency=concurrency,
+    )
+
     ohlcv_closes = _load_ohlcv_closes(ohlcv_store, ticker_list)
-    click.echo(f"  Loaded closes for {len(ohlcv_closes)} tickers\n")
 
     s3_client = _build_s3_client(settings)
 
-    # Phase 1: Download and persist raw options data
-    click.echo("Phase 1: Downloading and persisting options data...")
     overall_start = time.monotonic()
+    log_job_phase(JOB_NAME, "download_dates", trading_dates=len(all_dates))
 
     dl_stats = _run_download_phase(
         s3_client=s3_client,
@@ -738,6 +766,17 @@ def main(
 
     dl_elapsed = time.monotonic() - overall_start
     dl_gb = dl_stats["bytes_downloaded"] / (1024 ** 3)
+    log_job_phase(
+        JOB_NAME,
+        "download_dates",
+        status="complete",
+        elapsed_min=round(dl_elapsed / 60, 1),
+        dates_processed=dl_stats["dates_processed"],
+        dates_skipped=dl_stats["dates_skipped"],
+        rows_buffered=dl_stats["rows_buffered"],
+        downloaded_gb=round(dl_gb, 2),
+        tickers_touched=dl_stats["tickers_touched"],
+    )
     click.echo(f"\n  Phase 1 complete in {dl_elapsed / 60:.1f} minutes")
     click.echo(f"  Dates processed:      {dl_stats['dates_processed']}")
     click.echo(f"  Dates skipped (no file): {dl_stats['dates_skipped']}")
@@ -769,6 +808,7 @@ def main(
                 if tickers_for_iv is not None
                 else "full recompute"
             )
+            log_job_phase(JOB_NAME, "iv_extraction", mode=mode_label, tickers=len(tickers_for_iv or []))
             click.echo(f"\nPhase 2: Extracting ATM IV and computing derived metrics ({mode_label})...")
             iv_start = time.monotonic()
 
@@ -782,6 +822,13 @@ def main(
             )
 
             iv_elapsed = time.monotonic() - iv_start
+            log_job_phase(
+                JOB_NAME,
+                "iv_extraction",
+                status="complete",
+                elapsed_min=round(iv_elapsed / 60, 1),
+                **iv_stats,
+            )
             click.echo(f"\n  Phase 2 complete in {iv_elapsed / 60:.1f} minutes")
             click.echo(f"  Tickers with IV:      {iv_stats['tickers_processed']}")
             click.echo(f"  IV data points:       {iv_stats['iv_points']:,}")

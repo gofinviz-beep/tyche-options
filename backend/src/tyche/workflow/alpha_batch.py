@@ -21,9 +21,12 @@ from tyche.market_data.alpha_store import AlphaSignalStore
 from tyche.ml.dataset import build_latest_features
 from tyche.ml.xgb_baseline import ALPHA_SUSTAINED_TARGETS, ALPHA_TARGETS
 from tyche.config import TycheSettings
+from tyche.ops.job_progress import log_job_phase, log_job_progress
 from tyche.strategy.alpha_engine import AlphaScoreEngine, build_alpha_score_engine
 
 logger = structlog.get_logger()
+
+JOB_NAME = "alpha-batch"
 
 # Model targets backing each page variant. "peak" = the legacy intra-window
 # big-move models; "sustained" = the de-biased models that require the move to
@@ -121,18 +124,33 @@ def run_alpha_batch(
     engine = engine or AlphaScoreEngine()
     variants = variants or ["peak"]
 
+    log_job_phase(
+        JOB_NAME,
+        "build_features",
+        min_market_cap=min_market_cap,
+        variants=variants,
+    )
     features = build_latest_features(
         data_dir=data_dir,
         min_market_cap=min_market_cap,
         tickers=tickers,
         max_tickers=max_tickers,
+        job_name=JOB_NAME,
     )
     if features.empty:
         logger.warning("alpha_batch_no_features")
+        log_job_phase(JOB_NAME, "build_features", status="empty")
         return {"status": "empty", "signals": 0}
+    log_job_phase(
+        JOB_NAME,
+        "build_features",
+        status="complete",
+        feature_rows=len(features),
+    )
 
     results: dict[str, dict[str, Any]] = {}
     for variant in variants:
+        log_job_phase(JOB_NAME, "score_variant", variant=variant)
         var_pred = (
             predictor
             if (variant == "peak" and predictor is not None)
@@ -145,6 +163,14 @@ def run_alpha_batch(
             data_dir=data_dir,
             predictor=var_pred,
             persist=persist,
+        )
+        log_job_phase(
+            JOB_NAME,
+            "score_variant",
+            status="complete",
+            variant=variant,
+            signals=results[variant].get("signals", 0),
+            buys=results[variant].get("buy_signals", 0),
         )
 
     elapsed = time.time() - t0
