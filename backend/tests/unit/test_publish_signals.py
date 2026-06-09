@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from pathlib import Path
 
@@ -186,3 +187,25 @@ class TestPublishSignals:
         assert alpha.source_paths[0] == "signals/alpha/alpha_signals_sustained.parquet"
         alpha_art = read_json("published/routes/stocks_alpha.json", ctx=local_ctx)
         assert alpha_art["data"]["signals"][0]["ticker"] == "MU"
+
+    @pytest.mark.asyncio
+    async def test_runs_inside_active_event_loop(
+        self,
+        tmp_path: Path,
+        settings: TycheSettings,
+        local_ctx: StorageContext,
+    ) -> None:
+        """Cloud Run calls execute_job under asyncio.run — publisher must not nest."""
+        _seed_alpha(tmp_path)
+        config = PublishConfig(
+            data_dir=str(tmp_path),
+            ctx=local_ctx,
+            settings=settings,
+            alpha_row_limit=10,
+            strict=True,
+        )
+
+        result = await asyncio.to_thread(run_publish_signals, config)
+
+        assert result.run_id
+        assert len(result.routes) == 15

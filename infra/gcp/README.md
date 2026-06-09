@@ -72,7 +72,11 @@ With `TYCHE_DATA_BACKEND=gcs`, the local backend auto-disables APScheduler
 
 1. **IAM** (see `docs/tyche_gcp_minimal_migration_spec_v2.md` §13):
    - `tyche-jobs@…` → `storage.objectAdmin` on bucket, `secretAccessor`
-   - `tyche-workflow@…` → `artifactregistry.writer`, `iam.serviceAccountUser` on `tyche-jobs`, `run.invoker` on each job, `workflows.invoker` + `workflowexecutions.create` on `tyche-evening-pipeline` + `tyche-morning-pipeline`
+   - `tyche-workflow@…` → `artifactregistry.writer`, `iam.serviceAccountUser` on `tyche-jobs`, `run.invoker` on each job, **`roles/workflows.invoker` on the project** (Scheduler 403 fix — there is no `gcloud workflows add-iam-policy-binding`):
+
+   ```bash
+   ./infra/gcp/fix_workflow_iam.sh
+   ```
 
 2. **Secret Manager** secrets (ids must match `gcp_secrets.py`):
 

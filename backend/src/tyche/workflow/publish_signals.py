@@ -7,6 +7,7 @@ writes ultra-compact ``published/routes/*.json`` artifacts for the UI/API layer.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -39,6 +40,16 @@ from tyche.storage.paths import StorageContext, join_uri, storage_context_from_s
 logger = structlog.get_logger()
 
 RouteStatus = Literal["ok", "stale", "unavailable"]
+
+
+def _run_coroutine(coro):
+    """Run *coro* from sync code; safe when ``execute_job`` already has a loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, coro).result()
 
 _STOCKS_CONVICTION_CANDIDATES = (
     "signals/stocks/conviction.parquet",
@@ -649,7 +660,7 @@ def publish_stocks_conviction(
     settings: TycheSettings,
 ) -> RoutePublishResult:
     ctx = config.ctx or storage_context_from_settings(settings)
-    rows, as_of, sources, status = asyncio.run(
+    rows, as_of, sources, status = _run_coroutine(
         _load_conviction_snapshots(
             row_limit=config.conviction_row_limit,
             data_dir=config.data_dir,
@@ -689,7 +700,7 @@ def publish_intelligence_news(
     settings: TycheSettings,
 ) -> RoutePublishResult:
     ctx = config.ctx or storage_context_from_settings(settings)
-    rows, sources, status = asyncio.run(
+    rows, sources, status = _run_coroutine(
         _load_news_signals(
             settings=settings,
             row_limit=config.intelligence_row_limit,
@@ -726,7 +737,7 @@ def publish_intelligence_filings(
 ) -> RoutePublishResult:
     settings = config.settings or get_settings()
     ctx = config.ctx or storage_context_from_settings(settings)
-    rows, sources, status = asyncio.run(
+    rows, sources, status = _run_coroutine(
         _load_filing_signals(
             row_limit=config.intelligence_row_limit,
             settings=settings,
@@ -763,7 +774,7 @@ def publish_intelligence_insider(
 ) -> RoutePublishResult:
     settings = config.settings or get_settings()
     ctx = config.ctx or storage_context_from_settings(settings)
-    rows, sources, status = asyncio.run(
+    rows, sources, status = _run_coroutine(
         _load_insider_signals(
             row_limit=config.intelligence_row_limit,
             settings=settings,
