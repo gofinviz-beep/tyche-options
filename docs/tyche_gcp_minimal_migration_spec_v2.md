@@ -14,14 +14,14 @@ This is an infrastructure spec, separate from the Multi-Bagger Discovery Engine 
 
 | Phase | Status | Notes |
 |-------|--------|-------|
-| GCP-A Storage abstraction | **Done** | `tyche/storage/` — `local` \| `gcs` via `StoreBackend` |
+| GCP-A Storage abstraction | **Done** | `tyche/storage/` — `local` \| `gcs` via `StoreBackend`; `json_io.sanitize_for_json` (NaN → `null`) |
 | GCP-B Store migrations | **Done** | OHLCV, options, demand, news, filings, alpha stores GCS-aware |
-| GCP-C Publisher | **Done** | `workflow/publish_signals.py` → `published/routes/*.json` |
-| GCP-D Route repositories | **Partial** | Alpha + intelligence routes prefer published/signals in GCS mode |
+| GCP-C Publisher | **Done** | `workflow/publish_signals.py` → `published/routes/*.json`; intelligence rows sanitized before write |
+| GCP-D Route repositories | **Partial** | See **Route coverage** below — alpha + intelligence wired; options pages still live-compute |
 | GCP-E GCS migration script | **Done** | `scripts/migrate_data_to_gcs.py` |
-| GCP-F Cloud Run Jobs | **Done** | 10 jobs in `infra/gcp/deploy_jobs.sh` |
-| GCP-G Workflows + Scheduler | **Done** | Evening (6 PM PT) + morning (2:30 AM PT) pipelines |
-| GCP-H Local backend → GCS | **Ready** | `TYCHE_DATA_BACKEND=gcs`; APScheduler auto-disabled |
+| GCP-F Cloud Run Jobs | **Done** | 10 jobs in `infra/gcp/deploy_jobs.sh`; 8h timeouts; `deploy_jobs.sh --build` pre-flight (ruff F821 + job unit tests) |
+| GCP-G Workflows + Scheduler | **Done** | Evening (6 PM PT) + morning (2:30 AM PT); **non-blocking** `:run` + poll (not 30m LRO `jobs.run`) |
+| GCP-H Local backend → GCS | **Partial** | `TYCHE_DATA_BACKEND=gcs` + ADC works for alpha + intelligence; options/scanner still Tradier; see §20 |
 
 **Flat GCS layout (current):** production uses the same relative paths as `backend/data/` at the bucket root (e.g. `ohlcv_daily/`, `signals/intelligence/`, `published/routes/`) — not the `raw/`/`curated/` prefix tree in §3 (future normalization optional).
 
@@ -31,9 +31,28 @@ This is an infrastructure spec, separate from the Multi-Bagger Discovery Engine 
 
 **Demand gate schedule:** `tyche-run-demand-gate` is **morning only** (not evening). Evening runs `tyche-ingest-demand-data` (estimates/fundamentals ingest); gate runs **after** that data lands, in parallel with flatfiles+alpha, then before publish. Optional — publish proceeds if gate fails.
 
+**Pacific ingest session dates:** `market_data/ingest_dates.py` + per-job `TYCHE_INGEST_WINDOW=evening|morning` in `deploy_jobs.sh`. Evening → Pacific **today**; morning → Pacific **yesterday**. Region-independent (UTC Cloud Run, any GCP region, local laptop).
+
 **Job observability:** `tyche/ops/job_progress.py` emits `job_phase` / `job_progress` to Cloud Logging; subprocess jobs stream stdout (`gcp_jobs._run_subprocess`). See `infra/gcp/README.md` § Observability.
 
 **Local `ingest_data.py`:** passes `storage_context_from_settings()` to `OHLCVStore` / `TickerMetaStore` / `IntradayStore`. `IntradayStore` and `OptionsChainStore` use `context_for_data_access()` for `_MetadataCache` — same pattern as OHLCV; cloud batch jobs do not use `IntradayStore`.
+
+**Published JSON NaN (June 2026 fix):** intelligence Parquet missing datetimes (`last_positive_at`, etc.) become `nan` in dict rows. `write_json` now sanitizes + `allow_nan=False`; `published_routes` sanitizes on read for legacy GCS artifacts. Local backend restart suffices; cloud job redeploy only needed to change batch publish code.
+
+### Route coverage (GCP-D detail)
+
+| Route / page | Published read | Signals fallback | Live compute fallback | Cloud publish status |
+|--------------|----------------|------------------|----------------------|----------------------|
+| `/stocks/alpha/` | ✅ `get_stock_alpha_scan` | ✅ alpha Parquet | recompute API | ✅ `stocks_alpha.json` |
+| `/intelligence/news` | ✅ `get_intelligence_news_rows` | ✅ `signals/intelligence/news.parquet` | `news.db` / rebuild (local) | ✅ |
+| `/intelligence/filings` | ✅ `get_intelligence_filing_rows` | ✅ filings Parquet | local DB (local) | ✅ |
+| `/stocks/conviction` | ✅ `get_stocks_conviction_rows` | — | ✅ local `conviction.db` | ⚠️ empty on cloud (no SQLite in jobs) |
+| `/options/scanner` | ❌ | ❌ | ✅ Tradier morning scan | placeholder JSON only |
+| `/options/conviction` | ❌ | ❌ | ✅ live engine | placeholder |
+| `/stocks/deep-dips` | ❌ | ❌ | ✅ live engine | placeholder |
+| Options monitor / explore / CC | ❌ | ❌ | ✅ live | placeholders |
+
+**Implication:** GCS-mode laptop can serve Alpha + Intelligence from published artifacts. Options Conviction, Scanner, and Stocks Conviction (without local `conviction.db` refresh) still need live compute or local DB — not yet full cloud-computed UI.
 
 ---
 
@@ -554,9 +573,11 @@ Gate runs **after** evening `ingest-demand-data` (estimates/fundamentals) and **
 - **Publish:** runs only after morning compute; fails loudly if required upstream artifacts are missing.
 - **Local CLI parity:** `scripts/ingest_data.py`, `ingest_demand_data.py`, `ingest_options_flatfiles.py`, `run_demand_gate.py` work on the laptop against `backend/data/` (`local`) or GCS (`gcs` + ADC) — independent of Cloud Run.
 
-### Workflow gotcha
+### Workflow gotchas
 
 Parallel branches must use **unique step names** (e.g. `run_ingest_data`, not four copies of `run`) — Cloud Workflows rejects duplicate names in a `parallel` block.
+
+**Do not use blocking `googleapis.run.v2.projects.locations.jobs.run`.** The connector LRO defaults to **30 minutes** (`Timeout of 1800 seconds exceeded`) while jobs run 3–8h on GCS. Implemented YAMLs use `http.post` to `:run` (returns immediately) + poll `executions.get` every 45s. Re-deploy: `./infra/gcp/deploy_workflow.sh`.
 
 ---
 
@@ -882,13 +903,18 @@ Do not require local backend/data.
 [x] Scheduled-job stores/scripts read/write GCS.
 [x] Cloud Run Jobs deployed (10 jobs).
 [x] Cloud Workflows + Scheduler (6 PM + 2:30 AM PT Tue–Sat).
+[x] Workflows use non-blocking job run + poll (not 30m LRO).
+[x] Pacific ingest session dates (ingest_dates.py + TYCHE_INGEST_WINDOW).
 [x] Secrets in Secret Manager.
 [x] Run manifests written (incl. guidance_fetched vs guidance_written).
 [x] Structured job progress logging (job_phase / job_progress) for all Cloud Run jobs.
 [x] ingest_demand_data success on full universe (~3h cloud).
-[ ] publish_signals + full evening/morning cycle verified end-to-end.
-[ ] Local backend reads GCS published/signals via ADC (TYCHE_DATA_BACKEND=gcs).
-[ ] All listed frontend pages load from compact artifacts only.
+[x] alpha-batch NameError fix + deploy pre-build unit tests (June 2026).
+[x] Published JSON NaN sanitization (intelligence routes).
+[~] publish_signals + full evening/morning cycle verified end-to-end (publish runs; cycle sign-off pending).
+[~] Local backend reads GCS published/signals via ADC (alpha + intelligence validated; options still live).
+[ ] All listed frontend pages load from compact artifacts only (options/scanner/deep-dips/conviction gaps).
+[ ] Cloud stocks conviction publish (conviction batch → Parquet/signals, not SQLite).
 [ ] Multi-task ingest sharding (§21) — performance follow-up.
 ```
 
@@ -918,6 +944,18 @@ task_index = hash(ticker) % task_count
 ### P1 — Route repository coverage
 
 Finish GCP-D: all UI routes read `published/` first, `signals/` second; no curated scan on page load.
+
+**Remaining (June 2026):**
+
+1. **Options routes** — `publish_signals` emits placeholders for scanner, conviction, explore, monitor, covered_calls; API still live-computes via Tradier/engine.
+2. **Stocks deep-dips / history** — placeholders only; routes scan OHLCV live.
+3. **Cloud stocks conviction** — `publish_stocks_conviction` reads `conviction.db` (SQLite); Cloud Run has no DB → published `stocks_conviction.json` is empty. Needs cloud `conviction_batch` → Parquet or `signals/stocks/conviction.parquet` export (mirror intelligence pattern).
+4. **Insider intelligence route** — published + Parquet exist; verify API reads published path (filings/news done).
+
+### P1b — Deploy hygiene
+
+- `deploy_jobs.sh --build`: ruff F821/F822/F823 + `test_alpha_batch`, `test_gcp_jobs`, `test_ingest_dates` before image push.
+- Re-deploy jobs when batch Python changes; local backend restart only for API read-path fixes.
 
 ### P2 — GCS path normalization
 
