@@ -395,6 +395,7 @@ Rules:
 - Use temp path + promote for canonical writes.
 - Avoid concurrent writes to the same object.
 - Do not assume POSIX rename semantics on GCS.
+- **`write_json` must sanitize Parquet NaN/NA → `null`** (`json_io.sanitize_for_json`, `allow_nan=False`). Intelligence rollups can leave missing datetimes as `nan` in dict rows — without sanitization, published JSON gets non-standard `NaN` tokens and Pydantic 500s on read.
 
 Commit:
 
@@ -440,6 +441,7 @@ Responsibilities:
 5. Write route manifests.
 6. Validate freshness.
 7. Fail loudly if a required upstream artifact is missing.
+8. Sanitize intelligence Parquet rows (`sanitize_json_records`) before embedding in route JSON.
 
 Example route artifact:
 
@@ -476,16 +478,10 @@ Use **Cloud Workflows** to orchestrate **Cloud Run Jobs** (triggered by Cloud Sc
 
 | Job | Entry | CPU / Mem | Timeout |
 |-----|-------|-----------|---------|
-| `tyche-ingest-data` | `ingest-data` | 2 / 4 Gi | 4h |
-| `tyche-ingest-options-flatfiles` | `ingest-options-flatfiles` | 2 / 4 Gi | 8h |
-| `tyche-ingest-demand-data` | `ingest-demand-data` | 2 / 4 Gi | 8h |
-| `tyche-ingest-news` | `ingest-news` | 2 / 4 Gi | 4h |
-| `tyche-ingest-edgar` | `ingest-edgar` | 2 / 4 Gi | 4h |
-| `tyche-alpha-batch` | `alpha-batch` | 4 / 8 Gi | 8h |
-| `tyche-run-demand-gate` | `run-demand-gate` | 4 / 8 Gi | 8h |
-| `tyche-publish-signals` | `publish-signals` | 2 / 4 Gi | 2h |
-| `tyche-audit-snapshots` | `audit-snapshots` | 1 / 2 Gi | 1h |
-| `tyche-nightly-pipeline` | `nightly-pipeline` | 4 / 8 Gi | 8h (in-process fallback) |
+| All 10 jobs | (see `deploy_jobs.sh`) | varies | **8h** (`28800s`) |
+
+`ingest-data` exceeded the prior 4h limit on GCS (OHLCV bootstrap + per-ticker cap
+reprice). Uniform 8h avoids premature task termination until §21 multi-task sharding.
 
 All jobs run `--tasks=1` (single container). In-process `asyncio` concurrency only — see §21.
 
@@ -527,6 +523,8 @@ Cloud Workflows run **parallel** evening jobs and **parallel-then-sequential** m
 Sources available after market close: Polygon grouped daily, Finnhub estimates, Benzinga guidance (`GET /benzinga/v1/guidance` via Massive key), news, EDGAR.
 
 **Not in evening:** `tyche-run-demand-gate`, `tyche-ingest-options-flatfiles`, `tyche-alpha-batch`, `tyche-publish-signals`, `tyche-audit-snapshots`. Evening is ingest-only (four parallel branches above).
+
+**Ingest session dates:** Cloud Run jobs set `TYCHE_INGEST_WINDOW=evening|morning`. `market_data/ingest_dates.py` resolves end dates in `America/Los_Angeles` (evening → Pacific today, morning → yesterday) — independent of container UTC or laptop host timezone.
 
 **Morning 2:30 AM PT** — `tyche-morning-pipeline` (`infra/gcp/workflows/morning-pipeline.yaml`):
 

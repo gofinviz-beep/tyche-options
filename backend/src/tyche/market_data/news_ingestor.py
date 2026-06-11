@@ -55,13 +55,17 @@ class NewsIngestor:
         self._finnhub_concurrency = finnhub_concurrency
 
     async def ingest(
-        self, since: datetime | None = None
+        self,
+        since: datetime | None = None,
+        to_date: date | None = None,
     ) -> IngestResult:
         """Fetch articles from all sources, deduplicate, and persist.
 
         Args:
             since: Only fetch articles published after this time.
                    Defaults to 48 hours ago.
+            to_date: Finnhub ``to`` parameter (Pacific session end). Defaults
+                     to Pacific today.
         """
         if since is None:
             since = datetime.now(tz=timezone.utc) - timedelta(hours=48)
@@ -79,7 +83,7 @@ class NewsIngestor:
                     row.pop("tickers_raw", None)
                     articles_by_ticker.setdefault(ticker_upper, []).append(row)
 
-        finnhub_articles = await self._fetch_finnhub(since, result)
+        finnhub_articles = await self._fetch_finnhub(since, result, to_date=to_date)
         for article in finnhub_articles:
             ticker_upper = article["ticker"]
             articles_by_ticker.setdefault(ticker_upper, []).append(article)
@@ -147,14 +151,20 @@ class NewsIngestor:
             return []
 
     async def _fetch_finnhub(
-        self, since: datetime, result: IngestResult
+        self,
+        since: datetime,
+        result: IngestResult,
+        *,
+        to_date: date | None = None,
     ) -> list[dict]:
         """Fetch per-ticker news from Finnhub with concurrency control."""
         if self._finnhub is None:
             return []
 
+        from tyche.market_data.ingest_dates import pacific_today
+
         from_date = since.date()
-        to_date = date.today()
+        finnhub_to = to_date or pacific_today()
         semaphore = asyncio.Semaphore(self._finnhub_concurrency)
         all_articles: list[dict] = []
         lock = asyncio.Lock()
@@ -163,7 +173,7 @@ class NewsIngestor:
             async with semaphore:
                 try:
                     items = await self._finnhub.get_company_news(
-                        ticker, from_date, to_date
+                        ticker, from_date, finnhub_to
                     )
                     mapped = _map_finnhub_articles(ticker, items)
                     async with lock:

@@ -90,22 +90,29 @@ main:
 run_cloud_run_job:
   params: [project_id, region, job_id, optional]
   steps:
+    # jobs.run connector blocks with a 30-minute default LRO timeout — too short
+    # for GCS ingest (hours). POST :run returns immediately; we poll execution status.
     - start:
-        call: googleapis.run.v2.projects.locations.jobs.run
+        call: http.post
         args:
-          name: ${"projects/" + project_id + "/locations/" + region + "/jobs/" + job_id}
+          url: ${"https://run.googleapis.com/v2/projects/" + project_id + "/locations/" + region + "/jobs/" + job_id + ":run"}
+          auth:
+            type: OAuth2
           body: {}
-        result: run_response
+        result: op
+    - assign_execution:
+        assign:
+          - execution_name: ${op.body.metadata.name}
     - poll:
         call: googleapis.run.v2.projects.locations.jobs.executions.get
         args:
-          name: ${run_response.name}
+          name: ${execution_name}
         result: execution
     - check:
         switch:
-          - condition: ${execution.completionTime == null}
+          - condition: ${map.get(execution, "completionTime") == null}
             next: wait
-          - condition: ${execution.failedCount > 0 or execution.cancelledCount > 0}
+          - condition: ${default(map.get(execution, "failedCount"), 0) > 0 or default(map.get(execution, "cancelledCount"), 0) > 0}
             next: fail
         next: succeed
     - wait:
@@ -132,5 +139,5 @@ run_cloud_run_job:
     - succeed:
         return:
           job_id: ${job_id}
-          execution: ${execution.name}
-          succeeded: ${execution.succeededCount}
+          execution: ${map.get(execution, "name")}
+          succeeded: ${default(map.get(execution, "succeededCount"), 0)}

@@ -126,7 +126,10 @@ def run_audit_snapshots(
     settings = settings or get_settings()
     ctx = ctx or storage_context_from_settings(settings)
     rid = run_id or new_run_id()
-    as_of = as_of or date.today()
+    if as_of is None:
+        from tyche.market_data.ingest_dates import ingest_end_date
+
+        as_of = ingest_end_date(settings.ingest_window, job_name="audit-snapshots")
 
     manifest = RunManifest.start(
         job_name="audit_snapshots",

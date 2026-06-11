@@ -60,6 +60,13 @@ source infra/gcp/config.env
 ./infra/gcp/deploy_scheduler.sh
 ```
 
+All 10 jobs: **8h** task timeout (`28800s`). `ingest-data` needs it for GCS cap
+reprice; re-run `./infra/gcp/deploy_jobs.sh` (no `--build`) after timeout changes.
+
+Workflows: do **not** use blocking `googleapis.run.v2.projects.locations.jobs.run`
+(30m LRO default). YAMLs `http.post` `:run` then poll `executions.get` every 45s.
+Re-run `./infra/gcp/deploy_workflow.sh` after workflow edits.
+
 ## Critical gotchas
 
 1. **No SQLite in cloud intelligence** — `intelligence_export.py` writes
@@ -77,6 +84,14 @@ source infra/gcp/config.env
    not `run-demand-gate`. Gate is optional before publish; UI needs alpha-batch + publish.
 9. **`ingest_data.py` locally** — pass `storage_context_from_settings()` to stores;
    `IntradayStore` needs `ctx` for `_MetadataCache` (cloud jobs don't use intraday).
+10. **Pacific ingest dates** — `TYCHE_INGEST_WINDOW=evening|morning` on Cloud Run jobs;
+    `market_data/ingest_dates.py` (`pacific_today()`). Works on laptop regardless of host TZ.
+11. **Local backend vs job deploy** — API read-path fixes (e.g. published-route NaN
+    sanitization) need **backend restart only**, not `deploy_jobs.sh`. Redeploy Cloud Run
+    jobs when batch Python changes; optional re-run `publish-signals` to rewrite GCS JSON.
+12. **Published JSON NaN** — intelligence Parquet missing datetimes → `nan` in dict rows.
+    `json_io.sanitize_for_json()` on write + `published_routes` on read. Legacy GCS files
+    with `NaN` tokens work after backend restart.
 
 ## Observability
 

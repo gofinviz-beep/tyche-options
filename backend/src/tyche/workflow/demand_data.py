@@ -232,7 +232,10 @@ async def ingest_demand_data(
     ``guidance_catalysts_written`` (directional raise/cut rows persisted).
     ``guidance`` mirrors ``guidance_catalysts_written`` for backward compatibility.
     """
-    as_of = as_of or date.today()
+    if as_of is None:
+        from tyche.market_data.ingest_dates import ingest_end_date
+
+        as_of = ingest_end_date(settings.ingest_window, job_name="ingest-demand-data")
     concurrency = concurrency or settings.demand_data_concurrency
 
     ohlcv = OHLCVStore(data_dir=settings.data_dir)

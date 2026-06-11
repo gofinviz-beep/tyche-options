@@ -133,18 +133,30 @@ async def run_ingest_data(
     store = OHLCVStore(data_dir=settings.data_dir, ctx=ctx)
     meta = TickerMetaStore(data_dir=settings.data_dir, ctx=ctx)
 
+    from tyche.market_data.ingest_dates import resolve_ingest_end_date
     from tyche.ops.job_progress import log_job_phase
 
+    ingest_end = resolve_ingest_end_date(settings.ingest_window, job_name="ingest-data")
+
     try:
-        log_job_phase("ingest-data", "bootstrap_ohlcv", tickers=store.get_ticker_count())
+        log_job_phase(
+            "ingest-data",
+            "bootstrap_ohlcv",
+            tickers=store.get_ticker_count(),
+            ingest_end_date=ingest_end.isoformat(),
+        )
         result = await bootstrap_ohlcv(
             polygon,
             store,
             days=5,
-            include_today=True,
+            end_date=ingest_end,
             progress_job="ingest-data",
         )
         log_job_phase("ingest-data", "bootstrap_ohlcv", status="complete", **result)
+        if result.get("dates_requested", 0) > 0 and result.get("dates_fetched", 0) == 0:
+            manifest.warnings.append(
+                f"ohlcv_fetch_miss:end_date={ingest_end.isoformat()}"
+            )
         log_job_phase("ingest-data", "recompute_market_caps")
         caps_updated = await asyncio.to_thread(
             recompute_market_caps_from_shares,
@@ -159,7 +171,11 @@ async def run_ingest_data(
             updated=caps_updated,
         )
         manifest.output_paths = ["ohlcv_daily/", "ticker_meta.parquet"]
-        manifest.extra = {**result, "market_caps_repriced": caps_updated}
+        manifest.extra = {
+            **result,
+            "ingest_end_date": ingest_end.isoformat(),
+            "market_caps_repriced": caps_updated,
+        }
         manifest.finish(status="success")
         rel = manifest.write(ctx=ctx)
         return JobResult("ingest-data", rid, "success", rel, manifest.extra)
@@ -198,12 +214,19 @@ async def run_ingest_options_flatfiles(
             {"error": "no_s3_credentials"},
         )
 
+    from tyche.market_data.ingest_dates import resolve_ingest_end_date
+
+    ingest_end = resolve_ingest_end_date(
+        settings.ingest_window, job_name="ingest-options-flatfiles"
+    )
+
     script = _backend_dir() / "scripts" / "ingest_options_flatfiles.py"
     cmd = [
         sys.executable,
         str(script),
         "--from-ohlcv",
-        "--include-today",
+        "--end-date",
+        ingest_end.isoformat(),
         "--days-back",
         "3",
         "--concurrency",
@@ -220,7 +243,12 @@ async def run_ingest_options_flatfiles(
 
     from tyche.ops.job_progress import log_job_phase
 
-    log_job_phase("ingest-options-flatfiles", "subprocess", cmd=" ".join(cmd[-6:]))
+    log_job_phase(
+        "ingest-options-flatfiles",
+        "subprocess",
+        ingest_end_date=ingest_end.isoformat(),
+        cmd=" ".join(cmd[-8:]),
+    )
     code, output = await asyncio.to_thread(_run_subprocess, cmd)
     manifest.extra["output_tail"] = output[-2000:] if len(output) > 2000 else output
     if code != 0:
@@ -264,13 +292,20 @@ async def run_ingest_demand_data(
         rel = manifest.write(ctx=ctx)
         return JobResult("ingest-demand-data", rid, "failed", rel, {"error": "no_credentials"})
 
+    from tyche.market_data.ingest_dates import resolve_ingest_end_date
+
+    ingest_end = resolve_ingest_end_date(
+        settings.ingest_window, job_name="ingest-demand-data"
+    )
     counts = await ingest_demand_data(
         settings,
         do_fundamentals=settings.fundamentals_refresh_enabled,
         do_estimates=settings.estimates_refresh_enabled,
         do_short_interest=settings.short_interest_refresh_enabled,
         do_guidance=settings.guidance_refresh_enabled,
+        as_of=ingest_end,
     )
+    counts["ingest_end_date"] = ingest_end.isoformat()
     manifest.tickers_requested = counts.get("tickers", 0)
     manifest.tickers_succeeded = counts.get("estimates", 0)
     manifest.extra = counts
@@ -587,6 +622,12 @@ def run_audit_snapshots_job(
     """Audit estimate snapshot cadence after demand ingest."""
     settings = settings or get_settings()
     ctx = ctx or storage_context_from_settings(settings)
+    if as_of is None:
+        from tyche.market_data.ingest_dates import resolve_ingest_end_date
+
+        as_of = resolve_ingest_end_date(
+            settings.ingest_window, job_name="audit-snapshots"
+        )
     summary = run_audit_snapshots(
         settings=settings,
         ctx=ctx,

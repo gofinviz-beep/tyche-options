@@ -43,7 +43,7 @@ With `TYCHE_DATA_BACKEND=gcs`, the same relative paths resolve under `gs://{buck
 | 8-K filings | `backend/data/filings_8k/{TICKER}.parquet` | One Parquet per ticker |
 | Insider transactions | `backend/data/insider_transactions/{TICKER}.parquet` | One Parquet per ticker |
 | Intelligence rollups (GCS) | `signals/intelligence/*.parquet` | Cloud aggregate signals; checkpoints at `signals/intelligence/_checkpoints/` |
-| Published route JSON | `published/routes/*.json` | Written by `publish_signals` for UI cache |
+| Published route JSON | `published/routes/*.json` | Written by `publish_signals` for UI cache. `write_json` sanitizes Parquet NaN → `null`; read path also sanitizes legacy `NaN` tokens. |
 
 ## SQLite Databases
 
@@ -103,8 +103,9 @@ from tyche.market_data.data_store import TickerMetaStore
 | `tyche/ops/gcp_jobs.py` | Job runners + nightly pipeline (subprocess stdout streaming) |
 | `tyche/ops/job_progress.py` | `job_phase` / `job_progress` structlog helpers for Cloud Logging |
 | `tyche/ops/intelligence_export.py` | Parquet-only news/filing rollups (batched checkpoints) |
-| `workflow/publish_signals.py` | Route-level JSON publisher |
-| `infra/gcp/deploy_jobs.sh` | Deploy/update Cloud Run Jobs |
+| `workflow/publish_signals.py` | Route-level JSON publisher (sanitizes intelligence Parquet rows before write) |
+| `market_data/ingest_dates.py` | Pacific session end-date helpers for cloud/local ingest |
+| `infra/gcp/deploy_jobs.sh` | Deploy/update Cloud Run Jobs (pre-build ruff F821 + job unit tests) |
 
 ## Alpha / Discovery Docs
 

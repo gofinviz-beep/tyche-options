@@ -633,7 +633,13 @@ def _load_ohlcv_closes(
     default=10,
     help="Trading dates between Parquet flushes",
 )
-@click.option("--include-today", is_flag=True, help="Include today in date range (use after market close)")
+@click.option("--include-today", is_flag=True, help="Include UTC today (legacy; prefer --end-date)")
+@click.option(
+    "--end-date",
+    type=str,
+    default=None,
+    help="Pacific session end date YYYY-MM-DD (evening=today PT, morning=yesterday PT)",
+)
 @click.option("--skip-iv", is_flag=True, help="Only download raw data, skip IV")
 @click.option("--skip-derived", is_flag=True, help="Compute IV but skip derived metrics")
 @click.option("--force", is_flag=True, help="Reprocess already-completed dates")
@@ -654,6 +660,7 @@ def main(
     days_back: int,
     flush_interval: int,
     include_today: bool,
+    end_date: str | None,
     skip_iv: bool,
     skip_derived: bool,
     force: bool,
@@ -683,9 +690,18 @@ def main(
     iv_store = HistoricalIVStore(data_dir=data_dir)
     derived_store = DerivedMetricsStore(data_dir=data_dir)
 
-    end_date = date.today() if include_today else date.today() - timedelta(days=1)
-    start_date = end_date - timedelta(days=days_back)
-    all_dates = _trading_dates(start_date, end_date)
+    from tyche.market_data.ingest_dates import pacific_today, resolve_ingest_end_date
+
+    if end_date:
+        range_end = date.fromisoformat(end_date)
+    elif include_today:
+        range_end = pacific_today()
+    else:
+        range_end = resolve_ingest_end_date(
+            settings.ingest_window, job_name="ingest-options-flatfiles"
+        )
+    start_date = range_end - timedelta(days=days_back)
+    all_dates = _trading_dates(start_date, range_end)
 
     if not force:
         completed = history_store.get_completed_dates()
@@ -700,7 +716,7 @@ def main(
     click.echo("Flat File Options Ingestion")
     click.echo(f"{'=' * 60}")
     click.echo(f"  Tickers:              {len(ticker_list)}")
-    click.echo(f"  Date range:           {start_date} → {end_date}")
+    click.echo(f"  Date range:           {start_date} → {range_end}")
     click.echo(f"  Trading dates:        {len(all_dates)}")
     click.echo(f"  Concurrency:          {concurrency}")
     click.echo(f"  Flush interval:       {flush_interval} dates")

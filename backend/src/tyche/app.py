@@ -112,8 +112,10 @@ async def _scheduled_ohlcv_refresh() -> None:
             logger.warning("ohlcv_refresh_skipped_no_polygon_key")
             return
         store = get_data_store(settings)
+        from tyche.market_data.ingest_dates import pacific_today
+
         result = await bootstrap_ohlcv(
-            polygon, store, days=5, include_today=True,
+            polygon, store, days=5, end_date=pacific_today(),
         )
         # Re-price market cap from stored shares x today's close so every
         # consumer (conviction, scanner, alpha) reads a price-current cap.
@@ -147,8 +149,10 @@ async def _scheduled_exit_monitor() -> None:
         polygon = get_polygon(settings)
         store = get_data_store(settings)
         if polygon is not None:
+            from tyche.market_data.ingest_dates import pacific_today
+
             await bootstrap_ohlcv(
-                polygon, store, days=5, include_today=True,
+                polygon, store, days=5, end_date=pacific_today(),
             )
         result = await check_exit_signals(store)
         logger.info(

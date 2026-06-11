@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,38 @@ from tyche.storage.paths import (
     is_gcs_path,
 )
 from tyche.storage.parquet_io import _cleanup_temp, _promote_gcs, _promote_local, _temp_path
+
+
+def json_safe_value(value: Any) -> Any:
+    """Convert Parquet/pandas sentinels to JSON- and Pydantic-friendly values."""
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        import pandas as pd
+
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def sanitize_for_json(obj: Any) -> Any:
+    """Recursively replace NaN/NA with ``null`` before JSON serialization."""
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize_for_json(v) for v in obj]
+    return json_safe_value(obj)
+
+
+def sanitize_json_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sanitize a list of Parquet ``to_dict(orient='records')`` rows."""
+    return [sanitize_for_json(record) for record in records]
 
 
 def read_json(
@@ -50,7 +84,12 @@ def write_json(
     When *atomic* is True, writes to a temp object then promotes to the final path.
     """
     path = coerce_storage_path(path_or_relative, ctx=ctx)
-    payload = json.dumps(obj, indent=indent, default=str)
+    payload = json.dumps(
+        sanitize_for_json(obj),
+        indent=indent,
+        default=str,
+        allow_nan=False,
+    )
     if not atomic:
         _write_json_direct(payload, path)
         return

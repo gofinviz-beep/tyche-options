@@ -58,6 +58,10 @@ flatfiles+alpha — not required for `publish-signals`. `ingest-demand-data` wri
 Benzinga guidance → `catalyst_signals/`; manifest tracks
 `guidance_tickers_fetched` vs `guidance_catalysts_written`.
 
+**Local GCS mode:** `TYCHE_DATA_BACKEND=gcs` + ADC — backend reads `published/` from
+bucket; restart backend for API fixes (no job redeploy). Pacific ingest dates:
+`market_data/ingest_dates.py`.
+
 ## Execution rules (from v8 contract)
 
 - One task = one commit-sized diff.

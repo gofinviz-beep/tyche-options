@@ -1860,6 +1860,7 @@ async def bootstrap_ohlcv(
     store: OHLCVStore,
     days: int = 120,
     include_today: bool = False,
+    end_date: date | None = None,
     # Deprecated — ignored. Ticker metadata is a separate operation
     # (ingest_data.py --meta). Kept for caller compatibility.
     meta_store: TickerMetaStore | None = None,
@@ -1877,14 +1878,20 @@ async def bootstrap_ohlcv(
     metadata on every incremental OHLCV refresh.
 
     Args:
-        include_today: When True, fetch up to today (use after market close).
-            When False (default), stop at yesterday for safety during market
-            hours.
+        include_today: When True, fetch through Pacific today. Prefer explicit
+            ``end_date`` (from ``resolve_ingest_end_date``) for pipeline jobs.
+        end_date: Explicit last session date to fetch (evening = Pacific today,
+            morning = Pacific yesterday). Overrides ``include_today``.
 
     Returns:
         Stats dict with dates_fetched, bars_stored, tickers_found.
     """
-    end = date.today() if include_today else date.today() - timedelta(days=1)
+    if end_date is not None:
+        end = end_date
+    else:
+        from tyche.market_data.ingest_dates import pacific_today
+
+        end = pacific_today() if include_today else pacific_today() - timedelta(days=1)
     start = end - timedelta(days=int(days * 1.5))
 
     latest_stored = store.get_latest_date()
@@ -1904,8 +1911,15 @@ async def bootstrap_ohlcv(
         current += timedelta(days=1)
 
     if not dates_to_fetch:
-        logger.info("bootstrap_up_to_date")
-        return {"dates_fetched": 0, "bars_stored": 0, "tickers_found": 0, "tickers_meta": 0}
+        logger.info("bootstrap_up_to_date", end_date=end.isoformat())
+        return {
+            "dates_fetched": 0,
+            "dates_requested": 0,
+            "bars_stored": 0,
+            "end_date": end.isoformat(),
+            "tickers_found": 0,
+            "tickers_meta": 0,
+        }
 
     total_bars = 0
     dates_fetched = 0
@@ -1964,7 +1978,9 @@ async def bootstrap_ohlcv(
     )
     return {
         "dates_fetched": dates_fetched,
+        "dates_requested": total_dates,
         "bars_stored": total_bars,
+        "end_date": end.isoformat(),
         "tickers_found": ticker_count,
         "tickers_meta": 0,
     }

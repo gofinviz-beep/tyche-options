@@ -51,24 +51,51 @@ jobs are slower on GCS than local NVMe — see spec §21 for planned multi-task 
 
 | Job | CPU | Memory | Timeout |
 |-----|-----|--------|---------|
-| `tyche-ingest-data` | 2 | 4 Gi | 4h |
-| `tyche-ingest-options-flatfiles` | 2 | 4 Gi | **8h** |
-| `tyche-ingest-demand-data` | 2 | 4 Gi | **8h** |
-| `tyche-ingest-news` | 2 | 4 Gi | 4h |
-| `tyche-ingest-edgar` | 2 | 4 Gi | 4h |
-| `tyche-alpha-batch` | 4 | 8 Gi | **8h** |
-| `tyche-run-demand-gate` | 4 | 8 Gi | **8h** |
-| `tyche-publish-signals` | 2 | 4 Gi | 2h |
-| `tyche-audit-snapshots` | 1 | 2 Gi | 1h |
-| `tyche-nightly-pipeline` | 4 | 8 Gi | 8h (fallback) |
+| All jobs (10) | (see `deploy_jobs.sh`) | | **8h** each |
+
+`ingest-data` previously used 4h and timed out on GCS cap reprice (~3.5k tickers).
+All jobs now use `28800s` (8h). Cloud Run max is 168h.
+
+**Workflow vs job timeout:** Cloud Run Jobs can run 8h, but the old
+`googleapis.run.v2.projects.locations.jobs.run` connector defaults to a **30-minute**
+LRO wait — workflows failed at ~30m while jobs kept running. Evening/morning YAMLs now
+`http.post` the `:run` endpoint (non-blocking) and poll `executions.get` every 45s.
+Re-deploy workflows after editing: `./infra/gcp/deploy_workflow.sh`.
+
+**Ingest session dates (Pacific):** evening jobs set `TYCHE_INGEST_WINDOW=evening`
+(Pacific today); morning jobs set `morning` (Pacific yesterday). Prevents UTC
+containers from fetching the wrong Polygon session day.
 
 Re-apply after editing: `./infra/gcp/deploy_jobs.sh` (rebuild with `--build` when Python changes).
+
+`deploy_jobs.sh --build` runs **ruff F821/F822/F823** (undefined names only — not unused-import
+F401) and Cloud Run job unit tests (`test_alpha_batch`, `test_gcp_jobs`, `test_ingest_dates`)
+before pushing the image.
 
 Intelligence jobs export aggregate signals to `signals/intelligence/*.parquet`;
 `publish_signals` reads those in GCS mode (no local `news.db` required).
 
 With `TYCHE_DATA_BACKEND=gcs`, the local backend auto-disables APScheduler
 (`scheduler_enabled=false`) so laptop jobs do not duplicate Cloud Run.
+
+### Local backend (GCS read mode)
+
+Point the laptop API at cloud artifacts — no Cloud Run redeploy needed for read-path fixes:
+
+```bash
+# backend/.env or shell
+TYCHE_DATA_BACKEND=gcs
+TYCHE_GCS_BUCKET=tyche-data-prod
+# ADC: gcloud auth application-default login
+```
+
+Restart the backend after Python changes (`./scripts/stop-backend.sh && ./scripts/start-backend.sh`).
+The API reads `published/routes/*.json` and `signals/` from GCS; Tradier/Gemini still hit live APIs.
+
+**Deploy vs restart:** UI/API fixes in `published_routes.py`, route handlers, etc. → restart only.
+Batch ingest/publish logic changes → `./infra/gcp/deploy_jobs.sh --build` + re-run the job.
+Optional: `gcloud run jobs execute tyche-publish-signals --wait` to rewrite published JSON with
+clean `null` (not required if read sanitization is deployed locally).
 
 ## Prerequisites
 

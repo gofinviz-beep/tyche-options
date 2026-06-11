@@ -83,6 +83,7 @@ _ENV_ONLY_FIELDS: frozenset[str] = frozenset(
         "massive_s3_bucket",
         "finnhub_api_key",
         "edgar_user_agent_email",
+        "ingest_window",
     }
 )
 
@@ -129,6 +130,8 @@ class _EnvSettings(BaseSettings):
     gcs_prefix: str = ""
     run_env: str = "dev"
     load_gcp_secrets: bool = False
+    # evening | morning — Cloud Run per-job env (Pacific session end date)
+    ingest_window: str = ""
 
     @field_validator("gcs_bucket", mode="before")
     @classmethod
@@ -208,6 +211,7 @@ class TycheSettings(BaseModel):
     gcs_prefix: str = ""
     run_env: str = "dev"
     load_gcp_secrets: bool = False
+    ingest_window: str = ""
     db_dir: str = "db"
 
     # --- Published signals API (GCS mode) ---

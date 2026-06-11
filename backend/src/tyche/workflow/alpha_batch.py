@@ -17,11 +17,11 @@ from typing import Any
 import pandas as pd
 import structlog
 
+from tyche.config import TycheSettings
 from tyche.market_data.alpha_store import AlphaSignalStore
 from tyche.ml.dataset import build_latest_features
 from tyche.ml.xgb_baseline import ALPHA_SUSTAINED_TARGETS, ALPHA_TARGETS
-from tyche.config import TycheSettings
-from tyche.ops.job_progress import log_job_phase, log_job_progress
+from tyche.ops.job_progress import log_job_phase
 from tyche.strategy.alpha_engine import AlphaScoreEngine, build_alpha_score_engine
 
 logger = structlog.get_logger()
@@ -59,6 +59,7 @@ def _score_variant(
     data_dir: str,
     predictor: Any | None,
     persist: bool,
+    settings: TycheSettings | None = None,
 ) -> dict[str, Any]:
     """Score the pre-built feature frame for one model variant and persist it."""
     probs = predictor.predict_proba_batch(features) if predictor is not None else {}
@@ -68,7 +69,7 @@ def _score_variant(
     signals = engine.score_from_features(features, breakout_probs=probs)
     signals.sort(key=lambda s: s.alpha_score, reverse=True)
 
-    as_of = _resolve_as_of(features)
+    as_of = _resolve_as_of(features, settings=settings)
     if persist:
         AlphaSignalStore(data_dir=data_dir, variant=variant).write(
             [s.to_dict() for s in signals], as_of=as_of
@@ -163,6 +164,7 @@ def run_alpha_batch(
             data_dir=data_dir,
             predictor=var_pred,
             persist=persist,
+            settings=settings,
         )
         log_job_phase(
             JOB_NAME,
@@ -188,12 +190,21 @@ def run_alpha_batch(
     return primary
 
 
-def _resolve_as_of(features) -> date:
+def _resolve_as_of(
+    features: pd.DataFrame,
+    settings: TycheSettings | None = None,
+) -> date:
     if "date" in features.columns and not features["date"].empty:
-        import pandas as pd
-
         try:
             return pd.to_datetime(features["date"]).max().date()
         except Exception:
             pass
-    return date.today()
+    if settings is not None:
+        from tyche.market_data.ingest_dates import resolve_ingest_end_date
+
+        return resolve_ingest_end_date(
+            settings.ingest_window, job_name="alpha-batch"
+        )
+    from tyche.market_data.ingest_dates import ingest_end_date
+
+    return ingest_end_date(None, job_name="alpha-batch")

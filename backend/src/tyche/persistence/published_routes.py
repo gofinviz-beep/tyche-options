@@ -32,6 +32,7 @@ from tyche.schemas.alpha import (
 from tyche.schemas.news import NewsSignalResponse
 from tyche.schemas.stocks import ConvictionSnapshotResponse
 from tyche.storage import exists as storage_exists, read_json
+from tyche.storage.json_io import sanitize_json_records
 from tyche.storage.paths import StorageContext, join_uri, storage_context_from_settings
 logger = structlog.get_logger()
 
@@ -401,7 +402,10 @@ def get_intelligence_news_rows(
         if env is not None and isinstance(env.data, dict):
             rows = env.data.get("signals") or []
             if rows:
-                parsed = [NewsSignalResponse.model_validate(r) for r in rows]
+                parsed = [
+                    NewsSignalResponse.model_validate(r)
+                    for r in sanitize_json_records(rows)
+                ]
                 return parsed, "published"
     return None
 
@@ -423,5 +427,5 @@ def get_intelligence_filing_rows(
         if env is not None and isinstance(env.data, dict):
             rows = env.data.get("signals") or []
             if rows:
-                return list(rows), "published"
+                return sanitize_json_records(rows), "published"
     return None

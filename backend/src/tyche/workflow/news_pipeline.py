@@ -75,10 +75,15 @@ async def _run_news_pipeline_locked(settings: TycheSettings) -> NewsPipelineResu
             tickers=tickers,
         )
 
+        from tyche.market_data.ingest_dates import resolve_ingest_end_date
+
+        ingest_end = resolve_ingest_end_date(
+            settings.ingest_window, job_name="ingest-news"
+        )
         since = datetime.now(tz=timezone.utc) - timedelta(
             hours=settings.news_lookback_hours
         )
-        ingest_result = await ingestor.ingest(since=since)
+        ingest_result = await ingestor.ingest(since=since, to_date=ingest_end)
 
         result.polygon_fetched = ingest_result.polygon_fetched
         result.finnhub_fetched = ingest_result.finnhub_fetched

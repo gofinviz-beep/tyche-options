@@ -9,8 +9,12 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from typing import TYPE_CHECKING
 
 import structlog
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from tyche.conviction.engine import ConvictionEngine, ConvictionSignal
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
@@ -220,10 +224,10 @@ def _filter_by_market_cap(
 
 
 def _filter_by_price_volume(
-    ticker_data: dict[str, "pd.DataFrame"],
+    ticker_data: dict[str, pd.DataFrame],
     min_price: float,
     min_avg_volume: int,
-) -> dict[str, "pd.DataFrame"]:
+) -> dict[str, pd.DataFrame]:
     """Filter loaded DataFrames by last close price and 20-day average volume."""
     qualified = {}
     for ticker, df in ticker_data.items():

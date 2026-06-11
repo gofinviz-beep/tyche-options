@@ -35,6 +35,7 @@ from tyche.schemas.alpha import (
 from tyche.schemas.news import NewsSignalResponse
 from tyche.schemas.stocks import ConvictionSnapshotResponse
 from tyche.storage import exists as storage_exists, read_parquet, write_json
+from tyche.storage.json_io import sanitize_json_records
 from tyche.storage.paths import StorageContext, join_uri, storage_context_from_settings
 
 logger = structlog.get_logger()
@@ -404,7 +405,7 @@ def _news_rows_from_parquet(
         return [], [signal_rel], "unavailable"
 
     threshold = settings.news_risk_threshold
-    rows = df.to_dict(orient="records")
+    rows = sanitize_json_records(df.to_dict(orient="records"))
     if rows and "has_risk" not in rows[0]:
         for row in rows:
             score = row.get("news_impact_score", 0.0) or 0.0
@@ -427,7 +428,7 @@ def _filing_rows_from_parquet(
     if df is None or df.empty:
         return [], [signal_rel], "unavailable"
 
-    signals = df.to_dict(orient="records")
+    signals = sanitize_json_records(df.to_dict(orient="records"))
     signals.sort(
         key=lambda x: (
             0 if x.get("insider_cluster_sell") else 1,
@@ -450,7 +451,7 @@ def _insider_rows_from_parquet(
     if df is None or df.empty:
         return [], [signal_rel], "unavailable"
 
-    rows = df.to_dict(orient="records")
+    rows = sanitize_json_records(df.to_dict(orient="records"))
     rows.sort(
         key=lambda x: (
             0 if x.get("insider_cluster_sell") else 1,
