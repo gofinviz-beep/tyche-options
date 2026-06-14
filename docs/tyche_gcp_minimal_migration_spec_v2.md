@@ -6,11 +6,11 @@ Purpose: achieve **cloud-computed, locally-viewed** Tyche — not merely lift-an
 
 This is an infrastructure spec, separate from the Multi-Bagger Discovery Engine spec.
 
-**Operational runbook:** `infra/gcp/README.md`
+**Authoritative GCP reference** — keep this document current when changing Cloud Run jobs, workflows, GCS layout, or demand-gate behavior. Deploy commands: `infra/gcp/README.md`. Local vs cloud schedule context: `docs/data-operations.md`.
 
 ---
 
-## 0.1 Implementation status (June 2026)
+## 0.1 Implementation status (June 2026, last ops sync 2026-06-07)
 
 | Phase | Status | Notes |
 |-------|--------|-------|
@@ -29,7 +29,7 @@ This is an infrastructure spec, separate from the Multi-Bagger Discovery Engine 
 
 **Demand manifest fields:** `guidance_tickers_fetched` (Benzinga returned records) vs `guidance_catalysts_written` (raise/cut rows persisted). `guidance` mirrors `guidance_catalysts_written`.
 
-**Demand gate schedule:** `tyche-run-demand-gate` is **morning only** (not evening). Evening runs `tyche-ingest-demand-data` (estimates/fundamentals ingest); gate runs **after** that data lands, in parallel with flatfiles+alpha, then before publish. Optional — publish proceeds if gate fails.
+**Demand gate schedule:** `tyche-run-demand-gate` is **morning only** (not evening). Evening runs `tyche-ingest-demand-data` (estimates/fundamentals ingest); gate runs **after** that data lands, in parallel with flatfiles+alpha, then before publish. Optional — publish proceeds if gate fails. **Memory, reuse, OOM:** see **§10.1**.
 
 **Pacific ingest session dates:** `market_data/ingest_dates.py` + per-job `TYCHE_INGEST_WINDOW=evening|morning` in `deploy_jobs.sh`. Evening → Pacific **today**; morning → Pacific **yesterday**. Region-independent (UTC Cloud Run, any GCP region, local laptop).
 
@@ -495,14 +495,20 @@ Use **Cloud Workflows** to orchestrate **Cloud Run Jobs** (triggered by Cloud Sc
 
 ### Cloud Run Jobs (10)
 
-| Job | Entry | CPU / Mem | Timeout |
-|-----|-------|-----------|---------|
-| All 10 jobs | (see `deploy_jobs.sh`) | varies | **8h** (`28800s`) |
+| Job | CPU | Memory | Timeout | Notes |
+|-----|-----|--------|---------|-------|
+| `tyche-ingest-data` | 2 | 4 GiB | 8h | Evening; OHLCV + cap reprice |
+| `tyche-ingest-demand-data` | 2 | 4 GiB | 8h | Evening; Finnhub + Benzinga + SI |
+| `tyche-ingest-news` | 2 | 4 GiB | 8h | Evening |
+| `tyche-ingest-edgar` | 2 | 4 GiB | 8h | Evening |
+| `tyche-ingest-options-flatfiles` | 2 | 4 GiB | 8h | Morning |
+| `tyche-alpha-batch` | 4 | 8 GiB | 8h | Morning |
+| `tyche-run-demand-gate` | **8** | **32 GiB** | 8h | Morning optional; see **§10.1** |
+| `tyche-publish-signals` | 2 | 4 GiB | 8h | Morning |
+| `tyche-audit-snapshots` | 1 | 2 GiB | 8h | Morning |
+| `tyche-nightly-pipeline` | 4 | 8 GiB | 8h | Manual fallback only |
 
-`ingest-data` exceeded the prior 4h limit on GCS (OHLCV bootstrap + per-ticker cap
-reprice). Uniform 8h avoids premature task termination until §21 multi-task sharding.
-
-All jobs run `--tasks=1` (single container). In-process `asyncio` concurrency only — see §21.
+Source of truth: `infra/gcp/deploy_jobs.sh`. All jobs use `--tasks=1` (single container; in-process `asyncio` only — see §21).
 
 Entry point: `backend/scripts/run_gcp_job.py` → `tyche/ops/gcp_jobs.py`. Runtime SA: `tyche-jobs@tyche-platform.iam.gserviceaccount.com`.
 
@@ -516,9 +522,82 @@ Entry point: `backend/scripts/run_gcp_job.py` → `tyche/ops/gcp_jobs.py`. Runti
 | `tyche-ingest-news` | `news_articles/`, `signals/intelligence/news.parquet` |
 | `tyche-ingest-edgar` | `filings_8k/`, `insider_transactions/`, `signals/intelligence/filings.parquet`, `insider.parquet` |
 | `tyche-alpha-batch` | `alpha_signals.parquet`, `alpha_signals_sustained.parquet` |
-| `tyche-run-demand-gate` | `ml/alpha_results/demand_gate_verdict.json`, optional `ml/models/big_move_sustained_*.json` |
+| `tyche-run-demand-gate` | `ml/alpha_dataset.parquet`, `ml/alpha_results/demand_gate_verdict.json`, optional `ml/models/big_move_sustained_*.json` |
 | `tyche-publish-signals` | `published/routes/*.json`, `published/manifest.json` |
 | `tyche-audit-snapshots` | `reports/estimate_snapshot_audits/`, `reports/job_health/` |
+
+### 10.1 Demand gate — memory, reuse, troubleshooting
+
+`tyche-run-demand-gate` runs `scripts/run_demand_gate.py` via `gcp_jobs.run_demand_gate_job()`. It is **optional** for publish (retrains sustained XGBoost models only; does not block the Alpha page).
+
+#### Two-phase memory profile
+
+| Phase | Typical peak RSS | Fits in | Cloud Run deployed | Code |
+|-------|------------------|---------|-------------------|------|
+| **Dataset build** | ~16 GiB | 16 GiB | 32 GiB (headroom) | `build_dataset()` + in-place demand augmenters |
+| **Walk-forward XGBoost** | ~24–32 GiB | needs 32 GiB | **32 GiB** | `run_demand_baselines()` / `walk_forward_evaluate()` |
+
+Historical failure modes (June 2026):
+
+- **Build OOM at `estimate_features_added`** — fixed by chunked concat, in-place augmenters, `panel_memory.downcast_panel()` (no full-panel `.copy()`).
+- **Walk-forward OOM ~3s after `walk_forward run=1`** — fixed by column-slim panels + float32 numpy matrices; job bumped to **32 GiB**.
+
+#### Dataset build optimizations
+
+(`ml/dataset.py`, `ml/features.py`, `ml/panel_memory.py`)
+
+1. **Chunked concat** — flush every 64 tickers (`DATASET_CHUNK_TICKERS`); never hold ~9k ticker DataFrames until end.
+2. **In-place augmenters** — demand/relational feature functions mutate the panel (no `all_features.copy()` / per-ticker `pd.concat(out)`).
+3. **Downcast** — `float64→float32`, `ticker→category` via `downcast_panel()`.
+4. **Parquet checkpoint** — optional round-trip at `ml/_checkpoints/demand_gate_base_panel.parquet` (when `job_name` is set on GCS builds) to drop pandas fragmentation.
+
+#### Walk-forward optimizations
+
+(`ml/xgb_baseline.py`, `scripts/run_demand_gate.py`)
+
+1. **`slim_dataset_for_training()`** — project to `date`, label columns, and feature cols only (~100 vs ~120+).
+2. **`_walk_forward_frame()`** — column-slim slice + boolean date masks (no full-panel `dropna().copy()`).
+3. **`_prepare_feature_matrix()`** — float32 numpy matrices with NaN→`-999` sentinel (no DataFrame copy per window).
+
+After build, the full panel is persisted to **`ml/alpha_dataset.parquet`** (~4.8M rows, ~2–3 GiB on disk). Walk-forward reloads and slims this file.
+
+#### Reuse cached dataset (skip ~90 min build)
+
+When `ml/alpha_dataset.parquet` already exists on GCS (e.g. build succeeded but walk-forward failed):
+
+```bash
+# Cloud Run job env (set via gcloud run jobs update or deploy_jobs.sh extra_env):
+TYCHE_DEMAND_GATE_REUSE_DATASET=true
+```
+
+`gcp_jobs.run_demand_gate_job()` passes `--dataset ml/alpha_dataset.parquet` when this env is set and the object exists. Safe to re-run without rebuilding features.
+
+#### Runtime and log milestones
+
+Typical wall-clock **4–8h** full run on GCS (~10k tickers, $2B floor): ~90 min `build_dataset`, ~54 min demand augmenters, then 6 walk-forward runs + optional model promotion.
+
+Cloud Logging milestones (filter `jsonPayload.job="run-demand-gate"`):
+
+| Event | Phase |
+|-------|-------|
+| `job_progress` `phase=build_dataset` → 100% | Per-ticker feature + label extraction |
+| `fundamental_features_added` → `estimate_features_added` | Demand augmenters (build OOM cliff if broken) |
+| `dataset_saved` `path=ml/alpha_dataset.parquet` | Build complete |
+| `job_phase` `phase=walk_forward` | XGBoost ablation (walk-forward OOM cliff if broken) |
+| `demand_ablation` complete → `promote_models` | Success path |
+
+**Exit -9 (SIGKILL):** OOM. Check the last `job_phase` / `job_progress` line — `build_dataset` vs `walk_forward`. Re-deploy after Python changes: `./infra/gcp/deploy_jobs.sh --build`.
+
+#### Manual recovery order
+
+```text
+alpha-batch succeeded
+  → tyche-run-demand-gate (optional; set TYCHE_DEMAND_GATE_REUSE_DATASET=true if dataset already built)
+  → tyche-publish-signals
+  → tyche-audit-snapshots
+```
+
+Publish does **not** require demand gate or flatfiles.
 
 ---
 
@@ -564,7 +643,7 @@ Massive options flatfiles land ~2 AM PT; morning window starts at 2:30 AM.
 | `tyche-run-demand-gate` | **No** — retrains optional `big_move_sustained_*` XGBoost models | Fresh evening demand data; builds/reuses `ml/alpha_dataset.parquet` |
 | `tyche-ingest-options-flatfiles` | **No** for Alpha/publish — IV/options history only | Massive S3 flat file (~2 AM) |
 
-Gate runs **after** evening `ingest-demand-data` (estimates/fundamentals) and **after** the parallel flatfiles+alpha step in the workflow YAML — so it sees fresh demand Parquet and can run while alpha artifacts already exist. Typical cloud runtime **4–8h** (dataset build + 6 walk-forward runs + optional promotion). Manual recovery: alpha done → gate (optional) → publish.
+Gate runs **after** evening `ingest-demand-data` (estimates/fundamentals) and **after** the parallel flatfiles+alpha step in the workflow YAML — so it sees fresh demand Parquet and can run while alpha artifacts already exist. Typical cloud runtime **4–8h** (see **§10.1** for phase timings, memory, reuse, and OOM diagnosis). Manual recovery: alpha done → gate (optional) → publish.
 
 ### Schedule rationale
 
@@ -911,8 +990,12 @@ Do not require local backend/data.
 [x] ingest_demand_data success on full universe (~3h cloud).
 [x] alpha-batch NameError fix + deploy pre-build unit tests (June 2026).
 [x] Published JSON NaN sanitization (intelligence routes).
+[x] Demand gate dataset build fits 16 GiB (chunked concat, in-place augmenters, panel_memory).
+[x] Demand gate walk-forward at 32 GiB Cloud Run (slim panels, float32 matrices).
+[x] Demand gate dataset reuse env (`TYCHE_DEMAND_GATE_REUSE_DATASET` → `ml/alpha_dataset.parquet`).
 [~] publish_signals + full evening/morning cycle verified end-to-end (publish runs; cycle sign-off pending).
 [~] Local backend reads GCS published/signals via ADC (alpha + intelligence validated; options still live).
+[~] Demand gate full run completes walk-forward + promotion on GCS (build validated on cloud; walk-forward pending re-run with `TYCHE_DEMAND_GATE_REUSE_DATASET=true`).
 [ ] All listed frontend pages load from compact artifacts only (options/scanner/deep-dips/conviction gaps).
 [ ] Cloud stocks conviction publish (conviction batch → Parquet/signals, not SQLite).
 [ ] Multi-task ingest sharding (§21) — performance follow-up.
@@ -956,6 +1039,7 @@ Finish GCP-D: all UI routes read `published/` first, `signals/` second; no curat
 
 - `deploy_jobs.sh --build`: ruff F821/F822/F823 + `test_alpha_batch`, `test_gcp_jobs`, `test_ingest_dates` before image push.
 - Re-deploy jobs when batch Python changes; local backend restart only for API read-path fixes.
+- **Demand gate:** job is **8 CPU / 32 GiB** (`deploy_jobs.sh`). After code changes affecting build or walk-forward, redeploy with `--build`. If `ml/alpha_dataset.parquet` exists on GCS, set `TYCHE_DEMAND_GATE_REUSE_DATASET=true` before re-execute (§10.1).
 
 ### P2 — GCS path normalization
 

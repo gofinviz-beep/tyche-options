@@ -30,6 +30,8 @@ Local backend reads `published/routes/*.json` and `signals/` from GCS via ADC (`
 
 ### Demand gate memory (Cloud Run)
 
+Authoritative detail: **`docs/tyche_gcp_minimal_migration_spec_v2.md` §10.1**.
+
 `tyche-run-demand-gate` is a two-phase job with different memory profiles:
 
 | Phase | Typical peak | Cloud Run | Code path |

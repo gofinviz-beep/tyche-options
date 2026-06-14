@@ -13,7 +13,7 @@ description: >-
 
 | Doc / path | Role |
 |------------|------|
-| `docs/tyche_gcp_minimal_migration_spec_v2.md` | Architecture spec + acceptance checklist + §21 TODO |
+| `docs/tyche_gcp_minimal_migration_spec_v2.md` | **Authoritative** GCP spec — §10 job resources, **§10.1 demand gate memory/reuse/OOM**, §11 schedules, §20 acceptance |
 | `infra/gcp/README.md` | Deploy runbook (jobs, workflows, scheduler, secrets) |
 | `docs/data-operations.md` | GCP cloud mode schedule vs local APScheduler |
 
@@ -92,10 +92,8 @@ Re-run `./infra/gcp/deploy_workflow.sh` after workflow edits.
 12. **Published JSON NaN** — intelligence Parquet missing datetimes → `nan` in dict rows.
     `json_io.sanitize_for_json()` on write + `published_routes` on read. Legacy GCS files
     with `NaN` tokens work after backend restart.
-13. **Demand gate memory** — dataset build fits **16 GiB** (chunked concat + in-place
-    augmenters). Walk-forward XGBoost runs at **32 GiB** (`deploy_jobs.sh`). Reuse build:
-    `TYCHE_DEMAND_GATE_REUSE_DATASET=true`. Walk-forward uses `slim_dataset_for_training`
-    + float32 numpy matrices (no full-frame `.copy()`).
+13. **Demand gate memory** — see spec **§10.1**: build ~16 GiB, walk-forward **32 GiB**,
+    `TYCHE_DEMAND_GATE_REUSE_DATASET`, exit -9 phase diagnosis.
 
 ## Observability
 

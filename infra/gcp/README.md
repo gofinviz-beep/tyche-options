@@ -3,6 +3,8 @@
 Cloud Run Jobs compute and publish artifacts to `gs://tyche-data-prod/`. The local
 backend reads `published/` and `signals/` only (`TYCHE_DATA_BACKEND=gcs`).
 
+**Architecture spec (authoritative):** `docs/tyche_gcp_minimal_migration_spec_v2.md` — job resources (§10), demand gate memory/reuse/OOM (§10.1), schedules (§11), acceptance checklist (§20).
+
 ## Architecture
 
 ```text
@@ -31,7 +33,7 @@ Cloud Scheduler (Tue–Sat)
 | Step | Job | Outputs |
 |------|-----|---------|
 | Parallel | `tyche-ingest-options-flatfiles` + `tyche-alpha-batch` | options/IV/derived + `alpha_signals*.parquet` |
-| Optional | `tyche-run-demand-gate` | `ml/alpha_results/`, optional `ml/models/big_move_sustained_*` (~4–8h) |
+| Optional | `tyche-run-demand-gate` | `ml/alpha_dataset.parquet`, `ml/alpha_results/`, optional `ml/models/big_move_sustained_*` (~4–8h) |
 | Sequential | `tyche-publish-signals` | `published/routes/*.json` |
 | Sequential | `tyche-audit-snapshots` | estimate snapshot audits |
 
@@ -51,8 +53,12 @@ jobs are slower on GCS than local NVMe — see spec §21 for planned multi-task 
 
 | Job | CPU | Memory | Timeout |
 |-----|-----|--------|---------|
-| All jobs (10) | (see `deploy_jobs.sh`) | | **8h** each |
-| `tyche-run-demand-gate` | **8** | **32 GiB** | Dataset build ~16 GiB; walk-forward XGBoost needs 32 GiB headroom |
+| Evening ingest (4 jobs) | 2 | 4 GiB | 8h |
+| `tyche-alpha-batch` | 4 | 8 GiB | 8h |
+| `tyche-run-demand-gate` | **8** | **32 GiB** | 8h |
+| publish / audit / nightly | 1–4 | 2–8 GiB | 8h |
+
+Full table: spec §10 and `deploy_jobs.sh`.
 
 `ingest-data` previously used 4h and timed out on GCS cap reprice (~3.5k tickers).
 All jobs now use `28800s` (8h). Cloud Run max is 168h.
@@ -69,10 +75,7 @@ containers from fetching the wrong Polygon session day.
 
 Re-apply after editing: `./infra/gcp/deploy_jobs.sh` (rebuild with `--build` when Python changes).
 
-**Demand gate memory:** dataset build fits **16 GiB** (chunked concat, in-place augmenters);
-walk-forward XGBoost is deployed at **32 GiB**. Reuse cached build:
-`TYCHE_DEMAND_GATE_REUSE_DATASET=true`. Walk-forward uses column-slim panels + float32
-numpy feature matrices.
+**Demand gate memory / reuse / OOM:** spec **§10.1** (build ~16 GiB, walk-forward **32 GiB**, `TYCHE_DEMAND_GATE_REUSE_DATASET`, exit -9 diagnosis).
 
 `deploy_jobs.sh --build` runs **ruff F821/F822/F823** (undefined names only — not unused-import
 F401) and Cloud Run job unit tests (`test_alpha_batch`, `test_gcp_jobs`, `test_ingest_dates`)
