@@ -44,7 +44,7 @@ Tyche Options is a Python 3.12+ options trading copilot using the Wheel Strategy
 - `ml/features.py` — Vectorised tabular feature extraction from OHLCV data. Produces per-(ticker, date) feature rows using the same EMA/RSI/slope formulas as `ConvictionFeatureEngine`. Includes `add_neighbor_features()` for sector-aggregated cross-sectional features.
 - `ml/labels.py` — Forward-looking label construction for ML training. CSP win (5% OTM), pullback recovery, direction classification, max drawdown. Built from raw OHLCV only (no derived features) to prevent leakage.
 - `ml/dataset.py` — Dataset assembly orchestrator. Loads from `OHLCVStore`, `DerivedMetricsStore`, `TickerMetaStore`; applies market cap filter; saves to Parquet.
-- `ml/xgb_baseline.py` — XGBoost walk-forward evaluation. Trains per-window, reports accuracy/AUC/precision/recall/F1, tracks feature importance. Supports both binary (CSP win) and multiclass (direction) targets. Two variants: per-stock features only vs. with neighbor-aggregated features.
+- `ml/xgb_baseline.py` — XGBoost walk-forward evaluation. Trains per-window, reports accuracy/AUC/precision/recall/F1, tracks feature importance. Demand gate: `slim_dataset_for_training()` + float32 `_prepare_feature_matrix()` (no full-panel copy). Supports binary and multiclass targets.
 - `ml/model_store.py` — Save/load XGBoost model artifacts. Native JSON format + metadata sidecar (`{target}_meta.json`). Returns `None` if model missing (graceful degradation).
 - `ml/inference.py` — `CSPSafetyPredictor` singleton. Bridges `FeatureSignal` + OHLCV tail → XGBoost `predict_proba` → `csp_safety_prob`. Loaded via `deps.get_csp_safety_predictor()`.
 - `risk/engine.py` + `risk/rules.py` — Deterministic risk rule chain (max positions, concentration, etc.).
@@ -133,7 +133,7 @@ The Scanner calls Conviction Engine internally — no need to run conviction fir
 
 ## GCP Batch Jobs (when `TYCHE_DATA_BACKEND=gcs`)
 
-Cloud Workflows orchestrate Cloud Run Jobs — see `infra/gcp/README.md`. Evening 6 PM PT (parallel): ingest-data, ingest-demand-data, ingest-news, ingest-edgar — **no demand gate**. Morning 2:30 AM PT: options-flatfiles + alpha-batch → optional demand-gate (8 CPU / 16 GiB; chunked dataset + in-place augmenters) → publish-signals → audit. Publish requires alpha-batch, not gate or flatfiles. Laptop APScheduler disabled. Live progress: Cloud Logging `job_phase` / `job_progress` (`ops/job_progress.py`); subprocess jobs stream stdout. **TODO:** multi-task sharding (spec §21).
+Cloud Workflows orchestrate Cloud Run Jobs — see `infra/gcp/README.md`. Evening 6 PM PT (parallel): ingest-data, ingest-demand-data, ingest-news, ingest-edgar — **no demand gate**. Morning 2:30 AM PT: options-flatfiles + alpha-batch → optional demand-gate (build ~16 GiB, walk-forward **32 GiB**) → publish-signals → audit. Publish requires alpha-batch, not gate or flatfiles. Laptop APScheduler disabled. Live progress: Cloud Logging `job_phase` / `job_progress` (`ops/job_progress.py`); subprocess jobs stream stdout. **TODO:** multi-task sharding (spec §21).
 
 ## Scheduled Jobs (APScheduler, US/Eastern — local mode only)
 

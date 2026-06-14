@@ -104,13 +104,28 @@ def add_missingness_indicators(
     return out
 
 
-def _scale_pos_weight_for_labels(y: pd.Series) -> float | None:
-    """Rare-class weight for binary targets; capped at 50."""
-    pos = float((y == 1).sum())
-    neg = float((y == 0).sum())
-    if pos <= 0:
-        return None
-    return min(max(neg / pos, 1.0), 50.0)
+def slim_dataset_for_training(
+    dataset: pd.DataFrame,
+    targets: list[str],
+    feature_cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Project to date, label, and feature columns — drops unused panel width."""
+    if feature_cols is None:
+        feature_cols = list(
+            dict.fromkeys(
+                get_feature_columns(include_momentum=True) + demand_feature_columns()
+            )
+        )
+    keep: list[str] = ["date"]
+    keep.extend(t for t in targets if t in dataset.columns)
+    keep.extend(c for c in feature_cols if c in dataset.columns)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for col in keep:
+        if col not in seen:
+            seen.add(col)
+            ordered.append(col)
+    return dataset[ordered]
 
 
 def _prepare_feature_matrix(
@@ -118,14 +133,64 @@ def _prepare_feature_matrix(
     feature_cols: list[str],
     *,
     use_missingness_indicators: bool,
-) -> tuple[pd.DataFrame, list[str]]:
-    """Select features, optionally add missingness indicators, fill sentinel."""
+) -> tuple[np.ndarray, list[str]]:
+    """Build a float32 feature matrix with NaN → -999 sentinel (no DataFrame copy)."""
     cols = [c for c in feature_cols if c in frame.columns]
-    X = frame[cols].copy()
+    if not cols:
+        return np.empty((len(frame), 0), dtype=np.float32), []
+
+    block = frame[cols].to_numpy(dtype=np.float32, copy=False)
+    X = np.where(np.isnan(block), -999.0, block)
+    out_cols = list(cols)
+
     if use_missingness_indicators:
-        X = add_missingness_indicators(X, MISSINGNESS_INDICATOR_COLS)
-        cols = list(X.columns)
-    return X.fillna(-999), cols
+        extras: list[np.ndarray] = []
+        for c in MISSINGNESS_INDICATOR_COLS:
+            if c in frame.columns:
+                extras.append(frame[c].isna().to_numpy(dtype=np.float32))
+                out_cols.append(f"{c}__isna")
+        if extras:
+            X = np.column_stack([X, *extras])
+
+    return np.ascontiguousarray(X), out_cols
+
+
+def _align_test_matrix(
+    X_test: np.ndarray,
+    test_cols: list[str],
+    train_cols: list[str],
+) -> np.ndarray:
+    """Pad/reorder test columns to match the train feature order."""
+    if test_cols == train_cols:
+        return X_test
+    aligned = np.full((X_test.shape[0], len(train_cols)), -999.0, dtype=np.float32)
+    test_idx = {c: i for i, c in enumerate(test_cols)}
+    for i, c in enumerate(train_cols):
+        if c in test_idx:
+            aligned[:, i] = X_test[:, test_idx[c]]
+    return aligned
+
+
+def _walk_forward_frame(
+    dataset: pd.DataFrame,
+    target: str,
+    feature_cols: list[str],
+) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    """Column-slim slice plus row validity mask and parsed calendar dates."""
+    avail = [c for c in feature_cols if c in dataset.columns]
+    slim = dataset[["date", target, *avail]]
+    valid_mask = slim[target].notna().to_numpy()
+    dates = pd.to_datetime(slim["date"]).dt.date.to_numpy()
+    return slim, valid_mask, dates
+
+
+def _scale_pos_weight_for_labels(y: pd.Series | np.ndarray) -> float | None:
+    """Rare-class weight for binary targets; capped at 50."""
+    pos = float((y == 1).sum())
+    neg = float((y == 0).sum())
+    if pos <= 0:
+        return None
+    return min(max(neg / pos, 1.0), 50.0)
 
 
 @dataclass
@@ -393,8 +458,8 @@ def walk_forward_evaluate(
     is_multiclass = target.startswith("direction_")
     params = dict(xgb_params or (_MULTICLASS_XGB_PARAMS if is_multiclass else _DEFAULT_XGB_PARAMS))
 
-    valid = dataset.dropna(subset=[target]).copy()
-    if valid.empty:
+    slim, valid_mask, dates = _walk_forward_frame(dataset, target, feature_cols)
+    if not valid_mask.any():
         logger.error("walk_forward_no_valid_rows", target=target)
         return BaselineReport(
             model_name=model_name,
@@ -402,8 +467,7 @@ def walk_forward_evaluate(
             feature_set="neighbor" if include_neighbors else "single",
         )
 
-    valid["_date"] = pd.to_datetime(valid["date"]).dt.date
-    all_dates = sorted(valid["_date"].unique())
+    all_dates = sorted(set(dates[valid_mask]))
 
     min_required = train_days + test_days
     if len(all_dates) < min_required:
@@ -449,36 +513,33 @@ def walk_forward_evaluate(
             start += step_days
 
     for window_id, (train_date_list, test_date_list) in enumerate(date_windows):
-        train_mask = valid["_date"].isin(set(train_date_list))
-        test_mask = valid["_date"].isin(set(test_date_list))
+        train_mask = valid_mask & np.isin(dates, train_date_list)
+        test_mask = valid_mask & np.isin(dates, test_date_list)
 
-        train_df = valid[train_mask]
-        test_df = valid[test_mask]
-
-        if train_df.empty or test_df.empty:
+        if not train_mask.any() or not test_mask.any():
             continue
 
-        y_train = train_df[target].copy()
-        y_test = test_df[target].copy()
+        train_rows = int(train_mask.sum())
+        test_rows = int(test_mask.sum())
+
+        y_train = slim.loc[train_mask, target].to_numpy()
+        y_test = slim.loc[test_mask, target].to_numpy()
 
         if is_multiclass:
             y_train = y_train.astype(int) + 1
             y_test = y_test.astype(int) + 1
 
         X_train, train_cols = _prepare_feature_matrix(
-            train_df,
+            slim.loc[train_mask],
             feature_cols,
             use_missingness_indicators=use_missingness_indicators,
         )
-        X_test, _ = _prepare_feature_matrix(
-            test_df,
+        X_test, test_cols = _prepare_feature_matrix(
+            slim.loc[test_mask],
             feature_cols,
             use_missingness_indicators=use_missingness_indicators,
         )
-        for c in train_cols:
-            if c not in X_test.columns:
-                X_test[c] = -999
-        X_test = X_test[train_cols]
+        X_test = _align_test_matrix(X_test, test_cols, train_cols)
 
         fold_params = dict(params)
         if use_class_weighting and not is_multiclass:
@@ -543,8 +604,8 @@ def walk_forward_evaluate(
             train_end=str(train_date_list[-1]),
             test_start=str(test_date_list[0]),
             test_end=str(test_date_list[-1]),
-            train_rows=len(train_df),
-            test_rows=len(test_df),
+            train_rows=train_rows,
+            test_rows=test_rows,
             accuracy=acc,
             precision=prec,
             recall=rec,
@@ -559,8 +620,8 @@ def walk_forward_evaluate(
             window=window_id,
             test_start=str(test_date_list[0]),
             test_end=str(test_date_list[-1]),
-            train_rows=len(train_df),
-            test_rows=len(test_df),
+            train_rows=train_rows,
+            test_rows=test_rows,
             accuracy=round(acc, 1),
             auc=round(auc_val, 4),
             train_time_s=round(train_time, 1),
@@ -604,22 +665,24 @@ def train_production_model(
     available_cols = [c for c in feature_cols if c in dataset.columns]
     feature_cols = available_cols
 
-    valid = dataset.dropna(subset=[target]).copy()
-    if valid.empty:
-        logger.error("train_production_no_valid_rows", target=target)
-        return None
-
     is_multiclass = target.startswith("direction_")
     params = dict(
         xgb_params or (_MULTICLASS_XGB_PARAMS if is_multiclass else _DEFAULT_XGB_PARAMS)
     )
+
+    slim, valid_mask, _ = _walk_forward_frame(dataset, target, feature_cols)
+    if not valid_mask.any():
+        logger.error("train_production_no_valid_rows", target=target)
+        return None
+
+    valid = slim.loc[valid_mask]
 
     X, feature_cols = _prepare_feature_matrix(
         valid,
         feature_cols,
         use_missingness_indicators=use_missingness_indicators,
     )
-    y = valid[target]
+    y = valid[target].to_numpy()
 
     if use_class_weighting and not is_multiclass:
         spw = _scale_pos_weight_for_labels(y)
@@ -764,6 +827,13 @@ def run_demand_baselines(
     if not available_targets:
         logger.error("no_valid_demand_targets", requested=targets)
         return []
+
+    dataset = slim_dataset_for_training(dataset, available_targets)
+    logger.info(
+        "demand_ablation_slim_panel",
+        rows=len(dataset),
+        cols=len(dataset.columns),
+    )
 
     momentum_cols = get_feature_columns(include_momentum=True)
     demand_cols = demand_feature_columns()

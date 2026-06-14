@@ -113,7 +113,7 @@ deploy_job tyche-ingest-news              ingest-news                 2 4Gi  "${
 deploy_job tyche-ingest-edgar             ingest-edgar                2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=evening"
 deploy_job tyche-ingest-options-flatfiles ingest-options-flatfiles  2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-alpha-batch              alpha-batch               4 8Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
-deploy_job tyche-run-demand-gate          run-demand-gate           8 16Gi "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
+deploy_job tyche-run-demand-gate          run-demand-gate           8 32Gi "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-publish-signals          publish-signals           2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-audit-snapshots          audit-snapshots           1 2Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 # In-process fallback chain (manual runs); production uses Cloud Workflows.

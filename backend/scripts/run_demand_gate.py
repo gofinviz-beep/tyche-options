@@ -95,6 +95,7 @@ def main() -> None:
         ALPHA_SUSTAINED_TARGETS,
         demand_feature_columns,
         run_demand_baselines,
+        slim_dataset_for_training,
         train_production_model,
     )
 
@@ -149,15 +150,19 @@ def main() -> None:
         del dataset
         gc.collect()
         dataset = load_dataset(args.output)
+
+    targets = args.targets or ALPHA_SUSTAINED_TARGETS
+    dataset = slim_dataset_for_training(dataset, targets)
+    gc.collect()
     logger.info(
         "dataset_ready",
         rows=len(dataset),
-        tickers=int(dataset["ticker"].nunique()),
+        tickers=int(dataset["ticker"].nunique()) if "ticker" in dataset.columns else None,
+        cols=len(dataset.columns),
         elapsed_s=round(time.time() - t0, 1),
     )
 
     # 2. Ablation on the sustained targets.
-    targets = args.targets or ALPHA_SUSTAINED_TARGETS
     log_job_phase(JOB_NAME, "demand_ablation", targets=targets)
     reports = run_demand_baselines(
         dataset=dataset,

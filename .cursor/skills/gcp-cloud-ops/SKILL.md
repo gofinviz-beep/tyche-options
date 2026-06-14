@@ -92,11 +92,10 @@ Re-run `./infra/gcp/deploy_workflow.sh` after workflow edits.
 12. **Published JSON NaN** — intelligence Parquet missing datetimes → `nan` in dict rows.
     `json_io.sanitize_for_json()` on write + `published_routes` on read. Legacy GCS files
     with `NaN` tokens work after backend restart.
-13. **Demand gate OOM (exit -9)** — fixed June 2026: chunked `build_dataset`, in-place
-    demand augmenters (`ml/features.py`), `panel_memory.downcast_panel` + optional
-    checkpoint at `ml/_checkpoints/demand_gate_base_panel.parquet`. Job is **8 CPU / 16 GiB**
-    (`deploy_jobs.sh`). Rebuild image after Python changes. Skip rebuild on re-run:
-    `TYCHE_DEMAND_GATE_REUSE_DATASET=true`.
+13. **Demand gate memory** — dataset build fits **16 GiB** (chunked concat + in-place
+    augmenters). Walk-forward XGBoost runs at **32 GiB** (`deploy_jobs.sh`). Reuse build:
+    `TYCHE_DEMAND_GATE_REUSE_DATASET=true`. Walk-forward uses `slim_dataset_for_training`
+    + float32 numpy matrices (no full-frame `.copy()`).
 
 ## Observability
 

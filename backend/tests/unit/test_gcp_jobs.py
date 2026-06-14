@@ -25,7 +25,8 @@ async def test_execute_job_unknown_raises() -> None:
 
 def test_subprocess_exit_hint_oom() -> None:
     hint = _subprocess_exit_hint(-9)
-    assert "OOM" in hint or "SIGKILL" in hint
+    assert "OOM" in hint
+    assert "32 GiB" in hint or "SIGKILL" in hint
 
 
 def test_subprocess_exit_hint_signal() -> None:

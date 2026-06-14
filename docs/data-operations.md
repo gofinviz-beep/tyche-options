@@ -21,12 +21,43 @@ When `TYCHE_DATA_BACKEND=gcs`, **batch ingest runs in Cloud Run Jobs** — not o
 - **Intelligence:** Parquet rollups only in cloud (no `news.db`). Checkpoints: `signals/intelligence/_checkpoints/`
 - **Demand guidance:** manifest `extra.guidance_tickers_fetched` vs `guidance_catalysts_written`
 - **Live progress:** Cloud Logging `job_phase` / `job_progress` events from `tyche/ops/job_progress.py` — see `infra/gcp/README.md` § Observability. Subprocess jobs (flatfiles, demand gate) stream stdout line-by-line (no end-of-job buffer).
-- **Demand gate memory:** `tyche-run-demand-gate` is **8 CPU / 16 GiB** — chunked `build_dataset`, in-place demand augmenters, `panel_memory.downcast_panel`. Exit -9 = OOM; reuse `TYCHE_DEMAND_GATE_REUSE_DATASET=true` if dataset build already finished.
+- **Demand gate memory:** see [Demand gate memory (Cloud Run)](#demand-gate-memory-cloud-run) below.
 - **Ingest session dates:** Pacific (`America/Los_Angeles`) via `market_data/ingest_dates.py` — evening jobs → Pacific today, morning → yesterday. Cloud Run sets `TYCHE_INGEST_WINDOW`; works on laptop in any host timezone.
 - **Published JSON NaN:** intelligence Parquet rows with missing datetimes must be sanitized before Pydantic validation. `json_io.sanitize_for_json()` on write; `published_routes` sanitizes on read (legacy GCS `NaN` tokens). Backend restart suffices; re-publish optional.
 - **TODO:** multi-task sharding for faster GCS ingest (spec §21)
 
 Local backend reads `published/routes/*.json` and `signals/` from GCS via ADC (`gcloud auth application-default login`).
+
+### Demand gate memory (Cloud Run)
+
+`tyche-run-demand-gate` is a two-phase job with different memory profiles:
+
+| Phase | Typical peak | Cloud Run | Code path |
+|-------|--------------|-----------|-----------|
+| **Dataset build** | ~16 GiB | fits at 16 GiB | `build_dataset()` + demand augmenters |
+| **Walk-forward XGBoost** | ~24–32 GiB | **32 GiB** deployed | `run_demand_baselines()` / `walk_forward_evaluate()` |
+
+**Dataset build optimizations** (`ml/dataset.py`, `ml/features.py`, `ml/panel_memory.py`):
+
+1. **Chunked concat** — flush every 64 tickers (`DATASET_CHUNK_TICKERS`); never hold ~9k ticker frames in RAM.
+2. **In-place augmenters** — demand/relational feature functions mutate the panel (no `all_features.copy()` / per-ticker `pd.concat(out)`).
+3. **Downcast** — `float64→float32`, `ticker→category` via `downcast_panel()`.
+4. **Parquet checkpoint** — optional round-trip at `ml/_checkpoints/demand_gate_base_panel.parquet` (GCS jobs only) to drop pandas fragmentation.
+
+**Walk-forward optimizations** (`ml/xgb_baseline.py`):
+
+1. **`slim_dataset_for_training()`** — project to `date`, label columns, and feature cols only (~100 vs ~120+).
+2. **`_walk_forward_frame()`** — column-slim slice + boolean date masks (no full-panel `dropna().copy()`).
+3. **`_prepare_feature_matrix()`** — float32 numpy matrices with NaN→-999 sentinel (no DataFrame copy per window).
+
+**Reuse cached build** (skips ~90 min GCS I/O when `ml/alpha_dataset.parquet` exists):
+
+```bash
+# Job env or local:
+TYCHE_DEMAND_GATE_REUSE_DATASET=true
+```
+
+**Deploy:** `./infra/gcp/deploy_jobs.sh --build` (job is **8 CPU / 32 GiB**). Exit **-9** = SIGKILL/OOM — check which phase failed in Cloud Logging (`build_dataset` vs `walk_forward`).
 
 **Local scripts still work** with `TYCHE_DATA_BACKEND=local` (writes `backend/data/`) or `gcs` (writes bucket via ADC). Examples:
 

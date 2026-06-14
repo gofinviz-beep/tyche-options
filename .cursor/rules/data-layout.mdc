@@ -93,7 +93,7 @@ from tyche.market_data.data_store import TickerMetaStore
 | `ingest_demand_data.py` | Ingest demand data (Finnhub fundamentals/estimates, Polygon short interest, Benzinga guidance → catalysts) | full universe, parallel rate-limited |
 | `audit_demand_coverage.py` | Audit D-FUND/D-EST Parquet hygiene for alpha universe | outputs `data/ml/demand_audit_*` |
 | `audit_finnhub_vs_edgar.py` | Compare SEC vs Finnhub filing dates for STALE tickers | requires `TYCHE_EDGAR_USER_AGENT_EMAIL` |
-| `run_demand_gate.py` | Demand-feature walk-forward ablation + conditional promotion of `big_move_sustained_*` models | `--min-lift 0.005` |
+| `run_demand_gate.py` | Demand-feature walk-forward ablation + conditional promotion of `big_move_sustained_*` models | `--min-lift 0.005`; reuse build: `TYCHE_DEMAND_GATE_REUSE_DATASET=true` |
 | `audit_estimate_snapshots.py` | Snapshot cadence + same-period revision availability (`estimate_snapshots/`) | `--tickers MU AVGO` |
 
 ## GCP Cloud Jobs

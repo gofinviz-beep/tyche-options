@@ -15,7 +15,9 @@ from tyche.ml.xgb_baseline import (
     BaselineReport,
     ModelResult,
     _average_importance,
+    _prepare_feature_matrix,
     get_feature_columns,
+    slim_dataset_for_training,
     walk_forward_evaluate,
 )
 
@@ -94,6 +96,37 @@ class TestGetFeatureColumns:
         cols = get_feature_columns(include_neighbors=True)
         assert "ema_8" in cols
         assert "sector_avg_rsi" in cols
+
+
+class TestPrepareFeatureMatrix:
+    def test_float32_numpy_output(self):
+        frame = pd.DataFrame(
+            {
+                "ema_8": [1.0, np.nan, 3.0],
+                "rsi_14": [50.0, 60.0, 70.0],
+                "e_eps_revision_90d": [1.0, np.nan, 2.0],
+            }
+        )
+        X, cols = _prepare_feature_matrix(
+            frame,
+            ["ema_8", "rsi_14", "e_eps_revision_90d"],
+            use_missingness_indicators=True,
+        )
+        assert X.dtype == np.float32
+        assert np.isnan(X).sum() == 0
+        assert X[1, 0] == -999.0
+        assert "e_eps_revision_90d__isna" in cols
+
+
+class TestSlimDatasetForTraining:
+    def test_drops_unused_columns(self):
+        wide = _make_dataset(n_tickers=1, n_dates=5)
+        wide["extra_label"] = 1.0
+        slim = slim_dataset_for_training(wide, ["csp_win_14d"])
+        assert "csp_win_14d" in slim.columns
+        assert "date" in slim.columns
+        assert "extra_label" not in slim.columns
+        assert len(slim.columns) < len(wide.columns)
 
 
 class TestWalkForwardEvaluate:

@@ -99,8 +99,8 @@ def _subprocess_exit_hint(code: int) -> str:
     """Human-readable hint for common Cloud Run subprocess failures."""
     if code == -9:
         return (
-            "likely OOM (SIGKILL) — demand gate builds a multi-GB dataset and "
-            "runs walk-forward XGBoost; use 32Gi memory on tyche-run-demand-gate"
+            "likely OOM (SIGKILL) — dataset build fits 16 GiB; walk-forward XGBoost "
+            "needs 32 GiB on tyche-run-demand-gate (or set TYCHE_DEMAND_GATE_REUSE_DATASET=true)"
         )
     if code < 0:
         return f"process killed by signal {-code}"

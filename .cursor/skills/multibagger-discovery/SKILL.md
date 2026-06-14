@@ -53,10 +53,9 @@ Live scoring / alpha batch unchanged when `alpha_discovery_enabled=false`. Locke
 Batch demand/options/alpha runs in Cloud Run when `TYCHE_DATA_BACKEND=gcs`.
 Use skill `gcp-cloud-ops` for deploy, manifests, workflow issues, and Cloud
 Logging queries (`job_phase` / `job_progress`). **Evening:** `ingest-demand-data`
-(estimates/fundamentals). **Morning:** optional `run-demand-gate` (~4–8h, **8 CPU / 16 GiB**)
-after flatfiles+alpha — not required for `publish-signals`. Dataset build uses chunked
-concat + in-place augmenters (`ml/panel_memory.py`, `ml/features.py`). Reuse:
-`TYCHE_DEMAND_GATE_REUSE_DATASET=true`. `ingest-demand-data` writes
+(estimates/fundamentals). **Morning:** optional `run-demand-gate` (~4–8h, **32 GiB** for
+walk-forward; build fits 16 GiB) after flatfiles+alpha — not required for `publish-signals`.
+Reuse build: `TYCHE_DEMAND_GATE_REUSE_DATASET=true`. `ingest-demand-data` writes
 Benzinga guidance → `catalyst_signals/`; manifest tracks
 `guidance_tickers_fetched` vs `guidance_catalysts_written`.
 
