@@ -523,30 +523,30 @@ def add_etf_features(
                 all_features[col] = 0.0
         return all_features
 
-    df = all_features.copy()
-
     membership_counts = etf_store.get_membership_counts()
     membership_matrix = etf_store.get_membership_matrix()
     spy_weights = etf_store.get_etf_weights("SPY")
     qqq_weights = etf_store.get_etf_weights("QQQ")
 
-    if "ticker" not in df.columns:
+    if "ticker" not in all_features.columns:
         for col in ETF_FEATURE_COLS:
-            df[col] = 0.0
-        return df
+            all_features[col] = 0.0
+        return all_features
 
-    df["etf_membership_count"] = df["ticker"].map(membership_counts).fillna(0).astype(int)
-    df["in_spy"] = df["ticker"].map(
+    all_features["etf_membership_count"] = (
+        all_features["ticker"].map(membership_counts).fillna(0).astype(int)
+    )
+    all_features["in_spy"] = all_features["ticker"].map(
         lambda t: 1 if "SPY" in membership_matrix.get(t, []) else 0
     )
-    df["in_qqq"] = df["ticker"].map(
+    all_features["in_qqq"] = all_features["ticker"].map(
         lambda t: 1 if "QQQ" in membership_matrix.get(t, []) else 0
     )
-    df["in_dia"] = df["ticker"].map(
+    all_features["in_dia"] = all_features["ticker"].map(
         lambda t: 1 if "DIA" in membership_matrix.get(t, []) else 0
     )
-    df["spy_weight"] = df["ticker"].map(spy_weights).fillna(0.0)
-    df["qqq_weight"] = df["ticker"].map(qqq_weights).fillna(0.0)
+    all_features["spy_weight"] = all_features["ticker"].map(spy_weights).fillna(0.0)
+    all_features["qqq_weight"] = all_features["ticker"].map(qqq_weights).fillna(0.0)
 
     all_etf_weights: dict[str, float] = {}
     for etf_ticker in ["SPY", "QQQ", "DIA", "XLK", "XLF", "XLE", "XLV", "SMH", "SOXX", "XLI"]:
@@ -555,9 +555,11 @@ def add_etf_features(
             if w is not None and (ticker not in all_etf_weights or w > all_etf_weights[ticker]):
                 all_etf_weights[ticker] = w
 
-    df["max_etf_weight"] = df["ticker"].map(all_etf_weights).fillna(0.0)
+    all_features["max_etf_weight"] = (
+        all_features["ticker"].map(all_etf_weights).fillna(0.0)
+    )
 
-    return df
+    return all_features
 
 
 def add_correlation_features(
@@ -575,31 +577,29 @@ def add_correlation_features(
                 all_features[col] = np.nan
         return all_features
 
-    df = all_features.copy()
-
     betas_df = correlation_store.read_betas(as_of=as_of_date)
     corr_df = correlation_store.read_correlations(as_of=as_of_date)
 
-    if "ticker" not in df.columns:
+    if "ticker" not in all_features.columns:
         for col in CORRELATION_FEATURE_COLS:
-            df[col] = np.nan
-        return df
+            all_features[col] = np.nan
+        return all_features
 
     if not betas_df.empty:
         beta_lookup = betas_df.set_index("ticker")[["spy_beta_60d", "qqq_beta_60d"]].to_dict("index")
-        df["spy_beta_60d"] = df["ticker"].map(
+        all_features["spy_beta_60d"] = all_features["ticker"].map(
             lambda t: beta_lookup.get(t, {}).get("spy_beta_60d", np.nan)
         )
-        df["qqq_beta_60d"] = df["ticker"].map(
+        all_features["qqq_beta_60d"] = all_features["ticker"].map(
             lambda t: beta_lookup.get(t, {}).get("qqq_beta_60d", np.nan)
         )
     else:
-        df["spy_beta_60d"] = np.nan
-        df["qqq_beta_60d"] = np.nan
+        all_features["spy_beta_60d"] = np.nan
+        all_features["qqq_beta_60d"] = np.nan
 
     if not corr_df.empty:
         peer_stats: dict[str, dict[str, float]] = {}
-        for ticker in df["ticker"].unique():
+        for ticker in all_features["ticker"].unique():
             mask = (corr_df["ticker_a"] == ticker) | (corr_df["ticker_b"] == ticker)
             sub = corr_df[mask]["correlation_60d"]
             if len(sub) > 0:
@@ -609,21 +609,21 @@ def add_correlation_features(
                     "min": float(sub.min()),
                 }
 
-        df["top_peer_corr_mean"] = df["ticker"].map(
+        all_features["top_peer_corr_mean"] = all_features["ticker"].map(
             lambda t: peer_stats.get(t, {}).get("mean", np.nan)
         )
-        df["top_peer_corr_max"] = df["ticker"].map(
+        all_features["top_peer_corr_max"] = all_features["ticker"].map(
             lambda t: peer_stats.get(t, {}).get("max", np.nan)
         )
-        df["top_peer_corr_min"] = df["ticker"].map(
+        all_features["top_peer_corr_min"] = all_features["ticker"].map(
             lambda t: peer_stats.get(t, {}).get("min", np.nan)
         )
     else:
-        df["top_peer_corr_mean"] = np.nan
-        df["top_peer_corr_max"] = np.nan
-        df["top_peer_corr_min"] = np.nan
+        all_features["top_peer_corr_mean"] = np.nan
+        all_features["top_peer_corr_max"] = np.nan
+        all_features["top_peer_corr_min"] = np.nan
 
-    return df
+    return all_features
 
 
 def add_market_context_features(
@@ -650,20 +650,23 @@ def add_market_context_features(
                 all_features[col] = np.nan
         return all_features
 
-    df = all_features.copy()
-
-    is_dipping = df["price_to_21ema_pct"] <= dip_threshold_pct
-    df["_is_dipping"] = is_dipping.astype(int)
-
-    date_aggs = df.groupby(date_col).agg(
+    is_dipping = all_features["price_to_21ema_pct"] <= dip_threshold_pct
+    dip_frame = all_features[[date_col]].copy()
+    dip_frame["_is_dipping"] = is_dipping.astype(int)
+    date_aggs = dip_frame.groupby(date_col).agg(
         concurrent_dips=("_is_dipping", "sum"),
         _total_tickers=("_is_dipping", "count"),
     ).reset_index()
-    date_aggs["market_dip_breadth"] = date_aggs["concurrent_dips"] / date_aggs["_total_tickers"]
+    date_aggs["market_dip_breadth"] = (
+        date_aggs["concurrent_dips"] / date_aggs["_total_tickers"]
+    )
     date_aggs.drop(columns=["_total_tickers"], inplace=True)
-
-    df = df.merge(date_aggs, on=date_col, how="left")
-    df.drop(columns=["_is_dipping"], inplace=True)
+    _merge_assign_inplace(
+        all_features,
+        date_aggs,
+        on=date_col,
+        cols=["concurrent_dips", "market_dip_breadth"],
+    )
 
     if spy_ohlcv is not None and not spy_ohlcv.empty:
         spy = spy_ohlcv.copy().sort_values("date").reset_index(drop=True)
@@ -678,18 +681,24 @@ def add_market_context_features(
         spy["spy_rsi_14"] = _rsi_series(spy_close, 14)
 
         spy["date_key"] = pd.to_datetime(spy["date"]).dt.date
-        df["date_key"] = pd.to_datetime(df[date_col]).dt.date
+        all_features["date_key"] = pd.to_datetime(all_features[date_col]).dt.date
 
-        spy_cols = spy[["date_key", "spy_return_5d", "spy_return_10d",
-                        "spy_drawdown_from_high", "spy_rsi_14"]].drop_duplicates("date_key")
-        df = df.merge(spy_cols, on="date_key", how="left")
-        df.drop(columns=["date_key"], inplace=True)
+        spy_cols = spy[
+            ["date_key", "spy_return_5d", "spy_return_10d", "spy_drawdown_from_high", "spy_rsi_14"]
+        ].drop_duplicates("date_key")
+        _merge_assign_inplace(
+            all_features,
+            spy_cols,
+            on="date_key",
+            cols=["spy_return_5d", "spy_return_10d", "spy_drawdown_from_high", "spy_rsi_14"],
+        )
+        all_features.drop(columns=["date_key"], inplace=True, errors="ignore")
     else:
         for col in ["spy_return_5d", "spy_return_10d", "spy_drawdown_from_high", "spy_rsi_14"]:
-            if col not in df.columns:
-                df[col] = np.nan
+            if col not in all_features.columns:
+                all_features[col] = np.nan
 
-    return df
+    return all_features
 
 
 def add_relative_strength_features(
@@ -712,13 +721,11 @@ def add_relative_strength_features(
                 all_features[col] = np.nan
         return all_features
 
-    df = all_features.copy()
-
-    if spy_ohlcv is None or spy_ohlcv.empty or "return_63d" not in df.columns:
+    if spy_ohlcv is None or spy_ohlcv.empty or "return_63d" not in all_features.columns:
         for col in RS_FEATURE_COLS:
-            if col not in df.columns:
-                df[col] = np.nan
-        return df
+            if col not in all_features.columns:
+                all_features[col] = np.nan
+        return all_features
 
     spy = spy_ohlcv.copy().sort_values("date").reset_index(drop=True)
     spy_close = spy["close"].astype(float)
@@ -727,17 +734,26 @@ def add_relative_strength_features(
     spy["spy_ret_252"] = spy_close.pct_change(252)
     spy["date_key"] = pd.to_datetime(spy["date"]).dt.date
 
-    df["date_key"] = pd.to_datetime(df[date_col]).dt.date
+    all_features["date_key"] = pd.to_datetime(all_features[date_col]).dt.date
     sub = spy[["date_key", "spy_ret_63", "spy_ret_126", "spy_ret_252"]].drop_duplicates("date_key")
-    df = df.merge(sub, on="date_key", how="left")
+    _merge_assign_inplace(
+        all_features,
+        sub,
+        on="date_key",
+        cols=["spy_ret_63", "spy_ret_126", "spy_ret_252"],
+    )
 
-    df["rs_63d"] = df["return_63d"] - df["spy_ret_63"]
-    df["rs_126d"] = df["return_126d"] - df["spy_ret_126"]
-    df["rs_252d"] = df["return_252d"] - df["spy_ret_252"]
+    all_features["rs_63d"] = all_features["return_63d"] - all_features["spy_ret_63"]
+    all_features["rs_126d"] = all_features["return_126d"] - all_features["spy_ret_126"]
+    all_features["rs_252d"] = all_features["return_252d"] - all_features["spy_ret_252"]
 
-    df.drop(columns=["date_key", "spy_ret_63", "spy_ret_126", "spy_ret_252"], inplace=True)
+    all_features.drop(
+        columns=["date_key", "spy_ret_63", "spy_ret_126", "spy_ret_252"],
+        inplace=True,
+        errors="ignore",
+    )
 
-    return df
+    return all_features
 
 
 def add_neighbor_features(
@@ -752,9 +768,8 @@ def add_neighbor_features(
     if all_features.empty:
         return all_features
 
-    df = all_features.copy()
-
-    grouped = df.groupby([date_col, sector_col])
+    keys = [date_col, sector_col]
+    grouped = all_features.groupby(keys)
 
     aggs = grouped.agg(
         sector_avg_rsi=("rsi_14", "mean"),
@@ -764,28 +779,31 @@ def add_neighbor_features(
         sector_count=("rsi_14", "count"),
     ).reset_index()
 
-    above_8 = df["price_to_8ema_pct"] > 0
-    above_21 = df["price_to_21ema_pct"] > 0
-    df["_above_8"] = above_8.astype(float)
-    df["_above_21"] = above_21.astype(float)
-
-    breadth = df.groupby([date_col, sector_col]).agg(
+    above_8 = (all_features["price_to_8ema_pct"] > 0).astype(float)
+    above_21 = (all_features["price_to_21ema_pct"] > 0).astype(float)
+    breadth_src = pd.DataFrame(
+        {
+            date_col: all_features[date_col],
+            sector_col: all_features[sector_col],
+            "_above_8": above_8,
+            "_above_21": above_21,
+        }
+    )
+    breadth = breadth_src.groupby(keys).agg(
         sector_breadth_8ema=("_above_8", "mean"),
         sector_breadth_21ema=("_above_21", "mean"),
     ).reset_index()
 
-    iv_aggs = df.groupby([date_col, sector_col]).agg(
+    iv_aggs = grouped.agg(
         sector_avg_iv_rank=("iv_rank", "mean"),
         sector_avg_vrp=("vrp", "mean"),
     ).reset_index()
 
-    aggs = aggs.merge(breadth, on=[date_col, sector_col], how="left")
-    aggs = aggs.merge(iv_aggs, on=[date_col, sector_col], how="left")
+    aggs = aggs.merge(breadth, on=keys, how="left")
+    aggs = aggs.merge(iv_aggs, on=keys, how="left")
+    _merge_assign_inplace(all_features, aggs, on=keys, cols=NEIGHBOR_FEATURE_COLS)
 
-    df = df.merge(aggs, on=[date_col, sector_col], how="left")
-    df.drop(columns=["_above_8", "_above_21"], inplace=True)
-
-    return df
+    return all_features
 
 
 def _safe_growth(curr: pd.Series, prev: pd.Series) -> pd.Series:
@@ -801,6 +819,19 @@ def _fill_defaults(df: pd.DataFrame, cols: list[str], value=np.nan) -> pd.DataFr
     return df
 
 
+def _merge_assign_inplace(
+    df: pd.DataFrame,
+    right: pd.DataFrame,
+    on: str | list[str],
+    cols: list[str],
+) -> None:
+    """Left-join *cols* from *right* onto *df* without copying the full frame."""
+    keys = [on] if isinstance(on, str) else list(on)
+    merged = df[keys].merge(right[keys + cols], on=keys, how="left")
+    for col in cols:
+        df[col] = merged[col].to_numpy()
+
+
 def add_fundamental_features(
     all_features: pd.DataFrame,
     fundamentals_store=None,
@@ -814,19 +845,19 @@ def add_fundamental_features(
     are visible — leakage-safe). Defaults to NaN when no data exists.
     """
     if all_features.empty or fundamentals_store is None or "ticker" not in all_features.columns:
-        return _fill_defaults(all_features.copy(), FUNDAMENTAL_FEATURE_COLS)
+        return _fill_defaults(all_features, FUNDAMENTAL_FEATURE_COLS)
 
-    df = all_features.copy()
-    # Normalise to ns resolution — merge_asof requires identical units, and the
-    # Parquet filing_date can deserialize as datetime64[s]/[us] (Pandas 2.x strict).
-    df["_date"] = pd.to_datetime(df[date_col]).astype("datetime64[ns]")
+    _fill_defaults(all_features, FUNDAMENTAL_FEATURE_COLS)
+    date_ns = pd.to_datetime(all_features[date_col]).astype("datetime64[ns]")
+    assign_cols = FUNDAMENTAL_FEATURE_COLS + ["f_quarters_since_filing"]
 
-    out: list[pd.DataFrame] = []
-    for ticker, group in df.groupby("ticker", sort=False):
-        group = group.sort_values("_date")
+    for ticker, group in all_features.groupby("ticker", sort=False):
+        idx = group.index
+        sorted_idx = date_ns.loc[idx].sort_values(kind="stable").index
+        left = pd.DataFrame({"_date": date_ns.loc[sorted_idx].to_numpy()})
+
         fund = fundamentals_store.read_ticker(ticker, timeframe="quarterly")
         if fund is None or fund.empty:
-            out.append(_fill_defaults(group, FUNDAMENTAL_FEATURE_COLS))
             continue
 
         f = fund.sort_values("period_end").reset_index(drop=True)
@@ -852,7 +883,7 @@ def add_fundamental_features(
         derived = derived.dropna(subset=["filing_dt"]).sort_values("filing_dt")
 
         merged = pd.merge_asof(
-            group,
+            left,
             derived,
             left_on="_date",
             right_on="filing_dt",
@@ -861,12 +892,11 @@ def add_fundamental_features(
         merged["f_quarters_since_filing"] = (
             (merged["_date"] - merged["filing_dt"]).dt.days / 91.0
         )
-        merged.drop(columns=["filing_dt"], inplace=True, errors="ignore")
-        out.append(merged)
+        for col in assign_cols:
+            if col in merged.columns:
+                all_features.loc[sorted_idx, col] = merged[col].to_numpy()
 
-    result = pd.concat(out, ignore_index=True)
-    result.drop(columns=["_date"], inplace=True, errors="ignore")
-    return _fill_defaults(result, FUNDAMENTAL_FEATURE_COLS)
+    return _fill_defaults(all_features, FUNDAMENTAL_FEATURE_COLS)
 
 
 def _rec_score_from_counts(row: pd.Series) -> float:
@@ -895,17 +925,15 @@ def add_estimate_features(
     surprise, and price-target upside. All point-in-time (snapshot_date <= date).
     """
     if all_features.empty or estimates_store is None or "ticker" not in all_features.columns:
-        return _fill_defaults(all_features.copy(), ESTIMATE_FEATURE_COLS)
+        return _fill_defaults(all_features, ESTIMATE_FEATURE_COLS)
 
-    df = all_features.copy()
-    df["_date"] = pd.to_datetime(df[date_col])
+    _fill_defaults(all_features, ESTIMATE_FEATURE_COLS)
 
-    out: list[pd.DataFrame] = []
-    for ticker, group in df.groupby("ticker", sort=False):
-        group = group.sort_values("_date").copy()
+    for ticker, group in all_features.groupby("ticker", sort=False):
+        idx = group.index
+        dates = pd.to_datetime(all_features.loc[idx, date_col])
         raw = estimates_store.read_ticker(ticker)
         if raw is None or raw.empty:
-            out.append(_fill_defaults(group, ESTIMATE_FEATURE_COLS))
             continue
 
         raw = raw.copy()
@@ -921,9 +949,6 @@ def add_estimate_features(
             .sort_values("snap_dt")
         )
 
-        # Vectorised point-in-time lookups (backward as-of) for every feature
-        # date at once — replaces the previous O(dates × metrics) Python loop.
-        dates = group["_date"]
         dates_90 = dates - pd.Timedelta(days=90)
 
         eps_now = _asof_col(front_eps, dates)
@@ -934,9 +959,6 @@ def add_estimate_features(
         rec_90 = _asof_col(rec_series, dates_90)
         pt = _asof_col(pt_mean, dates)
 
-        # Surprise: latest + trailing-4 mean as of each date. Pre-computing the
-        # rolling-4 mean per surprise row, then taking the as-of row, equals the
-        # old "last 4 surprises with snap_dt <= d" mean.
         if not surprise.empty:
             surp = surprise.copy()
             surp_last_series = surp[["snap_dt", "value"]]
@@ -946,31 +968,28 @@ def add_estimate_features(
             surp_last = _asof_col(surp_last_series, dates)
             surp_avg4 = _asof_col(surp_avg4_series, dates)
         else:
-            surp_last = np.full(len(group), np.nan)
-            surp_avg4 = np.full(len(group), np.nan)
+            surp_last = np.full(len(idx), np.nan)
+            surp_avg4 = np.full(len(idx), np.nan)
 
-        if "close" in group.columns:
-            close = pd.to_numeric(group["close"], errors="coerce").to_numpy()
+        if "close" in all_features.columns:
+            close = pd.to_numeric(all_features.loc[idx, "close"], errors="coerce").to_numpy()
         else:
-            close = np.full(len(group), np.nan)
+            close = np.full(len(idx), np.nan)
 
         with np.errstate(divide="ignore", invalid="ignore"):
             pt_upside = np.where(
                 (~np.isnan(pt)) & (close > 0), (pt / close - 1.0) * 100.0, np.nan
             )
 
-        group["e_eps_revision_90d"] = _pct_change_arr(eps_now, eps_90)
-        group["e_rev_revision_90d"] = _pct_change_arr(rev_now, rev_90)
-        group["e_rec_score"] = rec_now
-        group["e_rec_score_trend_90d"] = rec_now - rec_90
-        group["e_eps_surprise_last"] = surp_last
-        group["e_eps_surprise_avg4"] = surp_avg4
-        group["e_price_target_upside"] = pt_upside
-        out.append(group)
+        all_features.loc[idx, "e_eps_revision_90d"] = _pct_change_arr(eps_now, eps_90)
+        all_features.loc[idx, "e_rev_revision_90d"] = _pct_change_arr(rev_now, rev_90)
+        all_features.loc[idx, "e_rec_score"] = rec_now
+        all_features.loc[idx, "e_rec_score_trend_90d"] = rec_now - rec_90
+        all_features.loc[idx, "e_eps_surprise_last"] = surp_last
+        all_features.loc[idx, "e_eps_surprise_avg4"] = surp_avg4
+        all_features.loc[idx, "e_price_target_upside"] = pt_upside
 
-    result = pd.concat(out, ignore_index=True)
-    result.drop(columns=["_date"], inplace=True, errors="ignore")
-    return _fill_defaults(result, ESTIMATE_FEATURE_COLS)
+    return _fill_defaults(all_features, ESTIMATE_FEATURE_COLS)
 
 
 def _asof_col(series_df: pd.DataFrame, when: pd.Series) -> np.ndarray:
@@ -1056,19 +1075,19 @@ def add_short_interest_features(
 ) -> pd.DataFrame:
     """Augment feature rows with point-in-time short interest (D-TECH)."""
     if all_features.empty or short_interest_store is None or "ticker" not in all_features.columns:
-        return _fill_defaults(all_features.copy(), SHORT_INTEREST_FEATURE_COLS)
+        return _fill_defaults(all_features, SHORT_INTEREST_FEATURE_COLS)
 
-    df = all_features.copy()
-    # Normalise to ns resolution — merge_asof requires identical units, and the
-    # Parquet settlement_date can deserialize as datetime64[s]/[us] (Pandas 2.x strict).
-    df["_date"] = pd.to_datetime(df[date_col]).astype("datetime64[ns]")
+    _fill_defaults(all_features, SHORT_INTEREST_FEATURE_COLS)
+    date_ns = pd.to_datetime(all_features[date_col]).astype("datetime64[ns]")
+    si_cols = SHORT_INTEREST_FEATURE_COLS
 
-    out: list[pd.DataFrame] = []
-    for ticker, group in df.groupby("ticker", sort=False):
-        group = group.sort_values("_date")
+    for ticker, group in all_features.groupby("ticker", sort=False):
+        idx = group.index
+        sorted_idx = date_ns.loc[idx].sort_values(kind="stable").index
+        left = pd.DataFrame({"_date": date_ns.loc[sorted_idx].to_numpy()})
+
         si = short_interest_store.read_ticker(ticker)
         if si is None or si.empty:
-            out.append(_fill_defaults(group, SHORT_INTEREST_FEATURE_COLS))
             continue
 
         s = si.sort_values("settlement_date").reset_index(drop=True)
@@ -1085,14 +1104,13 @@ def add_short_interest_features(
         ).sort_values("settle_dt")
 
         merged = pd.merge_asof(
-            group, cols, left_on="_date", right_on="settle_dt", direction="backward"
+            left, cols, left_on="_date", right_on="settle_dt", direction="backward"
         )
-        merged.drop(columns=["settle_dt"], inplace=True, errors="ignore")
-        out.append(merged)
+        for col in si_cols:
+            if col in merged.columns:
+                all_features.loc[sorted_idx, col] = merged[col].to_numpy()
 
-    result = pd.concat(out, ignore_index=True)
-    result.drop(columns=["_date"], inplace=True, errors="ignore")
-    return _fill_defaults(result, SHORT_INTEREST_FEATURE_COLS)
+    return _fill_defaults(all_features, SHORT_INTEREST_FEATURE_COLS)
 
 
 def add_catalyst_features(
@@ -1109,29 +1127,28 @@ def add_catalyst_features(
     tailwind score. Defaults to 0 when no source is available.
     """
     if all_features.empty or "ticker" not in all_features.columns:
-        out = _fill_defaults(all_features.copy(), CATALYST_FEATURE_COLS)
+        out = _fill_defaults(all_features, CATALYST_FEATURE_COLS)
         out["cat_demand_score"] = out["cat_demand_score"].fillna(0.0)
         out["cat_policy_score"] = out["cat_policy_score"].fillna(0.0)
         out["cat_count_90d"] = out["cat_count_90d"].fillna(0.0)
         return out
 
-    df = all_features.copy()
-    df["_date"] = pd.to_datetime(df[date_col])
+    all_features["_date"] = pd.to_datetime(all_features[date_col])
     sectors = sectors or {}
 
     # Defaults — overwritten per ticker below. Vectorised per-ticker numpy
     # broadcast replaces the previous O(rows) per-row ``aggregate()`` calls
     # (which re-read each ticker's Parquet for every feature date).
-    df["cat_demand_score"] = 0.0
-    df["cat_policy_score"] = 0.0
-    df["cat_count_90d"] = 0.0
-    df["cat_recency_days"] = np.nan
+    all_features["cat_demand_score"] = 0.0
+    all_features["cat_policy_score"] = 0.0
+    all_features["cat_count_90d"] = 0.0
+    all_features["cat_recency_days"] = np.nan
 
     cat_tickers = (
         set(catalyst_store.get_all_tickers()) if catalyst_store is not None else set()
     )
 
-    for ticker, group in df.groupby("ticker", sort=False):
+    for ticker, group in all_features.groupby("ticker", sort=False):
         idx = group.index
         sd = group["_date"].to_numpy().astype("datetime64[D]")
         tkr = str(ticker).upper()
@@ -1155,38 +1172,38 @@ def add_catalyst_features(
                 wd = w * is_demand[None, :]
                 dsum = wd.sum(axis=1)
                 dnum = (wd * impact[None, :]).sum(axis=1)
-                df.loc[idx, "cat_demand_score"] = np.where(
+                all_features.loc[idx, "cat_demand_score"] = np.where(
                     dsum > 0, dnum / np.where(dsum > 0, dsum, 1.0), 0.0
                 )
-                df.loc[idx, "cat_count_90d"] = (
+                all_features.loc[idx, "cat_count_90d"] = (
                     ((age >= 0) & (age <= 90) & is_demand[None, :]).sum(axis=1).astype(float)
                 )
                 dage = np.where(valid & is_demand[None, :], age, np.nan)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", RuntimeWarning)
                     recency = np.nanmin(dage, axis=1)
-                df.loc[idx, "cat_recency_days"] = recency
+                all_features.loc[idx, "cat_recency_days"] = recency
 
                 wp = w * is_policy[None, :]
                 psum = wp.sum(axis=1)
                 pnum = (wp * impact[None, :]).sum(axis=1)
-                df.loc[idx, "cat_policy_score"] = np.where(
+                all_features.loc[idx, "cat_policy_score"] = np.where(
                     psum > 0, pnum / np.where(psum > 0, psum, 1.0), 0.0
                 )
 
         # ── Structural policy tailwind (strongest signed wins vs news) ──────
         if policy_calendar is not None:
             cal_pol = _policy_score_vec(policy_calendar, tkr, sectors.get(ticker), sd)
-            cur = df.loc[idx, "cat_policy_score"].to_numpy()
-            df.loc[idx, "cat_policy_score"] = np.where(
+            cur = all_features.loc[idx, "cat_policy_score"].to_numpy()
+            all_features.loc[idx, "cat_policy_score"] = np.where(
                 np.abs(cal_pol) > np.abs(cur), cal_pol, cur
             )
 
-    df.drop(columns=["_date"], inplace=True, errors="ignore")
-    df["cat_demand_score"] = df["cat_demand_score"].fillna(0.0)
-    df["cat_policy_score"] = df["cat_policy_score"].fillna(0.0)
-    df["cat_count_90d"] = df["cat_count_90d"].fillna(0.0)
-    return df
+    all_features.drop(columns=["_date"], inplace=True, errors="ignore")
+    all_features["cat_demand_score"] = all_features["cat_demand_score"].fillna(0.0)
+    all_features["cat_policy_score"] = all_features["cat_policy_score"].fillna(0.0)
+    all_features["cat_count_90d"] = all_features["cat_count_90d"].fillna(0.0)
+    return all_features
 
 
 def _policy_score_vec(
@@ -1233,40 +1250,39 @@ def add_graph_features(
     """
     cols = GRAPH_FEATURE_COLS
     if all_features.empty or "ticker" not in all_features.columns or graph is None:
-        out = all_features.copy()
         for c in cols:
-            if c not in out.columns:
-                out[c] = 0.0
-            out[c] = out[c].fillna(0.0)
-        return out
+            if c not in all_features.columns:
+                all_features[c] = 0.0
+            else:
+                all_features[c] = all_features[c].fillna(0.0)
+        return all_features
 
-    df = all_features.copy()
-    df["_date"] = pd.to_datetime(df[date_col]).dt.normalize()
-    df["_tkr_u"] = df["ticker"].astype(str).str.upper()
+    all_features["_date"] = pd.to_datetime(all_features[date_col]).dt.normalize()
+    all_features["_tkr_u"] = all_features["ticker"].astype(str).str.upper()
 
-    mom_col = "return_63d" if "return_63d" in df.columns else None
-    cat_col = "cat_demand_score" if "cat_demand_score" in df.columns else None
-    est_col = "e_eps_revision_90d" if "e_eps_revision_90d" in df.columns else None
+    mom_col = "return_63d" if "return_63d" in all_features.columns else None
+    cat_col = "cat_demand_score" if "cat_demand_score" in all_features.columns else None
+    est_col = "e_eps_revision_90d" if "e_eps_revision_90d" in all_features.columns else None
 
     # Defaults — only supplier rows (tickers with curated customers) get
     # nonzero values, so the rest are filled vectorised without iteration.
-    df["graph_customer_mom"] = 0.0
-    df["graph_customer_catalyst"] = 0.0
-    df["graph_customer_est_rev"] = 0.0
-    df["graph_demand_propagation"] = 0.0
-    df["graph_customer_count"] = 0.0
+    all_features["graph_customer_mom"] = 0.0
+    all_features["graph_customer_catalyst"] = 0.0
+    all_features["graph_customer_est_rev"] = 0.0
+    all_features["graph_demand_propagation"] = 0.0
+    all_features["graph_customer_count"] = 0.0
 
     suppliers = {e.supplier.upper() for e in graph.edges}
     customers_all = {e.customer.upper() for e in graph.edges}
 
     # Per-customer date-indexed reads (small: ~dozens of customer tickers).
     cust_reads: dict[str, pd.DataFrame] = {}
-    cmask = df["_tkr_u"].isin(customers_all)
+    cmask = all_features["_tkr_u"].isin(customers_all)
     if cmask.any():
-        sub = df.loc[cmask, ["_tkr_u", "_date"]].copy()
-        sub["mom"] = df.loc[cmask, mom_col] if mom_col else np.nan
-        sub["cat"] = df.loc[cmask, cat_col] if cat_col else np.nan
-        sub["est"] = df.loc[cmask, est_col] if est_col else np.nan
+        sub = all_features.loc[cmask, ["_tkr_u", "_date"]].copy()
+        sub["mom"] = all_features.loc[cmask, mom_col] if mom_col else np.nan
+        sub["cat"] = all_features.loc[cmask, cat_col] if cat_col else np.nan
+        sub["est"] = all_features.loc[cmask, est_col] if est_col else np.nan
         sub["_present"] = 1.0
         for cust, g in sub.groupby("_tkr_u", sort=False):
             cust_reads[cust] = (
@@ -1274,7 +1290,7 @@ def add_graph_features(
                 .set_index("_date")[["mom", "cat", "est", "_present"]]
             )
 
-    for tkr, group in df.groupby("_tkr_u", sort=False):
+    for tkr, group in all_features.groupby("_tkr_u", sort=False):
         if tkr not in suppliers:
             continue
         customers = graph.customers_of(tkr)
@@ -1308,11 +1324,11 @@ def add_graph_features(
         est_ramp = np.clip(est / 0.10, 0.0, 1.0)
         prop = np.minimum(1.0, 0.45 * mom_ramp + 0.35 * cat_pos + 0.20 * est_ramp)
 
-        df.loc[idx, "graph_customer_mom"] = np.round(mom, 4)
-        df.loc[idx, "graph_customer_catalyst"] = np.round(cat, 4)
-        df.loc[idx, "graph_customer_est_rev"] = np.round(est, 4)
-        df.loc[idx, "graph_demand_propagation"] = np.round(prop, 4)
-        df.loc[idx, "graph_customer_count"] = n_present
+        all_features.loc[idx, "graph_customer_mom"] = np.round(mom, 4)
+        all_features.loc[idx, "graph_customer_catalyst"] = np.round(cat, 4)
+        all_features.loc[idx, "graph_customer_est_rev"] = np.round(est, 4)
+        all_features.loc[idx, "graph_demand_propagation"] = np.round(prop, 4)
+        all_features.loc[idx, "graph_customer_count"] = n_present
 
-    df.drop(columns=["_date", "_tkr_u"], inplace=True, errors="ignore")
-    return df
+    all_features.drop(columns=["_date", "_tkr_u"], inplace=True, errors="ignore")
+    return all_features

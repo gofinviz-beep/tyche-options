@@ -279,7 +279,8 @@ class TestShortInterestFeatures:
 class TestDemandApplyOnce:
     """Regression: demand augmentation must run exactly once at serving time."""
 
-    def test_second_fundamental_pass_corrupts_yoy(self):
+    def test_second_fundamental_pass_is_idempotent(self):
+        """In-place augmentation must be safe if called twice (no _x/_y suffix corruption)."""
         fund_df = TestFundamentalFeatures()._fund()
         store = _FakeFundStore(fund_df)
         feats = pd.DataFrame(
@@ -288,7 +289,8 @@ class TestDemandApplyOnce:
         once = add_fundamental_features(feats, fundamentals_store=store)
         assert once["f_rev_growth_yoy"].notna().all()
         twice = add_fundamental_features(once, fundamentals_store=store)
-        assert twice["f_rev_growth_yoy"].isna().all()
+        assert twice["f_rev_growth_yoy"].notna().all()
+        assert twice["f_rev_growth_yoy"].iloc[0] == pytest.approx(once["f_rev_growth_yoy"].iloc[0])
 
 
 # ── Feature column plumbing ────────────────────────────────────────────

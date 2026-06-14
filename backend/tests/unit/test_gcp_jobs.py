@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tyche.ops.gcp_jobs import JOB_NAMES, execute_job
+from tyche.ops.gcp_jobs import JOB_NAMES, _subprocess_exit_hint, execute_job
 
 
 def test_job_names_match_spec() -> None:
@@ -21,3 +21,16 @@ def test_job_names_match_spec() -> None:
 async def test_execute_job_unknown_raises() -> None:
     with pytest.raises(ValueError, match="Unknown job"):
         await execute_job("not-a-real-job")
+
+
+def test_subprocess_exit_hint_oom() -> None:
+    hint = _subprocess_exit_hint(-9)
+    assert "OOM" in hint or "SIGKILL" in hint
+
+
+def test_subprocess_exit_hint_signal() -> None:
+    assert "signal 15" in _subprocess_exit_hint(-15)
+
+
+def test_subprocess_exit_hint_normal_exit() -> None:
+    assert _subprocess_exit_hint(1) == "exit 1"

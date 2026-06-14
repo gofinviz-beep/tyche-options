@@ -133,7 +133,7 @@ The Scanner calls Conviction Engine internally — no need to run conviction fir
 
 ## GCP Batch Jobs (when `TYCHE_DATA_BACKEND=gcs`)
 
-Cloud Workflows orchestrate Cloud Run Jobs — see `infra/gcp/README.md`. Evening 6 PM PT (parallel): ingest-data, ingest-demand-data, ingest-news, ingest-edgar — **no demand gate**. Morning 2:30 AM PT: options-flatfiles + alpha-batch → optional demand-gate → publish-signals → audit. Publish requires alpha-batch, not gate or flatfiles. Laptop APScheduler disabled. Live progress: Cloud Logging `job_phase` / `job_progress` (`ops/job_progress.py`); subprocess jobs stream stdout. **TODO:** multi-task sharding (spec §21).
+Cloud Workflows orchestrate Cloud Run Jobs — see `infra/gcp/README.md`. Evening 6 PM PT (parallel): ingest-data, ingest-demand-data, ingest-news, ingest-edgar — **no demand gate**. Morning 2:30 AM PT: options-flatfiles + alpha-batch → optional demand-gate (8 CPU / 16 GiB; chunked dataset + in-place augmenters) → publish-signals → audit. Publish requires alpha-batch, not gate or flatfiles. Laptop APScheduler disabled. Live progress: Cloud Logging `job_phase` / `job_progress` (`ops/job_progress.py`); subprocess jobs stream stdout. **TODO:** multi-task sharding (spec §21).
 
 ## Scheduled Jobs (APScheduler, US/Eastern — local mode only)
 

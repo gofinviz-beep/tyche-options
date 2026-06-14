@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -91,8 +92,20 @@ def _run_subprocess(
         sys.stdout.write(line)
         sys.stdout.flush()
     proc.wait()
-    output = "".join(lines)
-    return proc.returncode or 0, output
+    return proc.returncode, "".join(lines)
+
+
+def _subprocess_exit_hint(code: int) -> str:
+    """Human-readable hint for common Cloud Run subprocess failures."""
+    if code == -9:
+        return (
+            "likely OOM (SIGKILL) — demand gate builds a multi-GB dataset and "
+            "runs walk-forward XGBoost; use 32Gi memory on tyche-run-demand-gate"
+        )
+    if code < 0:
+        return f"process killed by signal {-code}"
+    return f"exit {code}"
+
 
 
 async def run_ingest_data(
@@ -515,16 +528,28 @@ async def run_demand_gate_job(
     )
 
     script = _backend_dir() / "scripts" / "run_demand_gate.py"
+    dataset_rel = "ml/alpha_dataset.parquet"
     cmd = [
         sys.executable,
         str(script),
         "--data-dir",
         settings.data_dir,
         "--output",
-        "ml/alpha_dataset.parquet",
+        dataset_rel,
         "--results-dir",
         "ml/alpha_results",
     ]
+    reuse_dataset = os.environ.get("TYCHE_DEMAND_GATE_REUSE_DATASET", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    from tyche.storage import exists as storage_exists
+
+    if reuse_dataset and storage_exists(dataset_rel, ctx=ctx):
+        cmd.extend(["--dataset", dataset_rel])
+        manifest.extra["reuse_dataset"] = True
+        logger.info("demand_gate_reuse_dataset", path=dataset_rel)
     manifest.input_paths = manifest.input_paths + [
         "ohlcv_daily/",
         "fundamentals/",
@@ -542,10 +567,11 @@ async def run_demand_gate_job(
     code, output = await asyncio.to_thread(_run_subprocess, cmd)
     manifest.extra["output_tail"] = output[-3000:] if len(output) > 3000 else output
     if code != 0:
-        manifest.errors.append(f"exit_code={code}")
+        hint = _subprocess_exit_hint(code)
+        manifest.errors.append(f"exit_code={code}; {hint}")
         manifest.finish(status="failed")
         rel = manifest.write(ctx=ctx)
-        raise RuntimeError(f"run_demand_gate failed (exit {code})")
+        raise RuntimeError(f"run_demand_gate failed ({hint})")
     log_job_phase("run-demand-gate", "subprocess", status="complete")
 
     manifest.finish(status="success")

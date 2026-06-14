@@ -26,6 +26,7 @@ Usage (from ``backend/``):
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import sys
 import time
@@ -144,6 +145,10 @@ def main() -> None:
             logger.error("dataset_is_empty")
             sys.exit(1)
         save_dataset(dataset, args.output)
+        # Release build-time fragmentation before walk-forward (reduces peak RSS).
+        del dataset
+        gc.collect()
+        dataset = load_dataset(args.output)
     logger.info(
         "dataset_ready",
         rows=len(dataset),

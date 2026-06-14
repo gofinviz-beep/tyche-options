@@ -6,6 +6,7 @@ then calls feature extraction and label construction for each ticker.
 
 from __future__ import annotations
 
+import gc
 import time
 from datetime import date
 from pathlib import Path
@@ -14,6 +15,11 @@ import numpy as np
 import pandas as pd
 import structlog
 
+from tyche.ml.panel_memory import (
+    DATASET_CHUNK_TICKERS,
+    downcast_panel,
+    maybe_compact_panel,
+)
 from tyche.storage import read_parquet, write_parquet
 from tyche.storage.store_io import context_for_data_access
 
@@ -98,8 +104,18 @@ def build_dataset(
     )
 
     frames: list[pd.DataFrame] = []
+    parts: list[pd.DataFrame] = []
     skipped = 0
     feat_start = time.monotonic()
+
+    def _flush_ticker_frames(
+        batch: list[pd.DataFrame],
+        chunks: list[pd.DataFrame],
+    ) -> None:
+        if not batch:
+            return
+        chunks.append(pd.concat(batch, ignore_index=True))
+        batch.clear()
 
     for i, ticker in enumerate(equity_tickers):
         done = i + 1
@@ -154,16 +170,28 @@ def build_dataset(
             combined["ticker"] = ticker
 
             frames.append(combined)
+            if len(frames) >= DATASET_CHUNK_TICKERS:
+                _flush_ticker_frames(frames, parts)
 
         except Exception:
             logger.warning("dataset_ticker_failed", ticker=ticker, exc_info=True)
             skipped += 1
 
-    if not frames:
+    _flush_ticker_frames(frames, parts)
+
+    if not parts:
         logger.error("dataset_empty", skipped=skipped)
         return pd.DataFrame()
 
-    dataset = pd.concat(frames, ignore_index=True)
+    dataset = parts[0] if len(parts) == 1 else pd.concat(parts, ignore_index=True)
+    del parts
+    gc.collect()
+    downcast_panel(dataset)
+    dataset = maybe_compact_panel(
+        dataset,
+        data_dir=data_dir,
+        enabled=job_name is not None,
+    )
 
     if job_name:
         from tyche.ops.job_progress import log_job_phase
@@ -259,11 +287,18 @@ def apply_relational_features(
             logger.warning("correlation_features_failed", exc_info=True)
             dataset = add_correlation_features(dataset, correlation_store=None)
 
-    if include_market_context:
+    spy_ohlcv = None
+    if include_market_context or include_momentum:
         try:
             spy_ohlcv = ohlcv_store.read_ticker(
                 "SPY", start_date=start_date, end_date=end_date,
             )
+        except Exception:
+            logger.warning("spy_ohlcv_load_failed", exc_info=True)
+            spy_ohlcv = None
+
+    if include_market_context:
+        try:
             dataset = add_market_context_features(dataset, spy_ohlcv=spy_ohlcv)
             logger.info("market_context_features_added")
         except Exception:
@@ -272,9 +307,6 @@ def apply_relational_features(
 
     if include_momentum:
         try:
-            spy_ohlcv = ohlcv_store.read_ticker(
-                "SPY", start_date=start_date, end_date=end_date,
-            )
             dataset = add_relative_strength_features(dataset, spy_ohlcv=spy_ohlcv)
             logger.info("relative_strength_features_added")
         except Exception:
@@ -299,6 +331,7 @@ def _apply_demand_features(dataset: pd.DataFrame, *, data_dir: str) -> pd.DataFr
     except Exception:
         logger.warning("fundamental_features_failed", exc_info=True)
         dataset = add_fundamental_features(dataset, fundamentals_store=None)
+    gc.collect()
 
     try:
         from tyche.market_data.estimates_store import EstimatesStore
@@ -309,6 +342,7 @@ def _apply_demand_features(dataset: pd.DataFrame, *, data_dir: str) -> pd.DataFr
     except Exception:
         logger.warning("estimate_features_failed", exc_info=True)
         dataset = add_estimate_features(dataset, estimates_store=None)
+    gc.collect()
 
     try:
         from tyche.market_data.short_interest_store import ShortInterestStore
@@ -319,6 +353,7 @@ def _apply_demand_features(dataset: pd.DataFrame, *, data_dir: str) -> pd.DataFr
     except Exception:
         logger.warning("short_interest_features_failed", exc_info=True)
         dataset = add_short_interest_features(dataset, short_interest_store=None)
+    gc.collect()
 
     try:
         from tyche.market_data.catalyst_store import CatalystSignalStore
@@ -336,6 +371,7 @@ def _apply_demand_features(dataset: pd.DataFrame, *, data_dir: str) -> pd.DataFr
     except Exception:
         logger.warning("catalyst_features_failed", exc_info=True)
         dataset = add_catalyst_features(dataset, catalyst_store=None, policy_calendar=None)
+    gc.collect()
 
     try:
         from tyche.market_data.supply_chain_graph import SupplyChainGraph

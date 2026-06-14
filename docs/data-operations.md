@@ -21,6 +21,7 @@ When `TYCHE_DATA_BACKEND=gcs`, **batch ingest runs in Cloud Run Jobs** — not o
 - **Intelligence:** Parquet rollups only in cloud (no `news.db`). Checkpoints: `signals/intelligence/_checkpoints/`
 - **Demand guidance:** manifest `extra.guidance_tickers_fetched` vs `guidance_catalysts_written`
 - **Live progress:** Cloud Logging `job_phase` / `job_progress` events from `tyche/ops/job_progress.py` — see `infra/gcp/README.md` § Observability. Subprocess jobs (flatfiles, demand gate) stream stdout line-by-line (no end-of-job buffer).
+- **Demand gate memory:** `tyche-run-demand-gate` is **8 CPU / 16 GiB** — chunked `build_dataset`, in-place demand augmenters, `panel_memory.downcast_panel`. Exit -9 = OOM; reuse `TYCHE_DEMAND_GATE_REUSE_DATASET=true` if dataset build already finished.
 - **Ingest session dates:** Pacific (`America/Los_Angeles`) via `market_data/ingest_dates.py` — evening jobs → Pacific today, morning → yesterday. Cloud Run sets `TYCHE_INGEST_WINDOW`; works on laptop in any host timezone.
 - **Published JSON NaN:** intelligence Parquet rows with missing datetimes must be sanitized before Pydantic validation. `json_io.sanitize_for_json()` on write; `published_routes` sanitizes on read (legacy GCS `NaN` tokens). Backend restart suffices; re-publish optional.
 - **TODO:** multi-task sharding for faster GCS ingest (spec §21)

@@ -52,6 +52,7 @@ jobs are slower on GCS than local NVMe — see spec §21 for planned multi-task 
 | Job | CPU | Memory | Timeout |
 |-----|-----|--------|---------|
 | All jobs (10) | (see `deploy_jobs.sh`) | | **8h** each |
+| `tyche-run-demand-gate` | **8** | **16 GiB** | Walk-forward ML on full demand dataset — in-place augmenters + chunked concat (June 2026); 32 GiB was a stopgap |
 
 `ingest-data` previously used 4h and timed out on GCS cap reprice (~3.5k tickers).
 All jobs now use `28800s` (8h). Cloud Run max is 168h.
@@ -67,6 +68,13 @@ Re-deploy workflows after editing: `./infra/gcp/deploy_workflow.sh`.
 containers from fetching the wrong Polygon session day.
 
 Re-apply after editing: `./infra/gcp/deploy_jobs.sh` (rebuild with `--build` when Python changes).
+
+**Demand gate memory (16 GiB):** `build_dataset` flushes ticker batches every 64 names
+(`tyche/ml/panel_memory.py`); `downcast_panel` (float32 + category ticker) and optional
+Parquet checkpoint at `ml/_checkpoints/demand_gate_base_panel.parquet` drop fragmentation;
+demand augmenters in `ml/features.py` mutate in-place (no full-panel `.copy()`).
+Exit **-9** after `fundamental_features_added` was OOM from duplicate panel copies (fixed
+June 2026). Reuse cached build: `TYCHE_DEMAND_GATE_REUSE_DATASET=true` on the job env.
 
 `deploy_jobs.sh --build` runs **ruff F821/F822/F823** (undefined names only — not unused-import
 F401) and Cloud Run job unit tests (`test_alpha_batch`, `test_gcp_jobs`, `test_ingest_dates`)

@@ -29,6 +29,7 @@ With `TYCHE_DATA_BACKEND=gcs`, the same relative paths resolve under `gs://{buck
 | Demand: short interest | `backend/data/short_interest/{TICKER}.parquet` | One per ticker (Polygon short interest / days-to-cover) |
 | Demand: catalyst signals | `backend/data/catalyst_signals/{TICKER}.parquet` | One per ticker (news/8-K demand catalysts + Benzinga guide-vs-consensus) |
 | ML alpha dataset / results | `backend/data/ml/alpha_dataset.parquet`, `backend/data/ml/alpha_results/` | Demand-feature training panel + demand-gate verdict JSON |
+| ML demand-gate checkpoint | `backend/data/ml/_checkpoints/demand_gate_base_panel.parquet` | Optional Parquet round-trip after base `build_dataset` (drops fragmentation; GCS job only) |
 | Options chain snapshots (Tradier) | `backend/data/options_chains/{TICKER}.parquet` | One Parquet per ticker |
 | Options history (S3 flat files) | `backend/data/options_history/{TICKER}.parquet` | One Parquet per ticker |
 | Historical IV (ATM put) | `backend/data/options_iv/{TICKER}.parquet` | One Parquet per ticker |
