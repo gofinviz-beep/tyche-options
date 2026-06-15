@@ -61,6 +61,8 @@ TYCHE_DEMAND_GATE_REUSE_DATASET=true
 
 **Deploy:** `./infra/gcp/deploy_jobs.sh --build` (job is **8 CPU / 32 GiB**). Exit **-9** = SIGKILL/OOM — check which phase failed in Cloud Logging (`build_dataset` vs `walk_forward`).
 
+**Validated on cloud (2026-06-14, execution `tyche-run-demand-gate-hd5zr`):** `TYCHE_DEMAND_GATE_REUSE_DATASET=true` → 4,781,559 rows in ~22s; 6 walk-forward runs (~1h 47m) + 3 model promotions (~9m); total **~2.3h** at 32 GiB. Verdict: all sustained targets **GO** (lift +0.0127 / +0.0073 / +0.0080 AUC); artifacts at `ml/alpha_results/demand_gate_verdict.json` and `ml/models/big_move_sustained_*.json`.
+
 **Local scripts still work** with `TYCHE_DATA_BACKEND=local` (writes `backend/data/`) or `gcs` (writes bucket via ADC). Examples:
 
 ```bash

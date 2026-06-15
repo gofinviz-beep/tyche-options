@@ -10,7 +10,7 @@ This is an infrastructure spec, separate from the Multi-Bagger Discovery Engine 
 
 ---
 
-## 0.1 Implementation status (June 2026, last ops sync 2026-06-07)
+## 0.1 Implementation status (June 2026, last ops sync 2026-06-14)
 
 | Phase | Status | Notes |
 |-------|--------|-------|
@@ -537,10 +537,10 @@ Entry point: `backend/scripts/run_gcp_job.py` → `tyche/ops/gcp_jobs.py`. Runti
 | **Dataset build** | ~16 GiB | 16 GiB | 32 GiB (headroom) | `build_dataset()` + in-place demand augmenters |
 | **Walk-forward XGBoost** | ~24–32 GiB | needs 32 GiB | **32 GiB** | `run_demand_baselines()` / `walk_forward_evaluate()` |
 
-Historical failure modes (June 2026):
+Historical failure modes (June 2026) — **both fixed and validated on cloud (2026-06-14):**
 
-- **Build OOM at `estimate_features_added`** — fixed by chunked concat, in-place augmenters, `panel_memory.downcast_panel()` (no full-panel `.copy()`).
-- **Walk-forward OOM ~3s after `walk_forward run=1`** — fixed by column-slim panels + float32 numpy matrices; job bumped to **32 GiB**.
+- **Build OOM at `estimate_features_added`** — fixed by chunked concat, in-place augmenters, `panel_memory.downcast_panel()` (no full-panel `.copy()`). Build validated earlier on 16 GiB job.
+- **Walk-forward OOM ~3s after `walk_forward run=1`** — fixed by column-slim panels + float32 numpy matrices; job bumped to **32 GiB**. Re-run with `TYCHE_DEMAND_GATE_REUSE_DATASET=true` loaded 4.78M rows in ~22s and completed 36-window walk-forward per variant without OOM (~11–20s train/window).
 
 #### Dataset build optimizations
 
@@ -991,11 +991,11 @@ Do not require local backend/data.
 [x] alpha-batch NameError fix + deploy pre-build unit tests (June 2026).
 [x] Published JSON NaN sanitization (intelligence routes).
 [x] Demand gate dataset build fits 16 GiB (chunked concat, in-place augmenters, panel_memory).
-[x] Demand gate walk-forward at 32 GiB Cloud Run (slim panels, float32 matrices).
+[x] Demand gate walk-forward at 32 GiB Cloud Run validated (2026-06-14; reuse dataset, 4.78M rows, ~20 min per 36-window variant).
 [x] Demand gate dataset reuse env (`TYCHE_DEMAND_GATE_REUSE_DATASET` → `ml/alpha_dataset.parquet`).
 [~] publish_signals + full evening/morning cycle verified end-to-end (publish runs; cycle sign-off pending).
 [~] Local backend reads GCS published/signals via ADC (alpha + intelligence validated; options still live).
-[~] Demand gate full run completes walk-forward + promotion on GCS (build validated on cloud; walk-forward pending re-run with `TYCHE_DEMAND_GATE_REUSE_DATASET=true`).
+[x] Demand gate full 6-run ablation + model promotion on GCS (2026-06-14 execution `hd5zr`; ~2.3h with reuse; all 3 sustained targets GO, 3 models promoted).
 [ ] All listed frontend pages load from compact artifacts only (options/scanner/deep-dips/conviction gaps).
 [ ] Cloud stocks conviction publish (conviction batch → Parquet/signals, not SQLite).
 [ ] Multi-task ingest sharding (§21) — performance follow-up.
