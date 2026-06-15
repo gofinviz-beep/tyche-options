@@ -1,5 +1,5 @@
 # Evening ingest — parallel Cloud Run Jobs (GCP-G).
-# Tue–Sat 6:00 PM PT: OHLCV, demand, news, EDGAR (post–market-close sources).
+# Mon–Fri 6:00 PM PT: OHLCV, demand, news, EDGAR (same-day session, post–market-close).
 
 main:
   params: [args]

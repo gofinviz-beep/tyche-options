@@ -105,7 +105,7 @@ When `TYCHE_DATA_BACKEND=gcs`, batch ingest runs in **Cloud Run Jobs** — not A
 - **Ingest dates:** `market_data/ingest_dates.py` — Pacific session end dates for cloud/local batch jobs
 - **Pre-deploy gate:** `deploy_jobs.sh --build` runs ruff F821/F822/F823 + `test_alpha_batch`, `test_gcp_jobs`, `test_ingest_dates`
 - **Storage:** `tyche/storage/StoreBackend` — all stores GCS-aware
-- **Scheduler:** evening 6 PM (ingest-data, ingest-demand-data, news, edgar — **no demand gate**) + morning 2:30 AM (flatfiles + alpha → optional demand-gate → publish → audit); `scheduler_enabled=false` in GCS mode
+- **Scheduler:** evening **Mon–Fri** 6 PM + morning **Tue–Sat** 2:30 AM PT (see `deploy_scheduler.sh`); `scheduler_enabled=false` in GCS mode
 - **Demand gate:** morning-only optional job; retrains `big_move_sustained_*` models (~4–8h cloud). Publish needs alpha-batch, not gate.
 - **Local ingest:** `ingest_data.py` uses `storage_context_from_settings()`; `IntradayStore` requires `ctx` for `_MetadataCache`
 

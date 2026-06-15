@@ -1,5 +1,5 @@
 # Morning ingest — parallel compute then publish (GCP-G).
-# Tue–Sat 2:30 AM PT: options flatfiles + alpha batch in parallel, then publish.
+# Tue–Sat 2:30 AM PT: prior-day options flatfiles + alpha batch in parallel, then publish.
 
 main:
   params: [args]

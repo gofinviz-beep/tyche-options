@@ -7,7 +7,7 @@ alwaysApply: true
 
 ## Backend
 
-- **GCP cloud batch (`TYCHE_DATA_BACKEND=gcs`).** Nightly ingest runs in Cloud Run Jobs (evening 6 PM + morning 2:30 AM PT workflows), not on the laptop. APScheduler auto-disables (`scheduler_enabled=false`). Deploy: `infra/gcp/README.md`. Spec: `docs/tyche_gcp_minimal_migration_spec_v2.md`.
+- **GCP cloud batch (`TYCHE_DATA_BACKEND=gcs`).** Ingest runs in Cloud Run Jobs: **evening Mon–Fri 6 PM PT** + **morning Tue–Sat 2:30 AM PT** (`deploy_scheduler.sh`), not on the laptop. APScheduler auto-disables (`scheduler_enabled=false`). Deploy: `infra/gcp/README.md`. Spec: `docs/tyche_gcp_minimal_migration_spec_v2.md`.
 - **`tyche-run-demand-gate` is morning-only, not evening.** Evening runs `ingest-demand-data` (estimates/fundamentals ingest). Gate is optional in `tyche-morning-pipeline` after flatfiles+alpha; failure does not block `publish-signals`. Typical runtime 4–8h on GCS. Publish needs alpha-batch, not gate or flatfiles.
 - **`tyche-run-demand-gate` exit -9 = OOM (SIGKILL).** Dataset build (chunked concat + in-place augmenters) fits **16 GiB**; walk-forward XGBoost needs **32 GiB** (`deploy_jobs.sh`). Rebuild: `./infra/gcp/deploy_jobs.sh --build`. Reuse cached build: `TYCHE_DEMAND_GATE_REUSE_DATASET=true` (skips ~90 min build, uses `ml/alpha_dataset.parquet` on GCS). Walk-forward uses column-slim panels + float32 numpy matrices (no full-frame `.copy()`).
 - **`ingest_data.py` / `IntradayStore` + `_MetadataCache`.** After GCS store migration, `_MetadataCache` requires `(rel_path, StorageContext)`. `IntradayStore` and `OptionsChainStore` resolve ctx via `context_for_data_access()`; `ingest_data.py` passes `storage_context_from_settings()`. Cloud Run batch jobs do not instantiate `IntradayStore`.

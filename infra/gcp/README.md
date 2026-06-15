@@ -8,18 +8,18 @@ backend reads `published/` and `signals/` only (`TYCHE_DATA_BACKEND=gcs`).
 ## Architecture
 
 ```text
-Cloud Scheduler (Tue–Sat)
-  6:00 PM PT → ``tyche-evening-pipeline`` (parallel ingest)
-  2:30 AM PT → ``tyche-morning-pipeline`` (parallel options+alpha, publish)
+Cloud Scheduler (America/Los_Angeles)
+  Mon–Fri 6:00 PM  → tyche-evening-pipeline
+  Tue–Sat 2:30 AM  → tyche-morning-pipeline
     → parallel + sequential Cloud Run Jobs (tyche-jobs SA)
       → GCS read/write + Secret Manager API keys
       → runs/{job}/{run_id}/manifest.json
     → publish_signals → published/routes/*.json
 ```
 
-### Two-window schedule (Tue–Sat PT)
+### Two-window schedule (Pacific)
 
-**Evening 6:00 PM** — post–market-close sources, **all jobs in parallel**:
+**Evening Mon–Fri 6:00 PM** — post–market-close same-day OHLCV + demand + news + EDGAR:
 
 | Job | Outputs |
 |-----|---------|
@@ -28,7 +28,7 @@ Cloud Scheduler (Tue–Sat)
 | `tyche-ingest-news` | `news_articles/`, `signals/intelligence/news.parquet` (batched checkpoints) |
 | `tyche-ingest-edgar` | `filings_8k/`, `insider_transactions/`, intelligence signal Parquet |
 
-**Morning 2:30 AM** — after options flatfile lands (~2 AM):
+**Morning Tue–Sat 2:30 AM** — prior trading day (Massive flatfile ~2 AM):
 
 | Step | Job | Outputs |
 |------|-----|---------|

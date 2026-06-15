@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Deploy Cloud Scheduler triggers for Tyche workflows (GCP-G).
 #
-# Two windows (America/Los_Angeles, Tue–Sat):
-#   6:00 PM  → tyche-evening-pipeline (parallel: OHLCV, demand, news, EDGAR)
-#   2:30 AM  → tyche-morning-pipeline (parallel options+alpha, then publish, audit)
+# Two windows (America/Los_Angeles):
+#   6:00 PM Mon–Fri  → tyche-evening-pipeline (same-day OHLCV + demand + news + EDGAR)
+#   2:30 AM Tue–Sat  → tyche-morning-pipeline (prior-day options flatfiles + alpha, publish)
+#
+# Cron: evening `1-5` (Mon–Fri), morning `2-6` (Tue–Sat). No Sun/Mon morning; no Sat/Sun evening.
 #
 # Usage:
 #   source infra/gcp/config.env
@@ -25,6 +27,8 @@ source "${SCRIPT_DIR}/config.env" 2>/dev/null || source "${SCRIPT_DIR}/config.en
 SCHEDULER_LOCATION="${TYCHE_SCHEDULER_LOCATION:-us-central1}"
 WORKFLOW_LOCATION="${TYCHE_WORKFLOW_LOCATION:-${TYCHE_GCP_REGION}}"
 TIMEZONE="America/Los_Angeles"
+EVENING_CRON="0 18 * * 1-5"
+MORNING_CRON="30 2 * * 2-6"
 MODE="${1:-workflow}"
 
 run_uri() {
@@ -109,12 +113,12 @@ if [[ "$MODE" == "--legacy-per-job" ]]; then
   remove_scheduler tyche-sched-evening-pipeline
   remove_scheduler tyche-sched-morning-pipeline
   remove_scheduler tyche-sched-nightly-pipeline
-  deploy_scheduler tyche-sched-ingest-data              "0 18 * * 2-6" "$(run_uri tyche-ingest-data)"
-  deploy_scheduler tyche-sched-ingest-demand-data       "0 18 * * 2-6" "$(run_uri tyche-ingest-demand-data)"
-  deploy_scheduler tyche-sched-ingest-news              "0 18 * * 2-6" "$(run_uri tyche-ingest-news)"
-  deploy_scheduler tyche-sched-ingest-edgar             "0 18 * * 2-6" "$(run_uri tyche-ingest-edgar)"
-  deploy_scheduler tyche-sched-ingest-options-flatfiles "30 2 * * 2-6" "$(run_uri tyche-ingest-options-flatfiles)"
-  deploy_scheduler tyche-sched-alpha-batch              "30 2 * * 2-6" "$(run_uri tyche-alpha-batch)"
+  deploy_scheduler tyche-sched-ingest-data              "$EVENING_CRON" "$(run_uri tyche-ingest-data)"
+  deploy_scheduler tyche-sched-ingest-demand-data       "$EVENING_CRON" "$(run_uri tyche-ingest-demand-data)"
+  deploy_scheduler tyche-sched-ingest-news              "$EVENING_CRON" "$(run_uri tyche-ingest-news)"
+  deploy_scheduler tyche-sched-ingest-edgar             "$EVENING_CRON" "$(run_uri tyche-ingest-edgar)"
+  deploy_scheduler tyche-sched-ingest-options-flatfiles "$MORNING_CRON" "$(run_uri tyche-ingest-options-flatfiles)"
+  deploy_scheduler tyche-sched-alpha-batch              "$MORNING_CRON" "$(run_uri tyche-alpha-batch)"
   deploy_scheduler tyche-sched-publish-signals        "0 6 * * 2-6"  "$(run_uri tyche-publish-signals)"
   deploy_scheduler tyche-sched-audit-snapshots          "15 6 * * 2-6" "$(run_uri tyche-audit-snapshots)"
   echo "==> Legacy parallel per-job schedulers deployed in ${SCHEDULER_LOCATION}"
@@ -132,14 +136,14 @@ remove_scheduler tyche-sched-nightly-pipeline
 
 deploy_scheduler \
   tyche-sched-evening-pipeline \
-  "0 18 * * 2-6" \
+  "$EVENING_CRON" \
   "$(workflow_uri tyche-evening-pipeline)" \
   '{}'
 
 deploy_scheduler \
   tyche-sched-morning-pipeline \
-  "30 2 * * 2-6" \
+  "$MORNING_CRON" \
   "$(workflow_uri tyche-morning-pipeline)" \
   '{}'
 
-echo "==> Evening (6 PM) + morning (2:30 AM) workflow schedulers deployed"
+echo "==> Evening (6 PM Mon–Fri) + morning (2:30 AM Tue–Sat) workflow schedulers deployed"

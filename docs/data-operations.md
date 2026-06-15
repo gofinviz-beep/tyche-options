@@ -6,10 +6,10 @@ Complete reference for all automated and manual data pipelines, their schedules,
 
 When `TYCHE_DATA_BACKEND=gcs`, **batch ingest runs in Cloud Run Jobs** — not on the laptop. The local APScheduler is auto-disabled (`scheduler_enabled=false` unless overridden in `config.db`).
 
-| Window (PT, Tue–Sat) | Workflow | Jobs (parallel unless noted) |
-|----------------------|----------|------------------------------|
-| **6:00 PM** | `tyche-evening-pipeline` | ingest-data, ingest-demand-data, ingest-news, ingest-edgar |
-| **2:30 AM** | `tyche-morning-pipeline` | options-flatfiles + alpha-batch → demand-gate (optional) → publish-signals → audit |
+| Window (PT) | Days | Workflow | Jobs (parallel unless noted) |
+|-------------|------|----------|------------------------------|
+| **6:00 PM** | **Mon–Fri** | `tyche-evening-pipeline` | ingest-data, ingest-demand-data, ingest-news, ingest-edgar |
+| **2:30 AM** | **Tue–Sat** | `tyche-morning-pipeline` | options-flatfiles + alpha-batch → demand-gate (optional) → publish-signals → audit |
 
 **Evening does not include demand gate** — only `ingest-data`, `ingest-demand-data`, `ingest-news`, `ingest-edgar`. Gate is morning-only (optional ML retrain after fresh estimates). **Publish does not require gate**; it requires alpha-batch.
 

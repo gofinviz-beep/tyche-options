@@ -29,7 +29,7 @@ This is an infrastructure spec, separate from the Multi-Bagger Discovery Engine 
 
 **Demand manifest fields:** `guidance_tickers_fetched` (Benzinga returned records) vs `guidance_catalysts_written` (raise/cut rows persisted). `guidance` mirrors `guidance_catalysts_written`.
 
-**Demand gate schedule:** `tyche-run-demand-gate` is **morning only** (not evening). Evening runs `tyche-ingest-demand-data` (estimates/fundamentals ingest); gate runs **after** that data lands, in parallel with flatfiles+alpha, then before publish. Optional — publish proceeds if gate fails. **Memory, reuse, OOM:** see **§10.1**.
+**Demand gate schedule:** `tyche-run-demand-gate` is **morning only** (Tue–Sat 2:30 AM, not evening). Evening runs **Mon–Fri** `tyche-ingest-demand-data`; gate runs after flatfiles+alpha in the morning workflow. Optional — publish proceeds if gate fails. **Memory, reuse, OOM:** see **§10.1**.
 
 **Pacific ingest session dates:** `market_data/ingest_dates.py` + per-job `TYCHE_INGEST_WINDOW=evening|morning` in `deploy_jobs.sh`. Evening → Pacific **today**; morning → Pacific **yesterday**. Region-independent (UTC Cloud Run, any GCP region, local laptop).
 
@@ -603,7 +603,16 @@ Publish does **not** require demand gate or flatfiles.
 
 ## 11. Recommended schedule
 
-Timezone: `America/Los_Angeles`. **Tue–Sat** processes the previous trading session.
+Timezone: `America/Los_Angeles`. **Two cadences** — evening and morning use different weekday ranges because they ingest different session dates.
+
+| Pipeline | Cron days | Time (PT) | Session date (`ingest_dates.py`) |
+|----------|-----------|-----------|----------------------------------|
+| **Evening** | **Mon–Fri** (`1-5`) | 6:00 PM | Pacific **today** (same-day close) |
+| **Morning** | **Tue–Sat** (`2-6`) | 2:30 AM | Pacific **yesterday** (prior trading day; flatfiles lead) |
+
+**Example — Friday close:** Fri 6 PM evening (Friday OHLCV) → Sat 2:30 AM morning (Friday flatfiles + alpha + publish). No Sat/Sun evening; no Sun/Mon morning.
+
+**Example — Monday close:** Mon 6 PM evening (Monday OHLCV) → Tue 2:30 AM morning (Monday flatfiles + publish).
 
 ### Two-window model (implemented)
 
@@ -957,7 +966,7 @@ Observability: tyche/ops/job_progress.py emits job_phase + job_progress to Cloud
 
 ```text
 DONE: run_manifest.py, evening + morning workflows, deploy_scheduler.sh.
-Schedulers: 6:00 PM + 2:30 AM PT (Tue–Sat). Manifests at runs/{job}/{run_id}/manifest.json.
+Schedulers: 6 PM **Mon–Fri** + 2:30 AM **Tue–Sat** PT (`deploy_scheduler.sh`). Manifests at runs/{job}/{run_id}/manifest.json.
 ```
 
 ### GCP-H — Local backend points to GCS
@@ -981,7 +990,7 @@ Do not require local backend/data.
 [x] Storage abstraction (GCP-A) works local and GCS.
 [x] Scheduled-job stores/scripts read/write GCS.
 [x] Cloud Run Jobs deployed (10 jobs).
-[x] Cloud Workflows + Scheduler (6 PM + 2:30 AM PT Tue–Sat).
+[x] Cloud Workflows + Scheduler (6 PM Mon–Fri + 2:30 AM Tue–Sat PT).
 [x] Workflows use non-blocking job run + poll (not 30m LRO).
 [x] Pacific ingest session dates (ingest_dates.py + TYCHE_INGEST_WINDOW).
 [x] Secrets in Secret Manager.

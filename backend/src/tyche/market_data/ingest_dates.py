@@ -4,8 +4,8 @@ Uses IANA ``America/Los_Angeles`` via ``zoneinfo`` — correct for PST/PDT and
 independent of the host/container timezone (UTC on Cloud Run, local on a laptop,
 any GCP/AWS region). Never use ``date.today()`` for market-session boundaries.
 
-Evening jobs (6 PM PT): Pacific *today* (session that just closed).
-Morning jobs (2:30 AM PT): Pacific *yesterday*.
+Evening jobs (6 PM PT, Mon–Fri): Pacific *today* (session that just closed).
+Morning jobs (2:30 AM PT, Tue–Sat): Pacific *yesterday* (prior day; options flatfile leads).
 """
 
 from __future__ import annotations

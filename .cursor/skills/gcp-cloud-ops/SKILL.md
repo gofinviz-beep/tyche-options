@@ -20,11 +20,11 @@ description: >-
 ## Architecture
 
 ```text
-Cloud Scheduler (Tue–Sat PT)
-  6:00 PM → tyche-evening-pipeline (4 parallel — ingest only)
+Cloud Scheduler (America/Los_Angeles)
+  Mon–Fri 6:00 PM → tyche-evening-pipeline (4 parallel — ingest only)
             ingest-data | ingest-demand-data | ingest-news | ingest-edgar
             (NOT: flatfiles, alpha, demand-gate, publish)
-  2:30 AM → tyche-morning-pipeline
+  Tue–Sat 2:30 AM → tyche-morning-pipeline
             parallel: flatfiles + alpha-batch
             optional: run-demand-gate (~4–8h; failure OK)
             sequential: publish-signals → audit-snapshots
