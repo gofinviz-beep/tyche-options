@@ -31,12 +31,18 @@ _SENTINEL = -999
 class BreakoutPredictor:
     """Bridges the alpha pipeline to trained XGBoost big-move models."""
 
-    def __init__(self, data_dir: str = "data", targets: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: str = "data",
+        targets: list[str] | None = None,
+        *,
+        ctx: object | None = None,
+    ) -> None:
         self._models: dict[str, object] = {}
         self._metas: dict[str, ModelMeta] = {}
 
         for target in targets or ALPHA_TARGETS:
-            result = load_model(target, data_dir=data_dir)
+            result = load_model(target, data_dir=data_dir, ctx=ctx)
             if result is not None:
                 model, meta = result
                 self._models[target] = model

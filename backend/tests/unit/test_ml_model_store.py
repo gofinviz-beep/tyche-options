@@ -90,6 +90,24 @@ class TestLoadModel:
         result = load_model("nonexistent_target", data_dir=tmp_data_dir)
         assert result is None
 
+    def test_load_model_honors_storage_context_over_data_dir(
+        self, tmp_data_dir, trained_model,
+    ):
+        """Regression: Cloud Run uses gcs ctx; data_dir local path is empty."""
+        from tyche.storage.paths import StorageContext
+
+        feature_cols = ["f1", "f2", "f3", "f4", "f5"]
+        save_model(
+            trained_model,
+            target="csp_win_5d",
+            feature_cols=feature_cols,
+            data_dir=tmp_data_dir,
+        )
+        ctx = StorageContext(backend="local", local_root=Path(tmp_data_dir))
+
+        result = load_model("csp_win_5d", data_dir="/nonexistent/data", ctx=ctx)
+        assert result is not None
+
     def test_predictions_match_after_reload(self, tmp_data_dir, trained_model):
         import numpy as np
 

@@ -100,6 +100,31 @@ class TestScoreVariant:
         mock_resolve.assert_called_once_with("morning", job_name="alpha-batch")
 
 
+class TestBuildPredictorGcsContext:
+    @patch("tyche.ml.breakout.BreakoutPredictor")
+    def test_build_predictor_receives_storage_context_from_settings(
+        self, mock_bp_cls: MagicMock,
+    ) -> None:
+        from pathlib import Path
+
+        from tyche.storage.paths import StorageContext
+        from tyche.workflow.alpha_batch import _build_predictor
+
+        mock_instance = MagicMock()
+        mock_instance.is_available = True
+        mock_bp_cls.return_value = mock_instance
+
+        ctx = StorageContext(
+            backend="gcs",
+            local_root=Path("data"),
+            gcs_bucket="tyche-data-prod",
+        )
+        _build_predictor("data", "sustained", ctx=ctx)
+
+        mock_bp_cls.assert_called_once()
+        assert mock_bp_cls.call_args.kwargs["ctx"] is ctx
+
+
 class TestRunAlphaBatch:
     @patch("tyche.workflow.alpha_batch._build_predictor", return_value=None)
     @patch("tyche.workflow.alpha_batch.build_latest_features")
@@ -122,6 +147,40 @@ class TestRunAlphaBatch:
 
         assert summary["status"] == "ok"
         assert summary["as_of_date"] == "2026-06-10"
+
+    @patch("tyche.workflow.alpha_batch._build_predictor", return_value=None)
+    @patch("tyche.workflow.alpha_batch.build_latest_features")
+    @patch("tyche.workflow.alpha_batch.storage_context_from_settings")
+    def test_forwards_gcs_context_to_predictor_builder(
+        self,
+        mock_storage_ctx: MagicMock,
+        mock_build: MagicMock,
+        mock_build_predictor: MagicMock,
+        tmp_path,
+    ) -> None:
+        from pathlib import Path
+
+        from tyche.storage.paths import StorageContext
+
+        mock_build.return_value = _minimal_features()
+        ctx = StorageContext(
+            backend="gcs",
+            local_root=Path("data"),
+            gcs_bucket="tyche-data-prod",
+        )
+        mock_storage_ctx.return_value = ctx
+        settings = TycheSettings(ingest_window="morning")
+
+        run_alpha_batch(
+            data_dir=str(tmp_path),
+            settings=settings,
+            persist=False,
+            variants=["sustained"],
+            max_tickers=1,
+        )
+
+        mock_build_predictor.assert_called_once()
+        assert mock_build_predictor.call_args.kwargs["ctx"] is ctx
 
 
 class TestGcpAlphaBatchJob:

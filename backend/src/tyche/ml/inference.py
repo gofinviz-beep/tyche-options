@@ -39,12 +39,12 @@ _SENTINEL = -999
 class CSPSafetyPredictor:
     """Bridges the conviction pipeline to a trained XGBoost model."""
 
-    def __init__(self, data_dir: str = "data") -> None:
+    def __init__(self, data_dir: str = "data", *, ctx: object | None = None) -> None:
         self._model = None
         self._meta: ModelMeta | None = None
         self._feature_cols: list[str] = []
 
-        result = load_model("csp_win_5d", data_dir=data_dir)
+        result = load_model("csp_win_5d", data_dir=data_dir, ctx=ctx)
         if result is not None:
             self._model, self._meta = result
             self._feature_cols = list(self._meta.feature_cols)

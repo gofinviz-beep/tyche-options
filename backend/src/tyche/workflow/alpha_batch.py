@@ -22,6 +22,7 @@ from tyche.market_data.alpha_store import AlphaSignalStore
 from tyche.ml.dataset import build_latest_features
 from tyche.ml.xgb_baseline import ALPHA_SUSTAINED_TARGETS, ALPHA_TARGETS
 from tyche.ops.job_progress import log_job_phase
+from tyche.storage.paths import StorageContext, storage_context_from_settings
 from tyche.strategy.alpha_engine import AlphaScoreEngine, build_alpha_score_engine
 
 logger = structlog.get_logger()
@@ -40,14 +41,19 @@ _VARIANT_TARGETS: dict[str, list[str]] = {
 _SUSTAINED_TO_CANONICAL = dict(zip(ALPHA_SUSTAINED_TARGETS, ALPHA_TARGETS))
 
 
-def _build_predictor(data_dir: str, variant: str) -> Any | None:
+def _build_predictor(
+    data_dir: str,
+    variant: str,
+    *,
+    ctx: StorageContext | None = None,
+) -> Any | None:
     """Load the BreakoutPredictor for *variant* (None if no artifacts / no ml)."""
     try:
         from tyche.ml.breakout import BreakoutPredictor
     except ImportError:
         return None
     targets = _VARIANT_TARGETS.get(variant, ALPHA_TARGETS)
-    bp = BreakoutPredictor(data_dir=data_dir, targets=targets)
+    bp = BreakoutPredictor(data_dir=data_dir, targets=targets, ctx=ctx)
     return bp if bp.is_available else None
 
 
@@ -124,6 +130,7 @@ def run_alpha_batch(
         )
     engine = engine or AlphaScoreEngine()
     variants = variants or ["peak"]
+    ctx = storage_context_from_settings(settings) if settings is not None else None
 
     log_job_phase(
         JOB_NAME,
@@ -155,7 +162,7 @@ def run_alpha_batch(
         var_pred = (
             predictor
             if (variant == "peak" and predictor is not None)
-            else _build_predictor(data_dir, variant)
+            else _build_predictor(data_dir, variant, ctx=ctx)
         )
         results[variant] = _score_variant(
             features,

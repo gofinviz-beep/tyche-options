@@ -437,8 +437,10 @@ def get_csp_safety_predictor(
     if _csp_predictor is None:
         try:
             from tyche.ml.inference import CSPSafetyPredictor
+            from tyche.storage.paths import storage_context_from_settings
 
-            predictor = CSPSafetyPredictor(data_dir=settings.data_dir)
+            ctx = storage_context_from_settings(settings)
+            predictor = CSPSafetyPredictor(data_dir=settings.data_dir, ctx=ctx)
             if predictor.is_available:
                 _csp_predictor = predictor
                 logger.info("csp_safety_predictor_initialized", info=predictor.model_info)
@@ -457,8 +459,10 @@ def get_breakout_predictor(
     if _breakout_predictor is None:
         try:
             from tyche.ml.breakout import BreakoutPredictor
+            from tyche.storage.paths import storage_context_from_settings
 
-            predictor = BreakoutPredictor(data_dir=settings.data_dir)
+            ctx = storage_context_from_settings(settings)
+            predictor = BreakoutPredictor(data_dir=settings.data_dir, ctx=ctx)
             if predictor.is_available:
                 _breakout_predictor = predictor
                 logger.info("breakout_predictor_initialized", targets=predictor.targets)
