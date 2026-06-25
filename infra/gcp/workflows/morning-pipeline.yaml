@@ -65,6 +65,14 @@ main:
           job_id: "tyche-stocks-derived-batch"
           optional: false
 
+    - run_candidate_universe:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: "tyche-candidate-universe-batch"
+          optional: false
+
     - run_publish:
         call: run_cloud_run_job
         args:

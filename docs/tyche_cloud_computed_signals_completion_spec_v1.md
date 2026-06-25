@@ -757,6 +757,7 @@ Parallel:
 Then:
   tyche-stocks-conviction-batch
   tyche-stocks-derived-batch
+  tyche-candidate-universe-batch
   tyche-options-snapshot-batch
   tyche-options-scanner-batch
 

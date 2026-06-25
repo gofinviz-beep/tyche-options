@@ -344,6 +344,11 @@ class TycheSettings(BaseModel):
     options_snapshot_rpm: int = 120
     options_snapshot_min_market_cap: float = 4e9
 
+    # --- Candidate universe (cloud metadata-first filtering) ---
+    options_candidate_max_tickers: int = 500
+    stocks_derived_max_tickers: int = 3000
+    require_optionable: bool = True
+
     # --- Watchlist ---
     watchlist_symbols: list[str] = Field(default_factory=list)
 

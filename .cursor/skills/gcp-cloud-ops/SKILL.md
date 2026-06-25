@@ -16,6 +16,7 @@ description: >-
 | `docs/tyche_gcp_minimal_migration_spec_v2.md` | **Authoritative** GCP spec — §10 job resources, **§10.1 demand gate memory/reuse/OOM**, §11 schedules, §20 acceptance |
 | `docs/tyche_cloud_computed_signals_completion_spec_v1.md` | Cloud-computed UI signals (slices 1–7); stocks done, options pending |
 | `docs/alpha/stocks_cloud_signals_slice12_note.md` | Slice 1–2 GCP verification + rollout fixes |
+| `docs/alpha/candidate_universe_slice3_note.md` | Slice 3 metadata-first candidate universe |
 | `infra/gcp/README.md` | Deploy runbook (jobs, workflows, scheduler, secrets) |
 | `docs/data-operations.md` | GCP cloud mode schedule vs local APScheduler |
 
@@ -29,7 +30,7 @@ Cloud Scheduler (America/Los_Angeles)
   Tue–Sat 2:30 AM → tyche-morning-pipeline
             parallel: flatfiles + alpha-batch
             optional: run-demand-gate (~4–8h; failure OK)
-            sequential: stocks-conviction-batch → stocks-derived-batch
+            sequential: stocks-conviction-batch → stocks-derived-batch → candidate-universe-batch
             sequential: publish-signals → audit-snapshots
     → Cloud Run Jobs (tyche-jobs SA)
     → gs://tyche-data-prod/ (flat paths = backend/data/ layout)
@@ -50,6 +51,16 @@ published/routes/stocks_deep_dips.json
 published/routes/stocks_history.json
 ```
 
+### Candidate universe (Slice 3)
+
+```text
+signals/universe/options_candidates.parquet  ← tyche-candidate-universe-batch
+signals/universe/stocks_candidates.parquet   ← tyche-candidate-universe-batch
+```
+
+Metadata-first: `ticker_meta.parquet` → cap/liquidity filters → join alpha + conviction → top N.
+No publish route yet (inspectable Parquet only; consumed by Slice 4 options snapshot).
+
 ### Publish prerequisites
 
 | Required before publish | Optional |
@@ -57,13 +68,15 @@ published/routes/stocks_history.json
 | `tyche-alpha-batch` | `tyche-run-demand-gate` (sustained ML models) |
 | `tyche-stocks-conviction-batch` | `tyche-ingest-options-flatfiles` (IV/options only) |
 | `tyche-stocks-derived-batch` | |
+| `tyche-candidate-universe-batch` | Slice 4 options snapshot input |
 | Evening ingest (OHLCV, demand, intelligence inputs) | |
 
-## Jobs (12)
+## Jobs (13)
 
 `ingest-data`, `ingest-options-flatfiles`, `ingest-demand-data`, `ingest-news`,
 `ingest-edgar`, `alpha-batch`, `stocks-conviction-batch`, `stocks-derived-batch`,
-`run-demand-gate`, `publish-signals`, `audit-snapshots`, `nightly-pipeline` (fallback).
+`candidate-universe-batch`, `run-demand-gate`, `publish-signals`, `audit-snapshots`,
+`nightly-pipeline` (fallback).
 
 Entry: `backend/scripts/run_gcp_job.py` → `tyche/ops/gcp_jobs.py`.
 

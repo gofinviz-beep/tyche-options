@@ -33,6 +33,7 @@ JOB_NAMES = (
     "alpha-batch",
     "stocks-conviction-batch",
     "stocks-derived-batch",
+    "candidate-universe-batch",
     "run-demand-gate",
     "publish-signals",
     "audit-snapshots",
@@ -544,6 +545,70 @@ async def run_stocks_derived_batch_job(
     return JobResult("stocks-derived-batch", rid, status, rel, summary)
 
 
+async def run_candidate_universe_batch_job(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+    run_id: str | None = None,
+) -> JobResult:
+    """Build metadata-first options/stocks candidate universes."""
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+    rid = run_id or new_run_id()
+    manifest = RunManifest.start(
+        job_name="candidate_universe_batch",
+        run_id=rid,
+        data_backend=ctx.backend,
+    )
+    manifest.input_paths = [
+        "ticker_meta.parquet",
+        "alpha_signals_sustained.parquet",
+        "signals/stocks/conviction.parquet",
+        "ohlcv_daily/",
+    ]
+
+    from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
+    from tyche.market_data.universe_candidates_store import (
+        OPTIONS_CANDIDATES_REL,
+        STOCKS_CANDIDATES_REL,
+    )
+    from tyche.ops.job_progress import log_job_phase
+    from tyche.workflow.candidate_universe import run_candidate_universe_batch
+
+    store = OHLCVStore(data_dir=settings.data_dir, ctx=ctx)
+    meta = TickerMetaStore(data_dir=settings.data_dir, ctx=ctx)
+
+    log_job_phase("candidate-universe-batch", "execute", status="start")
+    result = run_candidate_universe_batch(
+        settings=settings,
+        data_store=store,
+        meta_store=meta,
+        ctx=ctx,
+        run_id=rid,
+    )
+    summary = result.to_dict()
+    log_job_phase(
+        "candidate-universe-batch",
+        "execute",
+        status="complete",
+        options=result.options_candidates,
+        stocks=result.stocks_candidates,
+    )
+
+    manifest.extra = summary
+    manifest.output_paths = [OPTIONS_CANDIDATES_REL, STOCKS_CANDIDATES_REL]
+    if result.errors:
+        manifest.warnings.extend(result.errors)
+    if result.options_candidates == 0:
+        manifest.finish(status="failed")
+    else:
+        manifest.finish(status="success")
+
+    rel = manifest.write(ctx=ctx)
+    status = "success" if manifest.status == "success" else "failed"
+    return JobResult("candidate-universe-batch", rid, status, rel, summary)
+
+
 async def run_ingest_news(
     *,
     settings: TycheSettings | None = None,
@@ -886,6 +951,7 @@ _JOB_RUNNERS: dict[str, Callable[..., Any]] = {
     "alpha-batch": run_alpha_batch_job,
     "stocks-conviction-batch": run_stocks_conviction_batch_job,
     "stocks-derived-batch": run_stocks_derived_batch_job,
+    "candidate-universe-batch": run_candidate_universe_batch_job,
     "run-demand-gate": run_demand_gate_job,
     "publish-signals": run_publish_signals_job,
     "audit-snapshots": run_audit_snapshots_job,
