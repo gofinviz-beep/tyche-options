@@ -34,6 +34,8 @@ Cloud Scheduler (America/Los_Angeles)
 |------|-----|---------|
 | Parallel | `tyche-ingest-options-flatfiles` + `tyche-alpha-batch` | options/IV/derived + `alpha_signals*.parquet` |
 | Optional | `tyche-run-demand-gate` | `ml/alpha_dataset.parquet`, `ml/alpha_results/`, optional `ml/models/big_move_sustained_*` (~4–8h) |
+| Sequential | `tyche-stocks-conviction-batch` | `signals/stocks/conviction.parquet` |
+| Sequential | `tyche-stocks-derived-batch` | `signals/stocks/deep_dips.parquet`, `signals/stocks/history_summary.parquet` |
 | Sequential | `tyche-publish-signals` | `published/routes/*.json` |
 | Sequential | `tyche-audit-snapshots` | estimate snapshot audits |
 
@@ -55,6 +57,8 @@ jobs are slower on GCS than local NVMe — see spec §21 for planned multi-task 
 |-----|-----|--------|---------|
 | Evening ingest (4 jobs) | 2 | 4 GiB | 8h |
 | `tyche-alpha-batch` | 4 | 8 GiB | 8h |
+| `tyche-stocks-conviction-batch` | 4 | 8 GiB | 8h |
+| `tyche-stocks-derived-batch` | 4 | 8 GiB | 8h |
 | `tyche-run-demand-gate` | **8** | **32 GiB** | 8h |
 | publish / audit / nightly | 1–4 | 2–8 GiB | 8h |
 
@@ -78,8 +82,8 @@ Re-apply after editing: `./infra/gcp/deploy_jobs.sh` (rebuild with `--build` whe
 **Demand gate memory / reuse / OOM:** spec **§10.1** (build ~16 GiB, walk-forward **32 GiB**, `TYCHE_DEMAND_GATE_REUSE_DATASET`, exit -9 diagnosis).
 
 `deploy_jobs.sh --build` runs **ruff F821/F822/F823** (undefined names only — not unused-import
-F401) and Cloud Run job unit tests (`test_alpha_batch`, `test_gcp_jobs`, `test_ingest_dates`)
-before pushing the image.
+F401) and Cloud Run job unit tests (`test_alpha_batch`, `test_gcp_jobs`, `test_ingest_dates`,
+`test_cloud_stocks_conviction`, `test_cloud_stocks_derived`) before pushing the image.
 
 Intelligence jobs export aggregate signals to `signals/intelligence/*.parquet`;
 `publish_signals` reads those in GCS mode (no local `news.db` required).
@@ -278,7 +282,9 @@ jsonPayload.event="gcp_job_start"
 | `ingest-demand-data` | `ingest` + per-source (`fundamentals`, `estimates`, …) |
 | `alpha-batch` | `build_features`, `relational_features`, `score_variant` |
 | `run-demand-gate` | `build_dataset`, `demand_ablation`, `walk_forward`, `promote_models` |
-| `publish-signals` | `stocks_alpha`, `stocks_conviction`, `intelligence`, … |
+| `stocks-conviction-batch` | `execute` → `signals/stocks/conviction.parquet` |
+| `stocks-derived-batch` | deep dips + `history_summary` export |
+| `publish-signals` | `stocks_alpha`, `stocks_conviction`, `stocks_deep_dips`, `stocks_history`, `intelligence`, … |
 | `ingest-news` / `ingest-edgar` | `pipeline` + intelligence checkpoint progress |
 
 Run manifests remain at `gs://tyche-data-prod/runs/{job}/{run_id}/manifest.json`

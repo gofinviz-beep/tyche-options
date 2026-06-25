@@ -217,6 +217,7 @@ class TycheSettings(BaseModel):
     # --- Published signals API (GCS mode) ---
     api_prefer_published_signals: bool = True
     api_allow_curated_fallback: bool = False
+    api_allow_local_db_fallback: bool = False
     published_max_age_minutes: int = 180
 
     # --- Local APScheduler (disable when Cloud Run owns batch compute) ---

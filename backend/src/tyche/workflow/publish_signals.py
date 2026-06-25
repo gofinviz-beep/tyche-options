@@ -52,10 +52,10 @@ def _run_coroutine(coro):
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         return executor.submit(asyncio.run, coro).result()
 
-_STOCKS_CONVICTION_CANDIDATES = (
-    "signals/stocks/conviction.parquet",
-    "conviction_signals.parquet",
-)
+_STOCKS_CONVICTION_CANDIDATES = ("signals/stocks/conviction.parquet",)
+_STOCKS_DEEP_DIPS_CANDIDATES = ("signals/stocks/deep_dips.parquet",)
+_STOCKS_HISTORY_CANDIDATES = ("signals/stocks/history_summary.parquet",)
+_STOCKS_TRANSITIONS_CANDIDATES = ("signals/stocks/transitions.parquet",)
 _INTELLIGENCE_NEWS_CANDIDATES = (
     "signals/intelligence/news.parquet",
     "signals/intelligence/_checkpoints/news.partial.parquet",
@@ -347,16 +347,28 @@ async def _load_conviction_snapshots(
     row_limit: int,
     data_dir: str,
     ctx: StorageContext,
+    settings: TycheSettings,
 ) -> tuple[list[ConvictionSnapshotResponse], str | None, list[str], RouteStatus]:
+    from tyche.market_data.stocks_conviction_store import load_stocks_conviction_parquet
+
+    signal_rel = first_existing_path(_STOCKS_CONVICTION_CANDIDATES, ctx=ctx)
+    if signal_rel:
+        rows, as_of = load_stocks_conviction_parquet(
+            ctx=ctx,
+            row_limit=row_limit,
+            rel_path=signal_rel,
+        )
+        if rows:
+            return rows, as_of, [signal_rel], "ok"
+
+    if not settings.api_allow_local_db_fallback:
+        sources = [signal_rel] if signal_rel else []
+        return [], None, sources, "unavailable"
+
     from tyche.persistence.conviction_repository import (
         get_latest_snapshot_date,
         get_snapshots_for_date,
     )
-
-    signal_rel = first_existing_path(_STOCKS_CONVICTION_CANDIDATES, ctx=ctx)
-    if signal_rel:
-        # Parquet signal path reserved for a future exporter; DB is the live source.
-        pass
 
     try:
         latest = await get_latest_snapshot_date()
@@ -666,6 +678,7 @@ def publish_stocks_conviction(
             row_limit=config.conviction_row_limit,
             data_dir=config.data_dir,
             ctx=ctx,
+            settings=settings,
         )
     )
     data = {
@@ -688,6 +701,99 @@ def publish_stocks_conviction(
         rel_path=rel,
         as_of=as_of,
         row_count=len(rows),
+        source_paths=sources,
+        status=status,
+        generated_at=envelope["generated_at"],
+    )
+
+
+def publish_stocks_deep_dips(
+    *,
+    config: PublishConfig,
+    run_id: str,
+    settings: TycheSettings,
+) -> RoutePublishResult:
+    from tyche.market_data.stocks_deep_dips_store import load_deep_dips_scan
+
+    ctx = config.ctx or storage_context_from_settings(settings)
+    signal_rel = first_existing_path(_STOCKS_DEEP_DIPS_CANDIDATES, ctx=ctx)
+    sources = [signal_rel] if signal_rel else []
+    scan = load_deep_dips_scan(ctx=ctx, rel_path=signal_rel) if signal_rel else None
+    status: RouteStatus = "ok" if scan is not None else "unavailable"
+    row_count = len(scan.alerts) if scan else 0
+    data = (
+        scan.model_dump(mode="json")
+        if scan
+        else _unavailable_data("No deep dip scan available")
+    )
+    envelope = _build_route_envelope(
+        route_key="stocks_deep_dips",
+        run_id=run_id,
+        as_of=scan.as_of_date if scan else None,
+        row_count=row_count,
+        source_paths=sources,
+        status=status,
+        data=data,
+    )
+    rel = _write_route_artifact("stocks_deep_dips", envelope, ctx=ctx)
+    return RoutePublishResult(
+        route_key="stocks_deep_dips",
+        route=ROUTE_PATHS["stocks_deep_dips"],
+        rel_path=rel,
+        as_of=scan.as_of_date if scan else None,
+        row_count=row_count,
+        source_paths=sources,
+        status=status,
+        generated_at=envelope["generated_at"],
+    )
+
+
+def publish_stocks_history(
+    *,
+    config: PublishConfig,
+    run_id: str,
+    settings: TycheSettings,
+) -> RoutePublishResult:
+    from tyche.market_data.stocks_history_store import (
+        load_history_summary_rows,
+        load_transition_responses,
+    )
+
+    ctx = config.ctx or storage_context_from_settings(settings)
+    summary_rel = first_existing_path(_STOCKS_HISTORY_CANDIDATES, ctx=ctx)
+    transitions_rel = first_existing_path(_STOCKS_TRANSITIONS_CANDIDATES, ctx=ctx)
+    sources = [p for p in (summary_rel, transitions_rel) if p]
+
+    summaries = (
+        load_history_summary_rows(ctx=ctx, rel_path=summary_rel)
+        if summary_rel
+        else []
+    )
+    transitions = load_transition_responses(ctx=ctx) if transitions_rel else []
+    as_of = summaries[0].get("as_of") if summaries else None
+    status: RouteStatus = "ok" if summaries or transitions else "unavailable"
+    data = {
+        "summaries": summaries,
+        "transitions": [t.model_dump(mode="json") for t in transitions],
+        "total_summaries": len(summaries),
+        "total_transitions": len(transitions),
+    }
+    envelope = _build_route_envelope(
+        route_key="stocks_history",
+        run_id=run_id,
+        as_of=as_of,
+        row_count=len(summaries),
+        source_paths=sources,
+        status=status,
+        data=data if (summaries or transitions) else _unavailable_data("No history summary available"),
+    )
+    rel = _write_route_artifact("stocks_history", envelope, ctx=ctx)
+    return RoutePublishResult(
+        route_key="stocks_history",
+        route=ROUTE_PATHS["stocks_history"],
+        rel_path=rel,
+        as_of=as_of,
+        row_count=len(summaries),
         source_paths=sources,
         status=status,
         generated_at=envelope["generated_at"],
@@ -1018,22 +1124,21 @@ def run_publish_signals(config: PublishConfig | None = None) -> PublishResult:
             )
         )
 
-        routes.append(
-            publish_placeholder_route(
-                route_key="stocks_deep_dips",
-                config=cfg,
-                run_id=run_id,
-                message="Deep-dip scan not yet exported to signals/",
-            )
+        log_job_phase("publish-signals", "stocks_deep_dips")
+        deep_dips = publish_stocks_deep_dips(
+            config=cfg, run_id=run_id, settings=settings
         )
-        routes.append(
-            publish_placeholder_route(
-                route_key="stocks_history",
-                config=cfg,
-                run_id=run_id,
-                message="Stock history summary not yet exported to signals/",
-            )
+        routes.append(deep_dips)
+        if deep_dips.source_paths:
+            job_manifest.input_paths.extend(deep_dips.source_paths)
+
+        log_job_phase("publish-signals", "stocks_history")
+        history = publish_stocks_history(
+            config=cfg, run_id=run_id, settings=settings
         )
+        routes.append(history)
+        if history.source_paths:
+            job_manifest.input_paths.extend(history.source_paths)
 
         log_job_phase("publish-signals", "intelligence")
         news = publish_intelligence_news(

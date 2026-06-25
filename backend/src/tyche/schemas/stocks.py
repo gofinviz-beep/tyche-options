@@ -25,6 +25,7 @@ class ConvictionSnapshotResponse(BaseModel):
     price_to_21ema_pct: float
     volume_declining: bool
     days_above_both_emas: int
+    prior_streak: int = 0
     avg_volume_20d: int
     latest_volume: int
     ema_50: float = 0.0

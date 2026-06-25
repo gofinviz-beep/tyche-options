@@ -39,6 +39,8 @@ if $BUILD; then
     .venv/bin/ruff check src/tyche --select F821,F822,F823
     .venv/bin/python -m pytest \
       tests/unit/test_alpha_batch.py \
+      tests/unit/test_cloud_stocks_conviction.py \
+      tests/unit/test_cloud_stocks_derived.py \
       tests/unit/test_gcp_jobs.py \
       tests/unit/test_ingest_dates.py \
       -q --no-cov
@@ -113,6 +115,8 @@ deploy_job tyche-ingest-news              ingest-news                 2 4Gi  "${
 deploy_job tyche-ingest-edgar             ingest-edgar                2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=evening"
 deploy_job tyche-ingest-options-flatfiles ingest-options-flatfiles  2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-alpha-batch              alpha-batch               4 8Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
+deploy_job tyche-stocks-conviction-batch  stocks-conviction-batch   4 8Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
+deploy_job tyche-stocks-derived-batch      stocks-derived-batch        4 8Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-run-demand-gate          run-demand-gate           8 32Gi "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-publish-signals          publish-signals           2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-audit-snapshots          audit-snapshots           1 2Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"

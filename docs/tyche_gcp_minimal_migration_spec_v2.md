@@ -639,6 +639,7 @@ Sources available after market close: Polygon grouped daily, Finnhub estimates, 
 |------|------|
 | Parallel | `tyche-ingest-options-flatfiles` + `tyche-alpha-batch` |
 | Optional | `tyche-run-demand-gate` (failure does not block publish) |
+| Sequential | `tyche-stocks-conviction-batch` → `tyche-stocks-derived-batch` |
 | Sequential | `tyche-publish-signals` → `tyche-audit-snapshots` |
 
 Massive options flatfiles land ~2 AM PT; morning window starts at 2:30 AM.
@@ -648,9 +649,11 @@ Massive options flatfiles land ~2 AM PT; morning window starts at 2:30 AM.
 | Job | Blocks UI? | Depends on |
 |-----|------------|------------|
 | `tyche-alpha-batch` | **Yes** — Alpha page reads `alpha_signals*.parquet` | OHLCV + demand stores (evening ingest) |
-| `tyche-publish-signals` | **Yes** — frontend reads `published/routes/*.json` | Alpha batch (+ conviction/intelligence artifacts) |
+| `tyche-stocks-conviction-batch` | **Yes** — Stocks Conviction | OHLCV + `ticker_meta`; exports `signals/stocks/conviction.parquet` |
+| `tyche-stocks-derived-batch` | **Yes** — Deep Dips + History | conviction Parquet + OHLCV subset |
+| `tyche-publish-signals` | **Yes** — frontend reads `published/routes/*.json` | Alpha + stocks signal Parquet (+ intelligence) |
 | `tyche-run-demand-gate` | **No** — retrains optional `big_move_sustained_*` XGBoost models | Fresh evening demand data; builds/reuses `ml/alpha_dataset.parquet` |
-| `tyche-ingest-options-flatfiles` | **No** for Alpha/publish — IV/options history only | Massive S3 flat file (~2 AM) |
+| `tyche-ingest-options-flatfiles` | **No** for Alpha/stocks publish — IV/options history only | Massive S3 flat file (~2 AM) |
 
 Gate runs **after** evening `ingest-demand-data` (estimates/fundamentals) and **after** the parallel flatfiles+alpha step in the workflow YAML — so it sees fresh demand Parquet and can run while alpha artifacts already exist. Typical cloud runtime **4–8h** (see **§10.1** for phase timings, memory, reuse, and OOM diagnosis). Manual recovery: alpha done → gate (optional) → publish.
 
@@ -1040,8 +1043,8 @@ Finish GCP-D: all UI routes read `published/` first, `signals/` second; no curat
 **Remaining (June 2026):**
 
 1. **Options routes** — `publish_signals` emits placeholders for scanner, conviction, explore, monitor, covered_calls; API still live-computes via Tradier/engine.
-2. **Stocks deep-dips / history** — placeholders only; routes scan OHLCV live.
-3. **Cloud stocks conviction** — `publish_stocks_conviction` reads `conviction.db` (SQLite); Cloud Run has no DB → published `stocks_conviction.json` is empty. Needs cloud `conviction_batch` → Parquet or `signals/stocks/conviction.parquet` export (mirror intelligence pattern).
+2. ~~**Stocks deep-dips / history**~~ — **Done (Slice 2, 2026-06-25).** `tyche-stocks-derived-batch` + published routes. See `docs/alpha/stocks_cloud_signals_slice12_note.md`.
+3. ~~**Cloud stocks conviction**~~ — **Done (Slice 1, 2026-06-25).** `tyche-stocks-conviction-batch` → `signals/stocks/conviction.parquet`; publish reads signal Parquet only (not `conviction.db` or legacy `conviction_signals.parquet`).
 4. **Insider intelligence route** — published + Parquet exist; verify API reads published path (filings/news done).
 
 ### P1b — Deploy hygiene

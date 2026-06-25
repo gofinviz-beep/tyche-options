@@ -18,6 +18,11 @@ if TYPE_CHECKING:
 
 from tyche.conviction.engine import ConvictionEngine, ConvictionSignal
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
+from tyche.market_data.stocks_conviction_store import (
+    STOCKS_CONVICTION_REL,
+    write_stocks_conviction_parquet,
+)
+from tyche.storage.paths import StorageContext
 from tyche.models.conviction import ConvictionTransition
 from tyche.persistence.conviction_repository import (
     cleanup_old_snapshots,
@@ -42,6 +47,8 @@ class ConvictionBatchResult:
     new_pullback_transitions: int = 0
     transitions: list[ConvictionTransition] = field(default_factory=list)
     duration_ms: float = 0.0
+    parquet_rows_written: int = 0
+    parquet_rel_path: str | None = None
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -55,6 +62,8 @@ class ConvictionBatchResult:
             "transitions_detected": self.transitions_detected,
             "new_pullback_transitions": self.new_pullback_transitions,
             "duration_ms": round(self.duration_ms, 2),
+            "parquet_rows_written": self.parquet_rows_written,
+            "parquet_rel_path": self.parquet_rel_path,
             "errors": self.errors,
         }
 
@@ -67,6 +76,10 @@ async def run_conviction_batch(
     min_price: float = 5.0,
     min_avg_volume: int = 500_000,
     retention_days: int = 90,
+    persist_sqlite: bool = True,
+    export_parquet: bool = False,
+    ctx: StorageContext | None = None,
+    run_id: str | None = None,
 ) -> ConvictionBatchResult:
     """Run conviction analysis across the filtered universe and persist results.
 
@@ -160,32 +173,51 @@ async def run_conviction_batch(
             result.as_of_date = sig.as_of_date
             break
 
-    # 6. Upsert snapshots
-    try:
-        upserted = await upsert_snapshots(signals, result.as_of_date)
-        result.snapshots_upserted = upserted
-    except Exception:
-        logger.error("conviction_batch_upsert_failed", exc_info=True)
-        result.errors.append("Snapshot upsert failed")
+    if export_parquet:
+        if ctx is None:
+            result.errors.append("export_parquet requires StorageContext")
+        else:
+            try:
+                written = write_stocks_conviction_parquet(
+                    signals,
+                    as_of_date=result.as_of_date,
+                    meta_store=ticker_meta_store,
+                    ctx=ctx,
+                    run_id=run_id,
+                )
+                result.parquet_rows_written = written
+                result.parquet_rel_path = STOCKS_CONVICTION_REL if written else None
+            except Exception:
+                logger.error("conviction_batch_parquet_export_failed", exc_info=True)
+                result.errors.append("Parquet export failed")
 
-    # 7. Detect transitions
-    try:
-        transitions = await detect_and_record_transitions(result.as_of_date)
-        result.transitions = transitions
-        result.transitions_detected = len(transitions)
-        result.new_pullback_transitions = sum(
-            1 for t in transitions
-            if t.to_state in ("pullback_to_8ema", "pullback_to_21ema")
-        )
-    except Exception:
-        logger.error("conviction_batch_transition_detection_failed", exc_info=True)
-        result.errors.append("Transition detection failed")
+    if persist_sqlite:
+        # 6. Upsert snapshots
+        try:
+            upserted = await upsert_snapshots(signals, result.as_of_date)
+            result.snapshots_upserted = upserted
+        except Exception:
+            logger.error("conviction_batch_upsert_failed", exc_info=True)
+            result.errors.append("Snapshot upsert failed")
 
-    # 8. Cleanup old data
-    try:
-        await cleanup_old_snapshots(retention_days)
-    except Exception:
-        logger.warning("conviction_batch_cleanup_failed", exc_info=True)
+        # 7. Detect transitions
+        try:
+            transitions = await detect_and_record_transitions(result.as_of_date)
+            result.transitions = transitions
+            result.transitions_detected = len(transitions)
+            result.new_pullback_transitions = sum(
+                1 for t in transitions
+                if t.to_state in ("pullback_to_8ema", "pullback_to_21ema")
+            )
+        except Exception:
+            logger.error("conviction_batch_transition_detection_failed", exc_info=True)
+            result.errors.append("Transition detection failed")
+
+        # 8. Cleanup old data
+        try:
+            await cleanup_old_snapshots(retention_days)
+        except Exception:
+            logger.warning("conviction_batch_cleanup_failed", exc_info=True)
 
     result.duration_ms = (time.perf_counter() - t0) * 1000
 

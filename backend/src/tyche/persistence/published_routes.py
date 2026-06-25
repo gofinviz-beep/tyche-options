@@ -383,6 +383,91 @@ def get_stocks_conviction_rows(
                     rows=len(parsed),
                 )
                 return parsed, "published"
+
+    from tyche.market_data.stocks_conviction_store import (
+        STOCKS_CONVICTION_REL,
+        load_stocks_conviction_parquet,
+    )
+
+    signal_rel = first_existing_path((STOCKS_CONVICTION_REL,), ctx=ctx)
+    if signal_rel:
+        rows, _as_of = load_stocks_conviction_parquet(ctx=ctx, rel_path=signal_rel)
+        if rows:
+            logger.debug(
+                "conviction_source",
+                layer="signals",
+                rows=len(rows),
+                rel=signal_rel,
+            )
+            return rows, "signals"
+
+    return None
+
+
+def get_stocks_deep_dips_scan(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+):
+    """Return deep dip scan from published JSON or signal Parquet."""
+    from tyche.market_data.stocks_deep_dips_store import load_deep_dips_scan
+    from tyche.schemas.alerts import DeepDipScanResponse
+
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+
+    if _prefer_published(settings):
+        env = _usable_published(
+            load_published_route("stocks_deep_dips", settings=settings, ctx=ctx),
+            settings=settings,
+        )
+        if env is not None and isinstance(env.data, dict):
+            try:
+                scan = DeepDipScanResponse.model_validate(env.data)
+                return scan, "published"
+            except Exception as exc:
+                logger.warning("published_deep_dips_parse_failed", error=str(exc))
+
+    signal_rel = first_existing_path(("signals/stocks/deep_dips.parquet",), ctx=ctx)
+    if signal_rel:
+        scan = load_deep_dips_scan(ctx=ctx, rel_path=signal_rel)
+        if scan is not None:
+            return scan, "signals"
+    return None
+
+
+def get_stocks_history_payload(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+) -> tuple[dict[str, Any], RouteLayer] | None:
+    """Return history summaries + transitions from published JSON or Parquet."""
+    from tyche.market_data.stocks_history_store import (
+        load_history_summary_rows,
+        load_transition_responses,
+    )
+
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+
+    if _prefer_published(settings):
+        env = _usable_published(
+            load_published_route("stocks_history", settings=settings, ctx=ctx),
+            settings=settings,
+        )
+        if env is not None and isinstance(env.data, dict):
+            if env.data.get("summaries") or env.data.get("transitions"):
+                return env.data, "published"
+
+    summaries = load_history_summary_rows(ctx=ctx)
+    transitions = load_transition_responses(ctx=ctx)
+    if summaries or transitions:
+        return {
+            "summaries": summaries,
+            "transitions": [t.model_dump(mode="json") for t in transitions],
+            "total_summaries": len(summaries),
+            "total_transitions": len(transitions),
+        }, "signals"
     return None
 
 

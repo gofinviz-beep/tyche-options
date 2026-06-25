@@ -34,7 +34,10 @@ With `TYCHE_DATA_BACKEND=gcs`, the same relative paths resolve under `gs://{buck
 | Options history (S3 flat files) | `backend/data/options_history/{TICKER}.parquet` | One Parquet per ticker |
 | Historical IV (ATM put) | `backend/data/options_iv/{TICKER}.parquet` | One Parquet per ticker |
 | Derived metrics (IV Rank, VRP) | `backend/data/derived/{TICKER}.parquet` | One Parquet per ticker |
-| Conviction signals cache | `backend/data/conviction_signals.parquet` | Single file |
+| Conviction signals cache (local EMA) | `backend/data/conviction_signals.parquet` | Single file — **local dev only**; cloud publish uses `signals/stocks/conviction.parquet` |
+| Cloud stocks conviction | `signals/stocks/conviction.parquet` | GCS batch output (`tyche-stocks-conviction-batch`) → `published/routes/stocks_conviction.json` |
+| Cloud deep dips | `signals/stocks/deep_dips.parquet` | GCS batch output (`tyche-stocks-derived-batch`) → `published/routes/stocks_deep_dips.json` |
+| Cloud stocks history | `signals/stocks/history_summary.parquet` | Per-ticker OHLCV summaries → `published/routes/stocks_history.json` |
 | ETF constituents | `backend/data/etf_constituents.parquet` | Single file |
 | Correlations | `backend/data/correlations.parquet` | Pairwise top-N peers |
 | Betas | `backend/data/betas.parquet` | Per-ticker SPY/QQQ betas |
@@ -105,6 +108,8 @@ from tyche.market_data.data_store import TickerMetaStore
 | `tyche/ops/job_progress.py` | `job_phase` / `job_progress` structlog helpers for Cloud Logging |
 | `tyche/ops/intelligence_export.py` | Parquet-only news/filing rollups (batched checkpoints) |
 | `workflow/publish_signals.py` | Route-level JSON publisher (sanitizes intelligence Parquet rows before write) |
+| `workflow/stocks_derived_batch.py` | Deep dips + history summary batch (Slice 2) |
+| `market_data/stocks_conviction_store.py` | Cloud conviction Parquet I/O |
 | `market_data/ingest_dates.py` | Pacific session end-date helpers for cloud/local ingest |
 | `infra/gcp/deploy_jobs.sh` | Deploy/update Cloud Run Jobs (pre-build ruff F821 + job unit tests) |
 
@@ -113,8 +118,10 @@ from tyche.market_data.data_store import TickerMetaStore
 | Doc | Purpose |
 |-----|---------|
 | `docs/tyche_gcp_minimal_migration_spec_v2.md` | GCP cloud-computed / locally-viewed architecture |
+| `docs/tyche_cloud_computed_signals_completion_spec_v1.md` | Cloud-computed UI signals (slices 1–7) |
 | `docs/multibagger_discovery_engine_v8_cursor_composer_spec.md` | **Current** implementation spec (P2+ next) |
 | `docs/alpha/p1_completion_note.md` | P1 validation acceptance + artifact locations |
+| `docs/alpha/stocks_cloud_signals_slice12_note.md` | Slices 1–2 stocks cloud signals GCP verification |
 | `docs/alpha/estimate_snapshot_findings.md` | P0.3 Finnhub probe write-up |
 
 ## Tradier Client Setup

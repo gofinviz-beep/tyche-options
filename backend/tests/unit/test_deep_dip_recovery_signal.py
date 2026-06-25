@@ -10,6 +10,12 @@ import pandas as pd
 import pytest
 
 from tyche.schemas.alerts import MarketContextResponse, RecoverySignalResponse
+from tyche.storage.paths import StorageContext
+
+
+@pytest.fixture
+def local_ctx(tmp_path) -> StorageContext:
+    return StorageContext(backend="local", local_root=tmp_path)
 
 
 def _make_alert(
@@ -57,6 +63,52 @@ def compute_ctx():
     """Import the market context computation function."""
     from tyche.api.routes.stocks import _compute_market_context
     return _compute_market_context
+
+
+class TestSnapshotToSignal:
+    def test_loads_conviction_parquet_row_for_deep_dip_scan(
+        self,
+        local_ctx: StorageContext,
+    ) -> None:
+        from tyche.market_data.stocks_conviction_store import (
+            STOCKS_CONVICTION_REL,
+            load_stocks_conviction_parquet,
+        )
+        from tyche.storage import write_parquet
+        from tyche.workflow.deep_dip_scan import _snapshot_to_signal
+
+        row = {
+            "ticker": "GOOG",
+            "as_of_date": "2026-06-24",
+            "trend_state": "oversold_21ema",
+            "conviction_level": "medium",
+            "raw_conviction": "medium",
+            "csp_eligible": False,
+            "last_close": 273.0,
+            "ema_8": 290.0,
+            "ema_21": 305.0,
+            "ema_8_slope": -0.5,
+            "ema_21_slope": -0.2,
+            "price_to_8ema_pct": -5.9,
+            "price_to_21ema_pct": -10.5,
+            "volume_declining": True,
+            "days_above_both_emas": 0,
+            "prior_streak": 12,
+            "avg_volume_20d": 20_000_000,
+            "latest_volume": 18_000_000,
+            "ema_50": 310.0,
+            "ema_50_slope": -0.1,
+            "rsi_14": 38.0,
+            "conviction_score": 0.25,
+        }
+        write_parquet(pd.DataFrame([row]), STOCKS_CONVICTION_REL, ctx=local_ctx)
+
+        rows, _as_of = load_stocks_conviction_parquet(ctx=local_ctx)
+        signal = _snapshot_to_signal(rows[0])
+
+        assert signal.ticker == "GOOG"
+        assert signal.prior_streak == 12
+        assert signal.trend_state.value == "oversold_21ema"
 
 
 class TestAssessRecoverySignal:

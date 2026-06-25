@@ -269,13 +269,23 @@ class TestConvictionHistoryEndpointUnit:
     @patch("tyche.api.routes.stocks.get_transitions", new_callable=AsyncMock)
     @patch("tyche.api.routes.stocks.get_ticker_history", new_callable=AsyncMock)
     async def test_returns_history(self, mock_history, mock_transitions):
+        from tyche.api.routes.stocks import get_conviction_history_endpoint
+        from tyche.config import TycheSettings
+
         snap = _make_snapshot_model()
         mock_history.return_value = [snap]
         mock_transitions.return_value = [_make_transition_model()]
 
-        from tyche.api.routes.stocks import get_conviction_history_endpoint
+        settings = TycheSettings(
+            tradier_api_token="t",
+            tradier_account_id="a",
+            gemini_api_key="g",
+            api_allow_local_db_fallback=True,
+        )
 
-        resp = await get_conviction_history_endpoint(ticker="AAPL", days=30)
+        resp = await get_conviction_history_endpoint(
+            ticker="AAPL", days=30, settings=settings
+        )
         assert resp.ticker == "AAPL"
         assert len(resp.snapshots) == 1
         assert len(resp.transitions) == 1
@@ -284,12 +294,22 @@ class TestConvictionHistoryEndpointUnit:
     @patch("tyche.api.routes.stocks.get_transitions", new_callable=AsyncMock)
     @patch("tyche.api.routes.stocks.get_ticker_history", new_callable=AsyncMock)
     async def test_empty_history(self, mock_history, mock_transitions):
+        from tyche.api.routes.stocks import get_conviction_history_endpoint
+        from tyche.config import TycheSettings
+
         mock_history.return_value = []
         mock_transitions.return_value = []
 
-        from tyche.api.routes.stocks import get_conviction_history_endpoint
+        settings = TycheSettings(
+            tradier_api_token="t",
+            tradier_account_id="a",
+            gemini_api_key="g",
+            api_allow_local_db_fallback=True,
+        )
 
-        resp = await get_conviction_history_endpoint(ticker="UNKNOWN", days=30)
+        resp = await get_conviction_history_endpoint(
+            ticker="UNKNOWN", days=30, settings=settings
+        )
         assert resp.ticker == "UNKNOWN"
         assert len(resp.snapshots) == 0
         assert len(resp.transitions) == 0
@@ -299,22 +319,42 @@ class TestTransitionsEndpointUnit:
     @pytest.mark.asyncio
     @patch("tyche.api.routes.stocks.get_transitions", new_callable=AsyncMock)
     async def test_returns_transitions(self, mock_transitions):
+        from tyche.api.routes.stocks import get_transitions_endpoint
+        from tyche.config import TycheSettings
+
         mock_transitions.return_value = [_make_transition_model()]
 
-        from tyche.api.routes.stocks import get_transitions_endpoint
+        settings = TycheSettings(
+            tradier_api_token="t",
+            tradier_account_id="a",
+            gemini_api_key="g",
+            data_backend="local",
+            api_prefer_published_signals=False,
+        )
 
-        resp = await get_transitions_endpoint(days=7, to_states=None)
+        resp = await get_transitions_endpoint(days=7, to_states=None, settings=settings)
         assert len(resp.transitions) == 1
 
     @pytest.mark.asyncio
     @patch("tyche.api.routes.stocks.get_transitions", new_callable=AsyncMock)
     async def test_with_state_filter(self, mock_transitions):
+        from tyche.api.routes.stocks import get_transitions_endpoint
+        from tyche.config import TycheSettings
+
         mock_transitions.return_value = [_make_transition_model()]
 
-        from tyche.api.routes.stocks import get_transitions_endpoint
+        settings = TycheSettings(
+            tradier_api_token="t",
+            tradier_account_id="a",
+            gemini_api_key="g",
+            data_backend="local",
+            api_prefer_published_signals=False,
+        )
 
         resp = await get_transitions_endpoint(
-            days=7, to_states="pullback_to_8ema,pullback_to_21ema"
+            days=7,
+            to_states="pullback_to_8ema,pullback_to_21ema",
+            settings=settings,
         )
         assert len(resp.transitions) == 1
         mock_transitions.assert_called_once()
@@ -364,8 +404,25 @@ class TestConvictionSnapshotsEndpoint:
         mock_snaps.return_value = [_make_snapshot_model(), _make_snapshot_model(ticker="NVDA")]
 
         from tyche.api.routes.stocks import get_conviction_snapshots_endpoint
+        from tyche.config import TycheSettings
 
-        resp = await get_conviction_snapshots_endpoint(as_of_date=None, meta_store=self._mock_meta_store())
+        settings = TycheSettings(
+            tradier_api_token="t",
+            tradier_account_id="a",
+            gemini_api_key="g",
+            api_prefer_published_signals=False,
+            api_allow_local_db_fallback=True,
+        )
+
+        with patch(
+            "tyche.persistence.published_routes.get_stocks_conviction_rows",
+            return_value=None,
+        ):
+            resp = await get_conviction_snapshots_endpoint(
+                as_of_date=None,
+                settings=settings,
+                meta_store=self._mock_meta_store(),
+            )
         assert len(resp) == 2
         assert resp[0].ticker == "AAPL"
         assert resp[1].ticker == "NVDA"
@@ -378,8 +435,20 @@ class TestConvictionSnapshotsEndpoint:
         mock_latest.return_value = None
 
         from tyche.api.routes.stocks import get_conviction_snapshots_endpoint
+        from tyche.config import TycheSettings
 
-        resp = await get_conviction_snapshots_endpoint(as_of_date="2026-03-28", meta_store=self._mock_meta_store())
+        settings = TycheSettings(
+            tradier_api_token="t",
+            tradier_account_id="a",
+            gemini_api_key="g",
+            api_allow_local_db_fallback=True,
+        )
+
+        resp = await get_conviction_snapshots_endpoint(
+            as_of_date="2026-03-28",
+            settings=settings,
+            meta_store=self._mock_meta_store(),
+        )
         assert len(resp) == 0
 
     @pytest.mark.asyncio
@@ -390,8 +459,25 @@ class TestConvictionSnapshotsEndpoint:
         mock_snaps.side_effect = [[], [_make_snapshot_model()]]
 
         from tyche.api.routes.stocks import get_conviction_snapshots_endpoint
+        from tyche.config import TycheSettings
 
-        resp = await get_conviction_snapshots_endpoint(as_of_date=None, meta_store=self._mock_meta_store())
+        settings = TycheSettings(
+            tradier_api_token="t",
+            tradier_account_id="a",
+            gemini_api_key="g",
+            api_prefer_published_signals=False,
+            api_allow_local_db_fallback=True,
+        )
+
+        with patch(
+            "tyche.persistence.published_routes.get_stocks_conviction_rows",
+            return_value=None,
+        ):
+            resp = await get_conviction_snapshots_endpoint(
+                as_of_date=None,
+                settings=settings,
+                meta_store=self._mock_meta_store(),
+            )
         assert len(resp) == 1
         assert mock_snaps.call_count == 2
         mock_snaps.assert_called_with(date(2026, 4, 2))
@@ -405,8 +491,25 @@ class TestConvictionSnapshotsEndpoint:
         mock_snaps.return_value = []
 
         from tyche.api.routes.stocks import get_conviction_snapshots_endpoint
+        from tyche.config import TycheSettings
 
-        resp = await get_conviction_snapshots_endpoint(as_of_date=None, meta_store=self._mock_meta_store())
+        settings = TycheSettings(
+            tradier_api_token="t",
+            tradier_account_id="a",
+            gemini_api_key="g",
+            api_prefer_published_signals=False,
+            api_allow_local_db_fallback=True,
+        )
+
+        with patch(
+            "tyche.persistence.published_routes.get_stocks_conviction_rows",
+            return_value=None,
+        ):
+            resp = await get_conviction_snapshots_endpoint(
+                as_of_date=None,
+                settings=settings,
+                meta_store=self._mock_meta_store(),
+            )
         assert len(resp) == 0
         assert mock_snaps.call_count == 1
 

@@ -49,6 +49,22 @@ main:
                   text: '${"Optional demand gate failed - " + string(e)}'
                   severity: "WARNING"
 
+    - run_stocks_conviction:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: "tyche-stocks-conviction-batch"
+          optional: false
+
+    - run_stocks_derived:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: "tyche-stocks-derived-batch"
+          optional: false
+
     - run_publish:
         call: run_cloud_run_job
         args:

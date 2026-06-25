@@ -11,10 +11,12 @@ def test_job_names_match_spec() -> None:
     assert "ingest-demand-data" in JOB_NAMES
     assert "ingest-news" in JOB_NAMES
     assert "ingest-edgar" in JOB_NAMES
+    assert "stocks-conviction-batch" in JOB_NAMES
     assert "nightly-pipeline" in JOB_NAMES
     assert "audit-snapshots" in JOB_NAMES
     assert "publish-signals" in JOB_NAMES
-    assert len(JOB_NAMES) == 10
+    assert "stocks-derived-batch" in JOB_NAMES
+    assert len(JOB_NAMES) == 12
 
 
 @pytest.mark.asyncio

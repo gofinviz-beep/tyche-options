@@ -31,6 +31,8 @@ JOB_NAMES = (
     "ingest-news",
     "ingest-edgar",
     "alpha-batch",
+    "stocks-conviction-batch",
+    "stocks-derived-batch",
     "run-demand-gate",
     "publish-signals",
     "audit-snapshots",
@@ -393,6 +395,155 @@ def run_alpha_batch_job(
     return JobResult("alpha-batch", rid, "success", rel, summary)
 
 
+async def run_stocks_conviction_batch_job(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+    run_id: str | None = None,
+) -> JobResult:
+    """Compute stocks conviction and export ``signals/stocks/conviction.parquet``."""
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+    rid = run_id or new_run_id()
+    manifest = RunManifest.start(
+        job_name="stocks_conviction_batch",
+        run_id=rid,
+        data_backend=ctx.backend,
+    )
+    manifest.input_paths = ["ohlcv_daily/", "ticker_meta.parquet", "derived/"]
+
+    from tyche.conviction.engine import ConvictionEngine
+    from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
+    from tyche.market_data.derived_store import DerivedMetricsStore
+    from tyche.market_data.stocks_conviction_store import STOCKS_CONVICTION_REL
+    from tyche.ml.inference import CSPSafetyPredictor
+    from tyche.ops.job_progress import log_job_phase
+    from tyche.workflow.conviction_batch import run_conviction_batch
+
+    store = OHLCVStore(data_dir=settings.data_dir, ctx=ctx)
+    meta = TickerMetaStore(data_dir=settings.data_dir, ctx=ctx)
+    derived = DerivedMetricsStore(data_dir=settings.data_dir, ctx=ctx)
+    predictor = CSPSafetyPredictor(data_dir=settings.data_dir)
+    engine = ConvictionEngine(
+        ema_fast=settings.ema_fast_period,
+        ema_slow=settings.ema_slow_period,
+        pullback_proximity_pct=settings.pullback_proximity_pct,
+        max_extension_pct=settings.max_extension_pct,
+        min_days_above_emas=settings.min_days_above_emas,
+        max_days_above_emas=settings.max_days_above_emas,
+        pullback_csp_enabled=settings.pullback_csp_enabled,
+        min_prior_streak=settings.min_prior_streak,
+        derived_store=derived,
+        csp_predictor=predictor,
+        oversold_dip_pct_21ema=settings.oversold_dip_pct_21ema,
+        oversold_dip_pct_50ema=settings.oversold_dip_pct_50ema,
+        oversold_min_prior_uptrend=settings.oversold_min_prior_uptrend,
+    )
+
+    log_job_phase("stocks-conviction-batch", "execute", status="start")
+    result = await run_conviction_batch(
+        data_store=store,
+        conviction_engine=engine,
+        ticker_meta_store=meta,
+        min_market_cap=settings.conviction_batch_min_market_cap_millions * 1_000_000,
+        min_price=settings.conviction_batch_min_price,
+        min_avg_volume=settings.conviction_batch_min_avg_volume,
+        retention_days=settings.conviction_snapshot_retention_days,
+        persist_sqlite=False,
+        export_parquet=True,
+        ctx=ctx,
+        run_id=rid,
+    )
+    summary = result.to_dict()
+    log_job_phase(
+        "stocks-conviction-batch",
+        "execute",
+        status="complete" if result.parquet_rows_written else "empty",
+        signals=result.signals_computed,
+        parquet_rows=result.parquet_rows_written,
+    )
+
+    manifest.extra = summary
+    if result.parquet_rows_written:
+        manifest.output_paths = [STOCKS_CONVICTION_REL]
+        manifest.finish(status="success")
+    elif result.signals_computed == 0:
+        manifest.warnings.append("stocks_conviction_no_signals")
+        manifest.finish(status="failed")
+    else:
+        manifest.errors.extend(result.errors or ["parquet_export_failed"])
+        manifest.finish(status="failed")
+
+    rel = manifest.write(ctx=ctx)
+    status = "success" if manifest.status == "success" else "failed"
+    return JobResult("stocks-conviction-batch", rid, status, rel, summary)
+
+
+async def run_stocks_derived_batch_job(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+    run_id: str | None = None,
+) -> JobResult:
+    """Compute deep dips + history summaries and export signal Parquet."""
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+    rid = run_id or new_run_id()
+    manifest = RunManifest.start(
+        job_name="stocks_derived_batch",
+        run_id=rid,
+        data_backend=ctx.backend,
+    )
+    manifest.input_paths = [
+        "ohlcv_daily/",
+        "ticker_meta.parquet",
+        "signals/stocks/conviction.parquet",
+    ]
+
+    from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
+    from tyche.market_data.stocks_deep_dips_store import STOCKS_DEEP_DIPS_REL
+    from tyche.ops.job_progress import log_job_phase
+    from tyche.workflow.history_summary import STOCKS_HISTORY_SUMMARY_REL
+    from tyche.workflow.stocks_derived_batch import run_stocks_derived_batch
+
+    store = OHLCVStore(data_dir=settings.data_dir, ctx=ctx)
+    meta = TickerMetaStore(data_dir=settings.data_dir, ctx=ctx)
+
+    log_job_phase("stocks-derived-batch", "execute", status="start")
+    result = await run_stocks_derived_batch(
+        settings=settings,
+        data_store=store,
+        ticker_meta_store=meta,
+        conviction_engine=None,
+        ctx=ctx,
+        run_id=rid,
+    )
+    summary = result.to_dict()
+    log_job_phase(
+        "stocks-derived-batch",
+        "execute",
+        status="complete",
+        deep_dips=result.deep_dip_alerts,
+        history_rows=result.history_rows,
+    )
+
+    manifest.extra = summary
+    manifest.output_paths = [
+        STOCKS_DEEP_DIPS_REL,
+        STOCKS_HISTORY_SUMMARY_REL,
+    ]
+    if result.errors:
+        manifest.warnings.extend(result.errors)
+    if result.history_rows == 0 and result.deep_dip_alerts == 0:
+        manifest.finish(status="failed")
+    else:
+        manifest.finish(status="success")
+
+    rel = manifest.write(ctx=ctx)
+    status = "success" if manifest.status == "success" else "failed"
+    return JobResult("stocks-derived-batch", rid, status, rel, summary)
+
+
 async def run_ingest_news(
     *,
     settings: TycheSettings | None = None,
@@ -733,6 +884,8 @@ _JOB_RUNNERS: dict[str, Callable[..., Any]] = {
     "ingest-news": run_ingest_news,
     "ingest-edgar": run_ingest_edgar,
     "alpha-batch": run_alpha_batch_job,
+    "stocks-conviction-batch": run_stocks_conviction_batch_job,
+    "stocks-derived-batch": run_stocks_derived_batch_job,
     "run-demand-gate": run_demand_gate_job,
     "publish-signals": run_publish_signals_job,
     "audit-snapshots": run_audit_snapshots_job,

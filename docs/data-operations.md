@@ -9,11 +9,11 @@ When `TYCHE_DATA_BACKEND=gcs`, **batch ingest runs in Cloud Run Jobs** — not o
 | Window (PT) | Days | Workflow | Jobs (parallel unless noted) |
 |-------------|------|----------|------------------------------|
 | **6:00 PM** | **Mon–Fri** | `tyche-evening-pipeline` | ingest-data, ingest-demand-data, ingest-news, ingest-edgar |
-| **2:30 AM** | **Tue–Sat** | `tyche-morning-pipeline` | options-flatfiles + alpha-batch → demand-gate (optional) → publish-signals → audit |
+| **2:30 AM** | **Tue–Sat** | `tyche-morning-pipeline` | options-flatfiles + alpha-batch → demand-gate (optional) → **stocks-conviction-batch** → **stocks-derived-batch** → publish-signals → audit |
 
-**Evening does not include demand gate** — only `ingest-data`, `ingest-demand-data`, `ingest-news`, `ingest-edgar`. Gate is morning-only (optional ML retrain after fresh estimates). **Publish does not require gate**; it requires alpha-batch.
+**Evening does not include demand gate or stocks compute** — only `ingest-data`, `ingest-demand-data`, `ingest-news`, `ingest-edgar`. Gate and stocks batches are morning-only. **Publish requires** alpha-batch + stocks signal Parquet (conviction, deep dips, history).
 
-**Manual recovery order:** alpha-batch succeeded → `tyche-run-demand-gate` (optional, ~4–8h) → `tyche-publish-signals` → `tyche-audit-snapshots`. Flatfiles can finish in parallel; not a publish prerequisite.
+**Manual recovery order:** stocks-conviction-batch → stocks-derived-batch → publish-signals (after alpha-batch). Optional: `tyche-run-demand-gate` (~4–8h). Flatfiles can finish in parallel; not a publish prerequisite.
 
 - **Deploy:** `infra/gcp/README.md`
 - **Spec:** `docs/tyche_gcp_minimal_migration_spec_v2.md`
