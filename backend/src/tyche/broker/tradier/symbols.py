@@ -34,6 +34,16 @@ def build_occ_symbol(
     return f"{padded_symbol}{date_str}{type_char}{strike_str}"
 
 
+def normalize_option_type(value: str | None, *, default: str = "put") -> str:
+    """Map OCC/flatfile ``P``/``C`` codes to broker ``put``/``call``."""
+    text = str(value or default).lower()
+    if text in ("p", "put"):
+        return "put"
+    if text in ("c", "call"):
+        return "call"
+    return text
+
+
 def parse_occ_symbol(occ_symbol: str) -> dict[str, str | float | date]:
     """Parse an OCC option symbol into its components.
 

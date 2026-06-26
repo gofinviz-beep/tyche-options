@@ -35,5 +35,6 @@ deploy_one() {
 
 deploy_one tyche-evening-pipeline "${REPO_ROOT}/infra/gcp/workflows/evening-pipeline.yaml"
 deploy_one tyche-morning-pipeline "${REPO_ROOT}/infra/gcp/workflows/morning-pipeline.yaml"
+deploy_one tyche-options-morning-slice "${REPO_ROOT}/infra/gcp/workflows/options-morning-slice.yaml"
 
 echo "==> Workflows deployed in ${WORKFLOW_LOCATION}"

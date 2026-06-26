@@ -1,0 +1,115 @@
+# Manual options morning slice — sequential Cloud Run jobs after evening ingest.
+#
+# Refreshes conviction, rebuilds candidate universe + flatfile chains, runs CSP
+# scanner, and publishes route JSON. Trigger when you need a one-shot options
+# pipeline without the full morning workflow (flatfiles, alpha, demand gate, audit).
+#
+#   gcloud workflows run tyche-options-morning-slice \
+#     --location=us-central1 --project="$TYCHE_GCP_PROJECT_ID"
+
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - region: "us-central1"
+
+    - run_stocks_conviction:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: "tyche-stocks-conviction-batch"
+          optional: false
+
+    - run_candidate_universe:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: "tyche-candidate-universe-batch"
+          optional: false
+
+    - run_options_chain_prep:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: "tyche-options-chain-prep-batch"
+          optional: false
+
+    - run_options_scanner:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: "tyche-options-scanner-batch"
+          optional: false
+
+    - run_publish:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: "tyche-publish-signals"
+          optional: false
+
+    - done:
+        return:
+          status: "success"
+          window: "options_morning_slice"
+
+
+run_cloud_run_job:
+  params: [project_id, region, job_id, optional]
+  steps:
+    - start:
+        call: http.post
+        args:
+          url: ${"https://run.googleapis.com/v2/projects/" + project_id + "/locations/" + region + "/jobs/" + job_id + ":run"}
+          auth:
+            type: OAuth2
+          body: {}
+        result: op
+    - assign_execution:
+        assign:
+          - execution_name: ${op.body.metadata.name}
+    - poll:
+        call: googleapis.run.v2.projects.locations.jobs.executions.get
+        args:
+          name: ${execution_name}
+        result: execution
+    - check:
+        switch:
+          - condition: ${map.get(execution, "completionTime") == null}
+            next: wait
+          - condition: ${default(map.get(execution, "failedCount"), 0) > 0 or default(map.get(execution, "cancelledCount"), 0) > 0}
+            next: fail
+        next: succeed
+    - wait:
+        call: sys.sleep
+        args:
+          seconds: 45
+        next: poll
+    - fail:
+        switch:
+          - condition: ${optional}
+            next: succeed_with_warning
+          - condition: true
+            next: raise_fail
+    - raise_fail:
+        raise:
+          message: '${job_id + " failed"}'
+          data: ${execution}
+    - succeed_with_warning:
+        call: sys.log
+        args:
+          text: '${"Optional job " + job_id + " did not succeed - continuing pipeline"}'
+          severity: "WARNING"
+        next: succeed
+    - succeed:
+        return:
+          job_id: ${job_id}
+          execution: ${map.get(execution, "name")}
+          succeeded: ${default(map.get(execution, "succeededCount"), 0)}

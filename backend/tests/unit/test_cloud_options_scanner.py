@@ -136,3 +136,26 @@ async def test_run_options_scanner_batch_exports_candidates(
     assert report is not None
     assert report["candidate_source"] == CSP_SCAN_TICKERS_REL
     assert report["chain_source"] == "flatfile"
+
+
+@pytest.mark.asyncio
+async def test_run_options_scanner_batch_accepts_flatfile_option_type_code(
+    tmp_path: Path,
+    settings: TycheSettings,
+    ctx: StorageContext,
+) -> None:
+    """Flatfile chains store OCC ``P``/``C`` — broker expects ``put``/``call``."""
+    _seed_scanner_inputs(tmp_path)
+    chain_ctx = StorageContext(backend="local", local_root=tmp_path)
+    chain_df = pd.read_parquet(tmp_path / OPTIONS_CHAIN_CONTRACTS_REL)
+    chain_df["option_type"] = "P"
+    write_parquet(chain_df, OPTIONS_CHAIN_CONTRACTS_REL, atomic=True, ctx=chain_ctx)
+
+    result = await run_options_scanner_batch(
+        settings=settings,
+        ctx=ctx,
+        as_of_date=date(2026, 6, 24),
+    )
+
+    assert result.symbols_scanned == 1
+    assert result.csp_candidates >= 1

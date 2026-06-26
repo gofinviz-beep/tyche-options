@@ -14,6 +14,7 @@ from typing import Any
 import pandas as pd
 import structlog
 
+from tyche.broker.tradier.symbols import normalize_option_type
 from tyche.config import TycheSettings
 from tyche.market_data.options_chain_snapshot_store import (
     OPTIONS_CHAIN_CONTRACTS_REL,
@@ -146,7 +147,7 @@ def extract_flatfile_contracts(
                 "chain_date": latest.isoformat(),
                 "expiration": exp.isoformat() if hasattr(exp, "isoformat") else str(exp),
                 "strike": float(row.get("strike") or 0.0),
-                "option_type": str(row.get("option_type") or "P").lower(),
+                "option_type": normalize_option_type(str(row.get("option_type") or "P")),
                 "bid": close,
                 "ask": close,
                 "mid": close,

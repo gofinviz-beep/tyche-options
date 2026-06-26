@@ -180,6 +180,22 @@ gcloud run jobs execute tyche-ingest-edgar --region=us-central1 --project=tyche-
 gcloud run jobs execute tyche-publish-signals --region=us-central1 --project=tyche-platform --wait
 ```
 
+**Options morning slice** (sequential — conviction → universe → chain prep → scanner → publish):
+
+```bash
+gcloud workflows run tyche-options-morning-slice \
+  --location=us-central1 --project=tyche-platform
+```
+
+Deploy the workflow first: `./infra/gcp/deploy_workflow.sh`. Poll progress in Cloud Console → Workflows, or:
+
+```bash
+gcloud workflows executions list tyche-options-morning-slice \
+  --location=us-central1 --project=tyche-platform --limit=1
+```
+
+Expect ~30–90 minutes end-to-end depending on conviction batch size. Run after evening ingest completes and `deploy_jobs.sh --build` picks up the latest job image.
+
 ## Apple Silicon Macs
 
 Cloud Run is **linux/amd64**. If you `docker build` without `--platform linux/amd64`,

@@ -269,6 +269,8 @@ async def run_options_scanner_batch(
         duration_ms=csp_dur,
     )
 
+    result.symbols_scanned = len(tickers)
+
     scanned_at = datetime.now(timezone.utc).isoformat()
     scan_meta = {
         "scan_id": scan_id,
@@ -317,7 +319,6 @@ async def run_options_scanner_batch(
         logger.error("options_scanner_report_failed", exc_info=True)
         result.errors.append("scanner_report_export_failed")
 
-    result.symbols_scanned = len(tickers)
     result.duration_ms = (time.perf_counter() - t0) * 1000
     logger.info("options_scanner_batch_complete", **result.to_dict())
     return result

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+from tyche.broker.tradier.symbols import normalize_option_type
 from tyche.broker.base import (
     AccountBalance,
     BrokerOrder,
@@ -150,7 +151,9 @@ def build_artifact_chain_broker(
                 option_symbol=str(
                     row.get("option_symbol") or row.get("option_ticker") or ""
                 ),
-                option_type=str(row.get("option_type") or "put").lower(),
+                option_type=normalize_option_type(
+                    str(row.get("option_type") or "put")
+                ),
                 strike=float(row.get("strike") or 0.0),
                 expiration=exp_date,
                 bid=bid,

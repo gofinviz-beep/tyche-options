@@ -6,7 +6,11 @@ from datetime import date
 
 import pytest
 
-from tyche.broker.tradier.symbols import build_occ_symbol, parse_occ_symbol
+from tyche.broker.tradier.symbols import (
+    build_occ_symbol,
+    normalize_option_type,
+    parse_occ_symbol,
+)
 
 
 @pytest.mark.parametrize(
@@ -62,3 +66,18 @@ def test_roundtrip() -> None:
         parsed["strike"],  # type: ignore[arg-type]
     )
     assert original == rebuilt
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("P", "put"),
+        ("p", "put"),
+        ("put", "put"),
+        ("C", "call"),
+        ("c", "call"),
+        ("call", "call"),
+    ],
+)
+def test_normalize_option_type(raw: str, expected: str) -> None:
+    assert normalize_option_type(raw) == expected
