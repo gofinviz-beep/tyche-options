@@ -43,8 +43,11 @@ def _promote_local(temp: Path, final: Path) -> None:
 def _promote_gcs(temp_uri: str, final_uri: str) -> None:
     fs = get_gcs_filesystem()
     fs.cp(temp_uri, final_uri)
-    if fs.exists(temp_uri):
+    try:
         fs.rm(temp_uri)
+    except FileNotFoundError:
+        # Temp may already be removed by a concurrent writer or gcsfs copy semantics.
+        pass
 
 
 def read_parquet(
@@ -162,8 +165,10 @@ def _cleanup_temp(temp: str | Path) -> None:
     try:
         if is_gcs_path(temp_str):
             fs = get_gcs_filesystem()
-            if fs.exists(temp_str):
+            try:
                 fs.rm(temp_str)
+            except FileNotFoundError:
+                pass
         else:
             p = Path(temp_str)
             if p.exists():

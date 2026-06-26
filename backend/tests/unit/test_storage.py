@@ -145,6 +145,27 @@ class TestParquetIo:
         src, dst = fs.cp.call_args[0]
         assert ".tmp." in src
         assert dst == "gs://tyche-data-prod/curated/signals/alpha.parquet"
+        fs.rm.assert_called_once()
+
+    def test_gcs_promote_ignores_missing_temp_on_cleanup(
+        self, gcs_ctx: StorageContext
+    ) -> None:
+        fs = MagicMock()
+        fs.rm.side_effect = FileNotFoundError(
+            ["gs://tyche-data-prod/curated/signals/alpha.parquet.tmp.abc"]
+        )
+        with (
+            patch("tyche.storage.parquet_io.get_gcs_filesystem", return_value=fs),
+            patch.object(pd.DataFrame, "to_parquet"),
+        ):
+            write_parquet(
+                pd.DataFrame({"x": [1]}),
+                "signals/alpha.parquet",
+                ctx=gcs_ctx,
+            )
+
+        fs.cp.assert_called_once()
+        fs.rm.assert_called_once()
 
     def test_gcs_exists_mocked(self, gcs_ctx: StorageContext) -> None:
         fs = MagicMock()
