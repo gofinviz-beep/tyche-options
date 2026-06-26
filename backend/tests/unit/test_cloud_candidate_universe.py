@@ -12,6 +12,7 @@ from tyche.config import TycheSettings
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.polygon import DailyBar, TickerInfo
 from tyche.market_data.universe_candidates_store import (
+    CSP_SCAN_TICKERS_REL,
     OPTIONS_CANDIDATES_REL,
     STOCKS_CANDIDATES_REL,
     load_candidates_parquet,
@@ -200,12 +201,18 @@ def test_run_candidate_universe_batch_exports_ranked_options(
     )
 
     assert result.options_candidates == 2
+    assert result.csp_scan_tickers == 2
     assert result.stocks_candidates == 3
     options, as_of = load_candidates_parquet(rel_path=OPTIONS_CANDIDATES_REL, ctx=ctx)
     assert as_of == "2026-06-24"
     assert [row["ticker"] for row in options] == ["AAA", "BBB"]
     assert options[0]["rank"] == 1
     assert options[0]["priority_score"] >= options[1]["priority_score"]
+
+    csp_scan, _ = load_candidates_parquet(rel_path=CSP_SCAN_TICKERS_REL, ctx=ctx)
+    assert [row["ticker"] for row in csp_scan] == ["AAA", "BBB"]
+    assert all(row.get("csp_eligible") for row in csp_scan)
+    assert "CCC" not in [row["ticker"] for row in csp_scan]
 
     stocks, _ = load_candidates_parquet(rel_path=STOCKS_CANDIDATES_REL, ctx=ctx)
     assert len(stocks) == 3

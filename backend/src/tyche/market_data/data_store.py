@@ -1368,40 +1368,39 @@ class OptionsChainStore:
     Layout: data/options_chains/{TICKER}.parquet
     Each file contains timestamped snapshots of that ticker's options chains,
     deduplicated on (snapshot_date, expiration, strike, option_type).
-
-    Designed for quarterly ingestion to build a historical dataset of real
-    market premiums for backtest validation.  Cloud-ready: the directory
-    can be synced to GCS/S3 as-is.
     """
 
     DEDUP_COLS = ["snapshot_date", "expiration", "strike", "option_type"]
+    _SORT_COLS = ["snapshot_date", "expiration", "strike", "option_type"]
 
     def __init__(
         self,
         data_dir: str = "data",
         ctx: StorageContext | None = None,
     ) -> None:
-        self._ctx = context_for_data_access(data_dir, ctx)
-        local_root = self._ctx.local_root or Path(data_dir)
-        self._data_dir = local_root
-        self._store_dir = local_root / "options_chains"
-        self._store_dir.mkdir(parents=True, exist_ok=True)
-        self._cache = _MetadataCache("options_chains/_meta.json", self._ctx)
+        self._io = StoreBackend.create(
+            "options_chains",
+            data_dir,
+            ctx,
+            ticker_normalize="as_is",
+            upper_stems=False,
+        )
+        self._cache = _MetadataCache(self._io.rel("_meta.json"), self._io.ctx)
 
     @property
     def store_dir(self) -> Path:
-        return self._store_dir
+        return self._io.store_dir
 
     @property
     def exists(self) -> bool:
-        return any(self._store_dir.glob("*.parquet"))
+        return self._io.has_any_parquet()
 
     def rebuild_cache(self) -> dict:
         """Full scan of all Parquet files to rebuild the metadata cache."""
-        return self._cache.rebuild(self._store_dir, dedup_col="snapshot_date")
+        return self._cache.rebuild(self._io, dedup_col="snapshot_date")
 
-    def _ticker_path(self, ticker: str) -> Path:
-        return _ticker_path(self._store_dir, ticker)
+    def _ticker_rel(self, ticker: str) -> str:
+        return self._io.ticker_rel(ticker)
 
     def write_chains(
         self,
@@ -1410,17 +1409,7 @@ class OptionsChainStore:
         contracts: list[dict],
         underlying_price: float,
     ) -> int:
-        """Append an options chain snapshot for a ticker.
-
-        Args:
-            ticker: Underlying symbol.
-            snapshot_date: Date the chain was captured.
-            contracts: List of contract dicts with keys matching OptionContract fields.
-            underlying_price: Underlying price at time of snapshot.
-
-        Returns:
-            Number of new rows added.
-        """
+        """Append an options chain snapshot for a ticker."""
         if not contracts:
             return 0
 
@@ -1453,23 +1442,17 @@ class OptionsChainStore:
         new_df["snapshot_date"] = pd.to_datetime(new_df["snapshot_date"]).dt.date
         new_df["expiration"] = pd.to_datetime(new_df["expiration"]).dt.date
 
-        path = self._ticker_path(ticker)
-        if path.exists():
-            existing_df = pd.read_parquet(path)
-            existing_df["snapshot_date"] = pd.to_datetime(existing_df["snapshot_date"]).dt.date
-            existing_df["expiration"] = pd.to_datetime(existing_df["expiration"]).dt.date
-            combined = pd.concat([existing_df, new_df], ignore_index=True)
-            combined = combined.drop_duplicates(subset=self.DEDUP_COLS, keep="last")
-            rows_added = len(combined) - len(existing_df)
-        else:
-            combined = new_df.drop_duplicates(subset=self.DEDUP_COLS, keep="last")
-            rows_added = len(combined)
-
-        combined = combined.sort_values(
-            ["snapshot_date", "expiration", "strike", "option_type"]
-        ).reset_index(drop=True)
-        table = pa.Table.from_pandas(combined, schema=OPTIONS_CHAIN_SCHEMA)
-        pq.write_table(table, path, compression="snappy")
+        rel = self._ticker_rel(ticker)
+        existing = self._io.read_df(rel)
+        prev = len(existing) if existing is not None and not existing.empty else 0
+        combined_len = self._io.merge_write(
+            rel,
+            new_df,
+            OPTIONS_CHAIN_SCHEMA,
+            self.DEDUP_COLS,
+            sort_cols=self._SORT_COLS,
+        )
+        rows_added = combined_len - prev
 
         logger.debug(
             "options_chain_write",
@@ -1486,21 +1469,12 @@ class OptionsChainStore:
         snapshot_date: date | None = None,
         option_type: str | None = None,
     ) -> pd.DataFrame:
-        """Read options chain data for a ticker.
+        """Read options chain data for a ticker."""
+        empty = pd.DataFrame(columns=[f.name for f in OPTIONS_CHAIN_SCHEMA])
+        df = self._io.read_df(self._ticker_rel(ticker))
+        if df is None or df.empty:
+            return empty
 
-        Args:
-            ticker: Underlying symbol.
-            snapshot_date: Filter to specific snapshot date.
-            option_type: Filter to 'put' or 'call'.
-
-        Returns:
-            DataFrame with OPTIONS_CHAIN_SCHEMA columns.
-        """
-        path = self._ticker_path(ticker)
-        if not path.exists():
-            return pd.DataFrame(columns=[f.name for f in OPTIONS_CHAIN_SCHEMA])
-
-        df = pd.read_parquet(path)
         df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
         df["expiration"] = pd.to_datetime(df["expiration"]).dt.date
 
@@ -1517,15 +1491,12 @@ class OptionsChainStore:
         self, ticker: str, target_date: date
     ) -> date | None:
         """Find the closest snapshot date to target_date for a ticker."""
-        path = self._ticker_path(ticker)
-        if not path.exists():
+        df = self._io.read_df(self._ticker_rel(ticker), columns=["snapshot_date"])
+        if df is None or df.empty:
             return None
 
         try:
-            table = pq.read_table(path, columns=["snapshot_date"])
-            dates = pd.to_datetime(
-                pd.Series(table.column("snapshot_date").to_pylist())
-            ).dt.date.unique()
+            dates = pd.to_datetime(df["snapshot_date"]).dt.date.unique()
         except Exception:
             return None
 
@@ -1533,8 +1504,7 @@ class OptionsChainStore:
             return None
 
         sorted_dates = sorted(dates)
-        best = min(sorted_dates, key=lambda d: abs((d - target_date).days))
-        return best
+        return min(sorted_dates, key=lambda d: abs((d - target_date).days))
 
     def get_put_premium(
         self,
@@ -1596,34 +1566,27 @@ class OptionsChainStore:
 
     def list_tickers(self) -> list[str]:
         """Return sorted list of tickers with options chain data."""
-        return sorted(p.stem for p in self._store_dir.glob("*.parquet"))
+        return sorted(self._io.list_ticker_stems())
 
     def list_snapshot_dates(self, ticker: str | None = None) -> list[date]:
-        """Return sorted list of unique snapshot dates.
-
-        If ticker is specified, only dates for that ticker.
-        Otherwise, union of all dates across all tickers.
-        """
+        """Return sorted list of unique snapshot dates."""
         if ticker:
-            path = self._ticker_path(ticker)
-            if not path.exists():
+            df = self._io.read_df(self._ticker_rel(ticker), columns=["snapshot_date"])
+            if df is None or df.empty:
                 return []
             try:
-                table = pq.read_table(path, columns=["snapshot_date"])
-                dates = pd.to_datetime(
-                    pd.Series(table.column("snapshot_date").to_pylist())
-                ).dt.date.unique()
+                dates = pd.to_datetime(df["snapshot_date"]).dt.date.unique()
                 return sorted(dates)
             except Exception:
                 return []
 
         all_dates: set[date] = set()
-        for path in self._store_dir.glob("*.parquet"):
+        for rel in self._io.iter_parquet_rels():
             try:
-                table = pq.read_table(path, columns=["snapshot_date"])
-                dates = pd.to_datetime(
-                    pd.Series(table.column("snapshot_date").to_pylist())
-                ).dt.date.unique()
+                df = storage_read_parquet(rel, columns=["snapshot_date"], ctx=self._io.ctx)
+                if df.empty:
+                    continue
+                dates = pd.to_datetime(df["snapshot_date"]).dt.date.unique()
                 all_dates.update(dates)
             except Exception:
                 continue
@@ -1631,7 +1594,7 @@ class OptionsChainStore:
 
     def get_ticker_count(self) -> int:
         """Return count of tickers with options chain data."""
-        return len(list(self._store_dir.glob("*.parquet")))
+        return len(self._io.list_ticker_stems())
 
     def get_stats(self) -> dict:
         """Return aggregate stats about the options chain store."""
@@ -1643,15 +1606,14 @@ class OptionsChainStore:
         ticker_count = 0
         all_dates: set[date] = set()
 
-        for path in self._store_dir.glob("*.parquet"):
+        for rel in self._io.iter_parquet_rels():
             try:
-                meta = pq.read_metadata(path)
-                total_rows += meta.num_rows
+                total_rows += parquet_num_rows(rel, ctx=self._io.ctx)
                 ticker_count += 1
-                table = pq.read_table(path, columns=["snapshot_date"])
-                dates = pd.to_datetime(
-                    pd.Series(table.column("snapshot_date").to_pylist())
-                ).dt.date.unique()
+                df = storage_read_parquet(rel, columns=["snapshot_date"], ctx=self._io.ctx)
+                if df.empty:
+                    continue
+                dates = pd.to_datetime(df["snapshot_date"]).dt.date.unique()
                 all_dates.update(dates)
             except Exception:
                 continue

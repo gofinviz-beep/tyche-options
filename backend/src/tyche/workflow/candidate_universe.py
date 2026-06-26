@@ -15,6 +15,7 @@ from tyche.market_data.alpha_store import AlphaSignalStore
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
 from tyche.market_data.stocks_conviction_store import STOCKS_CONVICTION_REL
 from tyche.market_data.universe_candidates_store import (
+    CSP_SCAN_TICKERS_REL,
     OPTIONS_CANDIDATES_REL,
     STOCKS_CANDIDATES_REL,
     write_candidates_parquet,
@@ -35,6 +36,7 @@ _PULLBACK_TRENDS = frozenset({"pullback_to_8ema", "pullback_to_21ema"})
 class CandidateUniverseBatchResult:
     as_of_date: date
     options_candidates: int = 0
+    csp_scan_tickers: int = 0
     stocks_candidates: int = 0
     meta_filtered: int = 0
     liquidity_filtered: int = 0
@@ -45,12 +47,17 @@ class CandidateUniverseBatchResult:
         return {
             "as_of_date": self.as_of_date.isoformat(),
             "options_candidates": self.options_candidates,
+            "csp_scan_tickers": self.csp_scan_tickers,
             "stocks_candidates": self.stocks_candidates,
             "meta_filtered": self.meta_filtered,
             "liquidity_filtered": self.liquidity_filtered,
             "duration_ms": round(self.duration_ms, 2),
             "errors": self.errors,
-            "output_paths": [OPTIONS_CANDIDATES_REL, STOCKS_CANDIDATES_REL],
+            "output_paths": [
+                OPTIONS_CANDIDATES_REL,
+                CSP_SCAN_TICKERS_REL,
+                STOCKS_CANDIDATES_REL,
+            ],
         }
 
 
@@ -178,6 +185,15 @@ def _build_candidate_row(
     return row
 
 
+def _is_csp_eligible(conviction: dict[str, Any] | None) -> bool:
+    if not conviction:
+        return False
+    value = conviction.get("csp_eligible")
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return False
+    return bool(value)
+
+
 def _filter_optionable(
     tickers: list[str],
     meta_store: TickerMetaStore,
@@ -278,6 +294,28 @@ def run_candidate_universe_batch(
             )
         )
 
+    csp_scored = [
+        (ticker, score, last_close, avg_vol)
+        for ticker, score, last_close, avg_vol in scored
+        if _is_csp_eligible(conviction_by_ticker.get(ticker))
+    ]
+    csp_scored.sort(key=lambda item: (item[1], caps.get(item[0], 0) or 0), reverse=True)
+    csp_rows: list[dict[str, Any]] = []
+    for rank, (ticker, score, last_close, avg_vol) in enumerate(csp_scored, start=1):
+        csp_rows.append(
+            _build_candidate_row(
+                ticker,
+                market_cap=caps.get(ticker),
+                last_close=last_close,
+                avg_volume_20d=avg_vol,
+                conviction=conviction_by_ticker.get(ticker),
+                alpha=alpha_by_ticker.get(ticker),
+                priority_score=score,
+                rank=rank,
+                universe="csp_scan",
+            )
+        )
+
     stocks_caps = meta_store.get_market_caps(list(stocks_ohlcv.keys())) if meta_store.exists else {}
     stocks_ranked = sorted(
         stocks_ohlcv.keys(),
@@ -314,6 +352,18 @@ def run_candidate_universe_batch(
     except Exception:
         logger.error("candidate_universe_options_export_failed", exc_info=True)
         result.errors.append("options_candidates_export_failed")
+
+    try:
+        result.csp_scan_tickers = write_candidates_parquet(
+            csp_rows,
+            rel_path=CSP_SCAN_TICKERS_REL,
+            ctx=ctx,
+            as_of_date=as_of,
+            run_id=run_id,
+        )
+    except Exception:
+        logger.error("candidate_universe_csp_scan_export_failed", exc_info=True)
+        result.errors.append("csp_scan_tickers_export_failed")
 
     try:
         result.stocks_candidates = write_candidates_parquet(

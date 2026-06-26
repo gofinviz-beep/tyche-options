@@ -485,72 +485,63 @@ Important:
 - use metadata/index filtering first.
 - if universe-wide history summary truly requires all tickers, do it once in GCP job, never in route handler.
 
-### 6.3 `tyche-options-snapshot-batch`
+### 6.3 `tyche-options-chain-prep-batch` (Slice 4)
 
 Purpose:
-- fetch option chain snapshots once in GCP for selected candidate universe.
-- avoid calling Tradier from every page request.
+- materialize **prior-session** option chains from Massive flatfiles for the candidate universe only;
+- avoid Tradier before market open (useless at 2:30 AM PT);
+- avoid calling vendor APIs from page requests.
 
 Inputs:
 
 ```text
-ticker_meta.parquet
-alpha_signals*.parquet
-signals/stocks/conviction.parquet optional
+signals/universe/options_candidates.parquet   (top 500 — flatfile I/O cap)
+signals/universe/csp_scan_tickers.parquet       (csp_eligible only — scanner/Tradier)
+options_history/{TICKER}.parquet   (from ingest-options-flatfiles)
 ```
 
 Outputs:
 
 ```text
-options_chains/{as_of}/{ticker}.json or parquet
-signals/options/options_chain_snapshot.parquet optional
-reports/options_snapshot/manifest.json
+signals/options/options_chain_contracts.parquet
+signals/options/options_chain_snapshot.parquet
+reports/options_chain_prep/manifest.json
 ```
 
-Universe selection:
-- use optionable/liquid tickers only;
-- use metadata and alpha/conviction filters before vendor API calls;
-- max tickers configurable.
-
-Config:
+Optional post-open live refresh (NOT in morning pipeline):
 
 ```text
-TYCHE_OPTIONS_SNAPSHOT_MAX_TICKERS=500
-TYCHE_OPTIONS_SNAPSHOT_MIN_MARKET_CAP=...
-TYCHE_OPTIONS_SNAPSHOT_MIN_AVG_VOLUME=...
+tyche-options-snapshot-batch  →  options_chains/{TICKER}.parquet  (Tradier, source=tradier)
 ```
 
 ### 6.4 `tyche-options-scanner-batch`
 
 Purpose:
-- cloud replacement for local scanner.
-- compute scanner, options conviction, covered calls, monitor, explore.
+- cloud replacement for local CSP scanner (morning path);
+- scan only **`csp_eligible`** tickers from prebuilt conviction, not the full 500-candidate pool;
+- no Tradier before market open.
 
 Inputs:
 
 ```text
-signals/options/options_chain_snapshot.parquet or options_chains/{as_of}/
+signals/universe/csp_scan_tickers.parquet
 signals/stocks/conviction.parquet
-alpha_signals*.parquet
+signals/options/options_chain_contracts.parquet
 ticker_meta.parquet
-limited OHLCV feature summaries, not raw scan in route
 ```
 
 Outputs:
 
 ```text
 signals/options/scanner.parquet
-signals/options/conviction.parquet
-signals/options/explore.parquet
-signals/options/monitor.parquet
-signals/options/covered_calls.parquet
+reports/options_scanner/manifest.json
+published/routes/options_scanner.json   (via publish-signals)
 ```
 
 Implementation:
-- reuse existing `run_morning_scan()` logic where practical;
-- refactor it so compute can run as batch and return/write DataFrames;
-- remove route dependency on local scanner compute;
-- do not call `read_all()` across 13K tickers from API requests.
+- `ArtifactChainBroker` serves flatfile contract rows to `StrategyEngine.scan_csp_candidates()`;
+- `min_oi=0` when `source=flatfile`; close price as bid/mid proxy;
+- optional post-open Tradier refresh remains a separate job over `csp_scan_tickers`.
 
 ---
 
@@ -758,7 +749,7 @@ Then:
   tyche-stocks-conviction-batch
   tyche-stocks-derived-batch
   tyche-candidate-universe-batch
-  tyche-options-snapshot-batch
+  tyche-options-chain-prep-batch    # flatfile chains for candidates — NOT Tradier
   tyche-options-scanner-batch
 
 Optional:
@@ -890,24 +881,26 @@ Patch routes.
 
 ```text
 Build candidate_universe.py.
-Write signals/universe/options_candidates.parquet.
+Write signals/universe/options_candidates.parquet (top 500).
+Write signals/universe/csp_scan_tickers.parquet (csp_eligible only).
 Use metadata/alpha/conviction filters before OHLCV/vendor reads.
 ```
 
-### Slice 4 - Options chain snapshot
+### Slice 4 - Options chain prep (flatfiles)
 
 ```text
-Build tyche-options-snapshot-batch.
-Fetch Tradier chains once per candidate ticker in GCP.
-Persist snapshot artifact + manifest.
+Build tyche-options-chain-prep-batch.
+Materialize prior-session chains from options_history/ for options_candidates.
+Persist options_chain_contracts.parquet + manifest.
+Tradier snapshot is optional post-open only.
 ```
 
 ### Slice 5 - Options scanner batch
 
 ```text
-Refactor run_morning_scan into batch workflow.
-Write scanner, conviction, explore, monitor, covered_calls Parquet.
-Publish all options route JSONs.
+Build tyche-options-scanner-batch over csp_scan_tickers + flatfile chains.
+Write signals/options/scanner.parquet + manifest.
+Publish options_scanner route JSON.
 ```
 
 ### Slice 6 - API cloud-mode enforcement
@@ -940,8 +933,9 @@ This spec is done when:
 [x] published/routes/stocks_deep_dips.json produced in GCP.
 [x] signals/stocks/history_summary.parquet produced in GCP.
 [x] published/routes/stocks_history.json produced in GCP.
-[ ] signals/universe/options_candidates.parquet produced in GCP.
-[ ] options chain snapshots are fetched in GCP, not per page request.
+[x] signals/universe/options_candidates.parquet produced in GCP.
+[x] signals/universe/csp_scan_tickers.parquet produced in GCP.
+[x] options chain prep from flatfiles runs in GCP morning pipeline (not Tradier at 2:30 AM).
 [ ] signals/options/scanner.parquet produced in GCP.
 [ ] published/routes/options_scanner.json produced in GCP.
 [ ] signals/options/conviction.parquet produced in GCP.

@@ -911,6 +911,51 @@ def publish_intelligence_insider(
     )
 
 
+def publish_options_scanner(
+    *,
+    config: PublishConfig,
+    run_id: str,
+    settings: TycheSettings,
+) -> RoutePublishResult:
+    from tyche.market_data.options_scanner_store import (
+        OPTIONS_SCANNER_REL,
+        build_scan_payload,
+        load_scanner_parquet,
+        load_scanner_report,
+    )
+
+    ctx = config.ctx or storage_context_from_settings(settings)
+    source_rel = first_existing_path(_OPTIONS_SCANNER_CANDIDATES, ctx=ctx)
+    sources = [source_rel] if source_rel else []
+    report = load_scanner_report(ctx=ctx)
+    candidate_rows, as_of = load_scanner_parquet(ctx=ctx)
+    status: RouteStatus = "ok" if candidate_rows or report else "unavailable"
+    row_count = len(candidate_rows)
+    data = build_scan_payload(report=report, candidate_rows=candidate_rows)
+    if status == "unavailable":
+        data = _unavailable_data("No scanner results available")
+    envelope = _build_route_envelope(
+        route_key="options_scanner",
+        run_id=run_id,
+        as_of=as_of or (report or {}).get("as_of_date"),
+        row_count=row_count,
+        source_paths=sources,
+        status=status,
+        data=data,
+    )
+    rel = _write_route_artifact("options_scanner", envelope, ctx=ctx)
+    return RoutePublishResult(
+        route_key="options_scanner",
+        route=ROUTE_PATHS["options_scanner"],
+        rel_path=rel,
+        as_of=as_of or (report or {}).get("as_of_date"),
+        row_count=row_count,
+        source_paths=sources,
+        status=status,
+        generated_at=envelope["generated_at"],
+    )
+
+
 def publish_placeholder_route(
     *,
     route_key: str,
@@ -1165,12 +1210,8 @@ def run_publish_signals(config: PublishConfig | None = None) -> PublishResult:
             )
         )
 
-        scanner = publish_placeholder_route(
-            route_key="options_scanner",
-            config=cfg,
-            run_id=run_id,
-            candidates=_OPTIONS_SCANNER_CANDIDATES,
-            message="Scanner results not yet exported to signals/options/",
+        scanner = publish_options_scanner(
+            config=cfg, run_id=run_id, settings=settings
         )
         routes.append(scanner)
         for key in (

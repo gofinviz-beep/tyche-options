@@ -343,6 +343,7 @@ class TycheSettings(BaseModel):
     options_snapshot_concurrency: int = 10
     options_snapshot_rpm: int = 120
     options_snapshot_min_market_cap: float = 4e9
+    options_snapshot_max_tickers: int = 500
 
     # --- Candidate universe (cloud metadata-first filtering) ---
     options_candidate_max_tickers: int = 500

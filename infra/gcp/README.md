@@ -36,7 +36,9 @@ Cloud Scheduler (America/Los_Angeles)
 | Optional | `tyche-run-demand-gate` | `ml/alpha_dataset.parquet`, `ml/alpha_results/`, optional `ml/models/big_move_sustained_*` (~4–8h) |
 | Sequential | `tyche-stocks-conviction-batch` | `signals/stocks/conviction.parquet` |
 | Sequential | `tyche-stocks-derived-batch` | `signals/stocks/deep_dips.parquet`, `signals/stocks/history_summary.parquet` |
-| Sequential | `tyche-candidate-universe-batch` | `signals/universe/options_candidates.parquet`, `signals/universe/stocks_candidates.parquet` |
+| Sequential | `tyche-candidate-universe-batch` | `signals/universe/options_candidates.parquet`, `signals/universe/csp_scan_tickers.parquet`, `signals/universe/stocks_candidates.parquet` |
+| Sequential | `tyche-options-chain-prep-batch` | `signals/options/options_chain_contracts.parquet` (from flatfiles) |
+| Sequential | `tyche-options-scanner-batch` | `signals/options/scanner.parquet` (CSP scan over `csp_scan_tickers`) |
 | Sequential | `tyche-publish-signals` | `published/routes/*.json` |
 | Sequential | `tyche-audit-snapshots` | estimate snapshot audits |
 
@@ -61,6 +63,7 @@ jobs are slower on GCS than local NVMe — see spec §21 for planned multi-task 
 | `tyche-stocks-conviction-batch` | 4 | 8 GiB | 8h |
 | `tyche-stocks-derived-batch` | 4 | 8 GiB | 8h |
 | `tyche-candidate-universe-batch` | 2 | 4 GiB | 8h |
+| `tyche-options-snapshot-batch` | 2 | 4 GiB | 8h |
 | `tyche-run-demand-gate` | **8** | **32 GiB** | 8h |
 | publish / audit / nightly | 1–4 | 2–8 GiB | 8h |
 
@@ -287,6 +290,7 @@ jsonPayload.event="gcp_job_start"
 | `stocks-conviction-batch` | `execute` → `signals/stocks/conviction.parquet` |
 | `stocks-derived-batch` | deep dips + `history_summary` export |
 | `candidate-universe-batch` | metadata-first options/stocks candidate universes |
+| `options-snapshot-batch` | Tradier chain fetch for candidate tickers |
 | `publish-signals` | `stocks_alpha`, `stocks_conviction`, `stocks_deep_dips`, `stocks_history`, `intelligence`, … |
 | `ingest-news` / `ingest-edgar` | `pipeline` + intelligence checkpoint progress |
 

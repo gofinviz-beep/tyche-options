@@ -17,6 +17,7 @@ description: >-
 | `docs/tyche_cloud_computed_signals_completion_spec_v1.md` | Cloud-computed UI signals (slices 1–7); stocks done, options pending |
 | `docs/alpha/stocks_cloud_signals_slice12_note.md` | Slice 1–2 GCP verification + rollout fixes |
 | `docs/alpha/candidate_universe_slice3_note.md` | Slice 3 metadata-first candidate universe |
+| `docs/alpha/options_chain_prep_slice4_note.md` | Slice 4 flatfile chain prep (morning) + Tradier optional |
 | `infra/gcp/README.md` | Deploy runbook (jobs, workflows, scheduler, secrets) |
 | `docs/data-operations.md` | GCP cloud mode schedule vs local APScheduler |
 
@@ -30,7 +31,8 @@ Cloud Scheduler (America/Los_Angeles)
   Tue–Sat 2:30 AM → tyche-morning-pipeline
             parallel: flatfiles + alpha-batch
             optional: run-demand-gate (~4–8h; failure OK)
-            sequential: stocks-conviction-batch → stocks-derived-batch → candidate-universe-batch
+            sequential: … → candidate-universe-batch → options-chain-prep-batch
+            (NOT Tradier snapshot — that is post-open optional)
             sequential: publish-signals → audit-snapshots
     → Cloud Run Jobs (tyche-jobs SA)
     → gs://tyche-data-prod/ (flat paths = backend/data/ layout)
@@ -61,6 +63,27 @@ signals/universe/stocks_candidates.parquet   ← tyche-candidate-universe-batch
 Metadata-first: `ticker_meta.parquet` → cap/liquidity filters → join alpha + conviction → top N.
 No publish route yet (inspectable Parquet only; consumed by Slice 4 options snapshot).
 
+### Options chain prep (Slice 4 — morning)
+
+```text
+options_history/{TICKER}.parquet           ← ingest-options-flatfiles (prior session)
+signals/universe/options_candidates.parquet
+        ↓ tyche-options-chain-prep-batch
+signals/options/options_chain_contracts.parquet
+signals/options/options_chain_snapshot.parquet
+reports/options_chain_prep/manifest.json
+```
+
+Flatfile-sourced, candidate-scoped only. **Not Tradier.**
+
+### Optional live Tradier refresh (post-open, manual)
+
+```text
+tyche-options-snapshot-batch  →  options_chains/{TICKER}.parquet  (source=tradier)
+```
+
+Not in morning workflow. Run after market open when live bid/ask/OI matter.
+
 ### Publish prerequisites
 
 | Required before publish | Optional |
@@ -69,14 +92,15 @@ No publish route yet (inspectable Parquet only; consumed by Slice 4 options snap
 | `tyche-stocks-conviction-batch` | `tyche-ingest-options-flatfiles` (IV/options only) |
 | `tyche-stocks-derived-batch` | |
 | `tyche-candidate-universe-batch` | Slice 4 options snapshot input |
+| `tyche-options-snapshot-batch` | Tradier chains for candidates |
 | Evening ingest (OHLCV, demand, intelligence inputs) | |
 
-## Jobs (13)
+## Jobs (14)
 
 `ingest-data`, `ingest-options-flatfiles`, `ingest-demand-data`, `ingest-news`,
 `ingest-edgar`, `alpha-batch`, `stocks-conviction-batch`, `stocks-derived-batch`,
-`candidate-universe-batch`, `run-demand-gate`, `publish-signals`, `audit-snapshots`,
-`nightly-pipeline` (fallback).
+`candidate-universe-batch`, `options-snapshot-batch`, `run-demand-gate`, `publish-signals`,
+`audit-snapshots`, `nightly-pipeline` (fallback).
 
 Entry: `backend/scripts/run_gcp_job.py` → `tyche/ops/gcp_jobs.py`.
 

@@ -34,6 +34,9 @@ JOB_NAMES = (
     "stocks-conviction-batch",
     "stocks-derived-batch",
     "candidate-universe-batch",
+    "options-chain-prep-batch",
+    "options-scanner-batch",
+    "options-snapshot-batch",
     "run-demand-gate",
     "publish-signals",
     "audit-snapshots",
@@ -569,6 +572,7 @@ async def run_candidate_universe_batch_job(
 
     from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
     from tyche.market_data.universe_candidates_store import (
+        CSP_SCAN_TICKERS_REL,
         OPTIONS_CANDIDATES_REL,
         STOCKS_CANDIDATES_REL,
     )
@@ -592,11 +596,16 @@ async def run_candidate_universe_batch_job(
         "execute",
         status="complete",
         options=result.options_candidates,
+        csp_scan=result.csp_scan_tickers,
         stocks=result.stocks_candidates,
     )
 
     manifest.extra = summary
-    manifest.output_paths = [OPTIONS_CANDIDATES_REL, STOCKS_CANDIDATES_REL]
+    manifest.output_paths = [
+        OPTIONS_CANDIDATES_REL,
+        CSP_SCAN_TICKERS_REL,
+        STOCKS_CANDIDATES_REL,
+    ]
     if result.errors:
         manifest.warnings.extend(result.errors)
     if result.options_candidates == 0:
@@ -607,6 +616,196 @@ async def run_candidate_universe_batch_job(
     rel = manifest.write(ctx=ctx)
     status = "success" if manifest.status == "success" else "failed"
     return JobResult("candidate-universe-batch", rid, status, rel, summary)
+
+
+def run_options_chain_prep_batch_job(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+    run_id: str | None = None,
+) -> JobResult:
+    """Build scanner chains from prior-day Massive flatfiles for candidates."""
+    from tyche.market_data.options_chain_snapshot_store import (
+        OPTIONS_CHAIN_CONTRACTS_REL,
+        OPTIONS_CHAIN_PREP_REPORT_REL,
+        OPTIONS_CHAIN_SNAPSHOT_SUMMARY_REL,
+    )
+    from tyche.market_data.universe_candidates_store import OPTIONS_CANDIDATES_REL
+    from tyche.ops.job_progress import log_job_phase
+    from tyche.workflow.options_chain_prep import run_options_chain_prep_batch
+
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+    rid = run_id or new_run_id()
+    manifest = RunManifest.start(
+        job_name="options_chain_prep_batch",
+        run_id=rid,
+        data_backend=ctx.backend,
+    )
+    manifest.input_paths = [
+        OPTIONS_CANDIDATES_REL,
+        "options_history/",
+    ]
+
+    log_job_phase("options-chain-prep-batch", "execute", status="start")
+    result = run_options_chain_prep_batch(
+        settings=settings,
+        ctx=ctx,
+        run_id=rid,
+    )
+    summary = result.to_dict()
+    log_job_phase(
+        "options-chain-prep-batch",
+        "execute",
+        status="complete",
+        with_contracts=result.tickers_with_contracts,
+        requested=result.tickers_requested,
+    )
+
+    manifest.extra = summary
+    manifest.output_paths = [
+        OPTIONS_CHAIN_SNAPSHOT_SUMMARY_REL,
+        OPTIONS_CHAIN_CONTRACTS_REL,
+        OPTIONS_CHAIN_PREP_REPORT_REL,
+    ]
+    if result.errors:
+        manifest.warnings.extend(result.errors)
+    if result.tickers_with_contracts == 0:
+        manifest.finish(status="failed")
+    else:
+        manifest.finish(status="success")
+
+    rel = manifest.write(ctx=ctx)
+    status = "success" if manifest.status == "success" else "failed"
+    return JobResult("options-chain-prep-batch", rid, status, rel, summary)
+
+
+async def run_options_scanner_batch_job(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+    run_id: str | None = None,
+) -> JobResult:
+    """Run CSP scanner over csp_scan_tickers using flatfile chain artifacts."""
+    from tyche.market_data.data_store import TickerMetaStore
+    from tyche.market_data.options_scanner_store import (
+        OPTIONS_SCANNER_REL,
+        OPTIONS_SCANNER_REPORT_REL,
+    )
+    from tyche.market_data.universe_candidates_store import CSP_SCAN_TICKERS_REL
+    from tyche.ops.job_progress import log_job_phase
+    from tyche.workflow.options_scanner_batch import run_options_scanner_batch
+
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+    rid = run_id or new_run_id()
+    manifest = RunManifest.start(
+        job_name="options_scanner_batch",
+        run_id=rid,
+        data_backend=ctx.backend,
+    )
+    manifest.input_paths = [
+        CSP_SCAN_TICKERS_REL,
+        "signals/stocks/conviction.parquet",
+        "signals/options/options_chain_contracts.parquet",
+        "ticker_meta.parquet",
+    ]
+
+    meta = TickerMetaStore(data_dir=settings.data_dir, ctx=ctx)
+    log_job_phase("options-scanner-batch", "execute", status="start")
+    result = await run_options_scanner_batch(
+        settings=settings,
+        ctx=ctx,
+        meta_store=meta,
+        run_id=rid,
+    )
+    summary = result.to_dict()
+    log_job_phase(
+        "options-scanner-batch",
+        "execute",
+        status="complete",
+        scanned=result.symbols_scanned,
+        candidates=result.csp_candidates,
+    )
+
+    manifest.extra = summary
+    manifest.output_paths = [OPTIONS_SCANNER_REL, OPTIONS_SCANNER_REPORT_REL]
+    if result.errors:
+        manifest.warnings.extend(result.errors)
+    if result.csp_candidates == 0 and result.symbols_scanned == 0:
+        manifest.finish(status="failed")
+    else:
+        manifest.finish(status="success")
+
+    rel = manifest.write(ctx=ctx)
+    status = "success" if manifest.status == "success" else "failed"
+    return JobResult("options-scanner-batch", rid, status, rel, summary)
+
+
+async def run_options_snapshot_batch_job(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+    run_id: str | None = None,
+) -> JobResult:
+    """Optional live Tradier refresh — run post-open, not in morning pipeline."""
+    from tyche.market_data.options_chain_snapshot_store import (
+        OPTIONS_CHAIN_SNAPSHOT_SUMMARY_REL,
+        OPTIONS_TRADIER_SNAPSHOT_REPORT_REL,
+    )
+    from tyche.market_data.universe_candidates_store import CSP_SCAN_TICKERS_REL
+    from tyche.ops.job_progress import log_job_phase
+    from tyche.workflow.options_snapshot_batch import run_options_snapshot_batch
+
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+    rid = run_id or new_run_id()
+    manifest = RunManifest.start(
+        job_name="options_snapshot_batch",
+        run_id=rid,
+        data_backend=ctx.backend,
+    )
+    manifest.input_paths = [
+        CSP_SCAN_TICKERS_REL,
+    ]
+
+    if not settings.tradier_api_token:
+        manifest.errors.append("missing_tradier_api_token")
+        manifest.finish(status="failed")
+        rel = manifest.write(ctx=ctx)
+        return JobResult("options-snapshot-batch", rid, "failed", rel, {})
+
+    log_job_phase("options-snapshot-batch", "execute", status="start")
+    result = await run_options_snapshot_batch(
+        settings=settings,
+        ctx=ctx,
+        run_id=rid,
+    )
+    summary = result.to_dict()
+    log_job_phase(
+        "options-snapshot-batch",
+        "execute",
+        status="complete",
+        succeeded=result.tickers_succeeded,
+        requested=result.tickers_requested,
+    )
+
+    manifest.extra = summary
+    manifest.output_paths = [
+        "options_chains/",
+        OPTIONS_CHAIN_SNAPSHOT_SUMMARY_REL,
+        OPTIONS_TRADIER_SNAPSHOT_REPORT_REL,
+    ]
+    if result.errors:
+        manifest.warnings.extend(result.errors)
+    if result.tickers_succeeded == 0:
+        manifest.finish(status="failed")
+    else:
+        manifest.finish(status="success")
+
+    rel = manifest.write(ctx=ctx)
+    status = "success" if manifest.status == "success" else "failed"
+    return JobResult("options-snapshot-batch", rid, status, rel, summary)
 
 
 async def run_ingest_news(
@@ -952,6 +1151,9 @@ _JOB_RUNNERS: dict[str, Callable[..., Any]] = {
     "stocks-conviction-batch": run_stocks_conviction_batch_job,
     "stocks-derived-batch": run_stocks_derived_batch_job,
     "candidate-universe-batch": run_candidate_universe_batch_job,
+    "options-chain-prep-batch": run_options_chain_prep_batch_job,
+    "options-scanner-batch": run_options_scanner_batch_job,
+    "options-snapshot-batch": run_options_snapshot_batch_job,
     "run-demand-gate": run_demand_gate_job,
     "publish-signals": run_publish_signals_job,
     "audit-snapshots": run_audit_snapshots_job,

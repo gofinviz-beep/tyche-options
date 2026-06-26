@@ -15,6 +15,7 @@ logger = structlog.get_logger()
 
 OPTIONS_CANDIDATES_REL = "signals/universe/options_candidates.parquet"
 STOCKS_CANDIDATES_REL = "signals/universe/stocks_candidates.parquet"
+CSP_SCAN_TICKERS_REL = "signals/universe/csp_scan_tickers.parquet"
 
 
 def write_candidates_parquet(
@@ -81,3 +82,18 @@ def load_candidates_parquet(
     if row_limit is not None:
         records = records[:row_limit]
     return records, as_of
+
+
+def load_csp_scan_tickers(
+    *,
+    ctx: StorageContext,
+    row_limit: int | None = None,
+) -> tuple[list[str], str | None]:
+    """Load ranked CSP-eligible tickers from ``csp_scan_tickers.parquet``."""
+    records, as_of = load_candidates_parquet(
+        rel_path=CSP_SCAN_TICKERS_REL,
+        ctx=ctx,
+        row_limit=row_limit,
+    )
+    tickers = [str(row["ticker"]) for row in records if row.get("ticker")]
+    return tickers, as_of

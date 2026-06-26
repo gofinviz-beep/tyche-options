@@ -73,6 +73,22 @@ main:
           job_id: "tyche-candidate-universe-batch"
           optional: false
 
+    - run_options_chain_prep:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: "tyche-options-chain-prep-batch"
+          optional: false
+
+    - run_options_scanner:
+        call: run_cloud_run_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: "tyche-options-scanner-batch"
+          optional: false
+
     - run_publish:
         call: run_cloud_run_job
         args:

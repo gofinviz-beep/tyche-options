@@ -23,6 +23,7 @@ from tyche.market_data.data_store import OptionsChainStore
 
 if TYPE_CHECKING:
     from tyche.config import TycheSettings
+    from tyche.storage.paths import StorageContext
 
 logger = structlog.get_logger()
 
@@ -38,6 +39,9 @@ class SnapshotStats:
     rows_added: int = 0
     api_calls: int = 0
     elapsed_seconds: float = 0.0
+    ticker_status: dict[str, str] = field(default_factory=dict)
+    ticker_contracts: dict[str, int] = field(default_factory=dict)
+    ticker_rows_added: dict[str, int] = field(default_factory=dict)
 
     def print_summary(self) -> None:
         print("\n" + "=" * 60)
@@ -98,6 +102,7 @@ async def _fetch_ticker_chains(
             if not expirations:
                 logger.debug("no_expirations", ticker=ticker)
                 stats.tickers_skipped += 1
+                stats.ticker_status[ticker] = "skipped"
                 return False
 
             valid_exps: list[str] = []
@@ -115,6 +120,7 @@ async def _fetch_ticker_chains(
             if not valid_exps:
                 logger.debug("no_valid_expirations", ticker=ticker, total=len(expirations))
                 stats.tickers_skipped += 1
+                stats.ticker_status[ticker] = "skipped"
                 return False
 
             all_contracts: list[dict] = []
@@ -161,6 +167,7 @@ async def _fetch_ticker_chains(
             if not all_contracts:
                 logger.debug("no_contracts", ticker=ticker)
                 stats.tickers_skipped += 1
+                stats.ticker_status[ticker] = "skipped"
                 return False
 
             rows_added = store.write_chains(
@@ -170,6 +177,9 @@ async def _fetch_ticker_chains(
             stats.contracts_stored += len(all_contracts)
             stats.rows_added += rows_added
             stats.tickers_succeeded += 1
+            stats.ticker_status[ticker] = "ok"
+            stats.ticker_contracts[ticker] = len(all_contracts)
+            stats.ticker_rows_added[ticker] = rows_added
 
             logger.info(
                 "ticker_ingested",
@@ -182,6 +192,7 @@ async def _fetch_ticker_chains(
 
         except Exception as e:
             stats.tickers_failed += 1
+            stats.ticker_status[ticker] = "failed"
             logger.error("ticker_failed", ticker=ticker, error=str(e))
             return False
 
@@ -196,6 +207,7 @@ async def run_options_snapshot(
     puts_only: bool = True,
     concurrency: int | None = None,
     rpm: int | None = None,
+    ctx: StorageContext | None = None,
 ) -> SnapshotStats:
     """Run the options chain snapshot for the given tickers.
 
@@ -234,7 +246,7 @@ async def run_options_snapshot(
         cache_ttl=0,
     )
 
-    store = OptionsChainStore(data_dir=settings.data_dir)
+    store = OptionsChainStore(data_dir=settings.data_dir, ctx=ctx)
     rate_limiter = _RateLimiter(rate)
     semaphore = asyncio.Semaphore(conc)
 

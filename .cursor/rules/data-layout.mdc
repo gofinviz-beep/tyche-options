@@ -39,6 +39,7 @@ With `TYCHE_DATA_BACKEND=gcs`, the same relative paths resolve under `gs://{buck
 | Cloud deep dips | `signals/stocks/deep_dips.parquet` | GCS batch output (`tyche-stocks-derived-batch`) → `published/routes/stocks_deep_dips.json` |
 | Cloud stocks history | `signals/stocks/history_summary.parquet` | Per-ticker OHLCV summaries → `published/routes/stocks_history.json` |
 | Cloud candidate universe | `signals/universe/options_candidates.parquet`, `signals/universe/stocks_candidates.parquet` | Metadata-first ranked universes (`tyche-candidate-universe-batch`) |
+| Cloud options chain prep | `signals/options/options_chain_contracts.parquet`, `signals/options/options_chain_snapshot.parquet` | Prior-session flatfile chains for candidates (`tyche-options-chain-prep-batch`) |
 | ETF constituents | `backend/data/etf_constituents.parquet` | Single file |
 | Correlations | `backend/data/correlations.parquet` | Pairwise top-N peers |
 | Betas | `backend/data/betas.parquet` | Per-ticker SPY/QQQ betas |
