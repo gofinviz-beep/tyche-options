@@ -911,6 +911,53 @@ def publish_intelligence_insider(
     )
 
 
+def publish_options_conviction(
+    *,
+    config: PublishConfig,
+    run_id: str,
+    settings: TycheSettings,
+) -> RoutePublishResult:
+    """Publish options conviction scan JSON from cloud stocks conviction Parquet."""
+    from tyche.persistence.conviction_scan_builder import build_conviction_scan_response
+    from tyche.persistence.published_routes import get_stocks_conviction_rows
+
+    ctx = config.ctx or storage_context_from_settings(settings)
+    loaded = get_stocks_conviction_rows(settings=settings, ctx=ctx)
+    rows, _layer = loaded if loaded else ([], "signals")
+    source_rel = first_existing_path(_STOCKS_CONVICTION_CANDIDATES, ctx=ctx)
+    sources = [source_rel] if source_rel and rows else []
+    status: RouteStatus = "ok" if rows else "unavailable"
+    as_of = rows[0].as_of_date if rows else None
+    data = (
+        build_conviction_scan_response(
+            rows,
+            limit_per_path=config.conviction_row_limit,
+        ).model_dump(mode="json")
+        if rows
+        else _unavailable_data("No options conviction snapshots available")
+    )
+    envelope = _build_route_envelope(
+        route_key="options_conviction",
+        run_id=run_id,
+        as_of=as_of,
+        row_count=len(rows),
+        source_paths=sources,
+        status=status,
+        data=data,
+    )
+    rel = _write_route_artifact("options_conviction", envelope, ctx=ctx)
+    return RoutePublishResult(
+        route_key="options_conviction",
+        route=ROUTE_PATHS["options_conviction"],
+        rel_path=rel,
+        as_of=as_of,
+        row_count=len(rows),
+        source_paths=sources,
+        status=status,
+        generated_at=envelope["generated_at"],
+    )
+
+
 def publish_options_scanner(
     *,
     config: PublishConfig,
@@ -1214,8 +1261,12 @@ def run_publish_signals(config: PublishConfig | None = None) -> PublishResult:
             config=cfg, run_id=run_id, settings=settings
         )
         routes.append(scanner)
+        routes.append(
+            publish_options_conviction(
+                config=cfg, run_id=run_id, settings=settings
+            )
+        )
         for key in (
-            "options_conviction",
             "options_explore",
             "options_monitor",
             "options_covered_calls",

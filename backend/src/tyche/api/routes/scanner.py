@@ -21,6 +21,7 @@ from tyche.api.deps import (
     get_ticker_meta_store,
     get_universe_builder,
 )
+from tyche.api.cloud_mode import require_inline_compute_allowed, use_artifact_read_path
 from tyche.analysis.agent import AnalysisAgent
 from tyche.broker.base import BrokerClient
 from tyche.config import TycheSettings
@@ -80,6 +81,11 @@ async def explore_options(
     filtering (OTM puts with bid > 0, open interest >= 1).  Uses the
     broker TTL cache so repeated calls are near-instant.
     """
+    require_inline_compute_allowed(
+        settings,
+        operation="options explore",
+        job_hint="tyche-options-explore-batch (not yet scheduled)",
+    )
     import time as _time
     from datetime import date as _date
 
@@ -223,6 +229,11 @@ async def trigger_scan(
 
     Pass ``force_refresh=true`` to clear the cache before scanning.
     """
+    require_inline_compute_allowed(
+        settings,
+        operation="morning scanner",
+        job_hint="tyche-options-scanner-batch",
+    )
     if target_expiration is not None:
         from datetime import date as _date
         try:
@@ -329,8 +340,20 @@ async def trigger_scan(
 
 
 @router.get("/latest")
-async def get_latest_scan() -> dict[str, Any] | None:
-    """Retrieve the most recent scan results from the database."""
+async def get_latest_scan(
+    settings: TycheSettings = Depends(get_settings),
+) -> dict[str, Any] | None:
+    """Retrieve the most recent scan results from published JSON or local DB."""
+    if use_artifact_read_path(settings):
+        from tyche.persistence.published_routes import get_options_scanner_payload
+
+        loaded = get_options_scanner_payload(settings=settings)
+        if loaded is not None:
+            payload, _layer = loaded
+            return payload
+        if not settings.api_allow_local_db_fallback:
+            return None
+
     try:
         return await load_latest()
     except RuntimeError:

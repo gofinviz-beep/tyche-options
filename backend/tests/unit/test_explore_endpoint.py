@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from tyche.api import deps
 from tyche.app import create_app
 from tyche.broker.mock import MockBroker
+from tyche.config import TycheSettings
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +25,13 @@ def client() -> TestClient:
     app = create_app()
     app.dependency_overrides[deps.get_broker] = lambda: MockBroker()
     app.dependency_overrides[deps.get_analysis_agent] = lambda: None
+    app.dependency_overrides[deps.get_settings] = lambda: TycheSettings(
+        tradier_api_token="t",
+        tradier_account_id="a",
+        gemini_api_key="g",
+        data_backend="local",
+        allow_inline_scan=True,
+    )
     return TestClient(app)
 
 

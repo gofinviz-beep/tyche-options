@@ -514,3 +514,106 @@ def get_intelligence_filing_rows(
             if rows:
                 return sanitize_json_records(rows), "published"
     return None
+
+
+def get_options_scanner_payload(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+) -> tuple[dict[str, Any], RouteLayer] | None:
+    """Return scanner page payload from published JSON or signal Parquet."""
+    from tyche.market_data.options_scanner_store import (
+        OPTIONS_SCANNER_REL,
+        build_scan_payload,
+        load_scanner_parquet,
+        load_scanner_report,
+    )
+
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+
+    if _prefer_published(settings):
+        env = _usable_published(
+            load_published_route("options_scanner", settings=settings, ctx=ctx),
+            settings=settings,
+        )
+        if env is not None and isinstance(env.data, dict):
+            if env.status == "ok" and (
+                env.data.get("csp_candidates") or env.data.get("pipeline_stages")
+            ):
+                logger.debug(
+                    "options_scanner_source",
+                    layer="published",
+                    route=env.rel_path,
+                )
+                return env.data, "published"
+
+    report = load_scanner_report(ctx=ctx)
+    candidate_rows, _as_of = load_scanner_parquet(ctx=ctx)
+    if candidate_rows or report:
+        payload = build_scan_payload(report=report, candidate_rows=candidate_rows)
+        logger.debug(
+            "options_scanner_source",
+            layer="signals",
+            rel=OPTIONS_SCANNER_REL,
+        )
+        return payload, "signals"
+    return None
+
+
+def get_options_conviction_scan(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+    limit_per_path: int = 100,
+    watchlist_set: frozenset[str] | None = None,
+    specific_tickers: frozenset[str] | None = None,
+):
+    """Return options conviction scan from published JSON or stocks conviction Parquet."""
+    from tyche.persistence.conviction_scan_builder import build_conviction_scan_response
+    from tyche.schemas.conviction import ConvictionScanResponse
+
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+    watchlist = watchlist_set or frozenset()
+
+    if _prefer_published(settings):
+        env = _usable_published(
+            load_published_route("options_conviction", settings=settings, ctx=ctx),
+            settings=settings,
+        )
+        if env is not None and isinstance(env.data, dict):
+            if env.status == "ok" and env.data.get("signals") is not None:
+                try:
+                    scan = ConvictionScanResponse.model_validate(env.data)
+                    if specific_tickers:
+                        filtered = [
+                            s for s in scan.signals if s.ticker in specific_tickers
+                        ]
+                        scan = scan.model_copy(update={"signals": filtered})
+                    logger.debug(
+                        "options_conviction_source",
+                        layer="published",
+                        route=env.rel_path,
+                    )
+                    return scan, "published"
+                except Exception as exc:
+                    logger.warning(
+                        "published_options_conviction_parse_failed",
+                        error=str(exc),
+                    )
+
+    loaded = get_stocks_conviction_rows(settings=settings, ctx=ctx)
+    if loaded is None:
+        return None
+    rows, layer = loaded
+    if not rows:
+        return None
+    scan = build_conviction_scan_response(
+        rows,
+        limit_per_path=limit_per_path,
+        watchlist_set=watchlist,
+        specific_tickers=specific_tickers,
+    )
+    logger.debug("options_conviction_source", layer=layer, rows=len(rows))
+    return scan, layer

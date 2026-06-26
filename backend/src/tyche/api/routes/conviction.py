@@ -20,6 +20,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from tyche.api.deps import get_conviction_engine, get_data_store, get_polygon, get_settings, get_ticker_meta_store
+from tyche.api.cloud_mode import require_inline_compute_allowed, use_artifact_read_path
 from tyche.config import TycheSettings
 from tyche.conviction.engine import ConvictionEngine, ConvictionSignal
 from tyche.market_data.data_store import OHLCVStore, TickerMetaStore, bootstrap_ohlcv
@@ -166,10 +167,45 @@ async def scan_conviction(
     Passing ``symbols=`` always computes live (per-ticker queries
     don't benefit from the batch cache).
     """
+    if force:
+        require_inline_compute_allowed(
+            settings,
+            operation="live conviction scan",
+            job_hint="tyche-stocks-conviction-batch",
+        )
+
     specific_symbols = bool(symbols)
     watchlist_set = frozenset(
         s.upper() for s in (settings.watchlist_symbols or [])
     )
+    specific_tickers = (
+        frozenset(s.strip().upper() for s in symbols.split(",") if s.strip())
+        if symbols
+        else None
+    )
+
+    if use_artifact_read_path(settings) and not force:
+        from tyche.persistence.published_routes import get_options_conviction_scan
+
+        loaded = get_options_conviction_scan(
+            settings=settings,
+            limit_per_path=limit_per_path,
+            watchlist_set=watchlist_set,
+            specific_tickers=specific_tickers,
+        )
+        if loaded is not None:
+            scan, _layer = loaded
+            if not specific_symbols:
+                _scan_cache["artifact"] = scan
+            return scan
+        if not settings.api_allow_local_db_fallback:
+            return ConvictionScanResponse(
+                scan_id=str(uuid.uuid4()),
+                scanned_at=datetime.now(timezone.utc).isoformat(),
+                total_screened=0,
+                eligible_count=0,
+                signals=[],
+            )
 
     # --- Fast DB path for full-universe scans (no heavy deps needed) ---
     if not force and not specific_symbols:
@@ -188,7 +224,21 @@ async def scan_conviction(
             _scan_cache["db"] = response
             return response
 
+        if use_artifact_read_path(settings) and not settings.api_allow_local_db_fallback:
+            return ConvictionScanResponse(
+                scan_id=str(uuid.uuid4()),
+                scanned_at=datetime.now(timezone.utc).isoformat(),
+                total_screened=0,
+                eligible_count=0,
+                signals=[],
+            )
+
         logger.info("conviction_scan_db_miss_falling_back_to_live")
+        require_inline_compute_allowed(
+            settings,
+            operation="live conviction scan",
+            job_hint="tyche-stocks-conviction-batch",
+        )
 
     # --- Lazily resolve heavy deps only for live compute path ---
     store = get_data_store(settings)
@@ -436,8 +486,27 @@ async def get_ticker_conviction(
     engine: ConvictionEngine = Depends(get_conviction_engine),
     store: OHLCVStore = Depends(get_data_store),
     meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
+    settings: TycheSettings = Depends(get_settings),
 ) -> ConvictionSignalResponse:
     """Get the conviction signal for a single ticker."""
+    if use_artifact_read_path(settings):
+        from tyche.persistence.published_routes import get_options_conviction_scan
+
+        loaded = get_options_conviction_scan(
+            settings=settings,
+            specific_tickers=frozenset({ticker.upper()}),
+            limit_per_path=1,
+        )
+        if loaded is not None:
+            scan, _layer = loaded
+            if scan.signals:
+                return scan.signals[0]
+        if not settings.api_allow_local_db_fallback:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No published conviction signal for {ticker.upper()}",
+            )
+
     if not store.exists:
         raise HTTPException(
             status_code=400,

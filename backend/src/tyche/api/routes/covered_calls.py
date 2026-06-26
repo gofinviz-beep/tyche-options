@@ -6,6 +6,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from tyche.api.deps import get_broker, get_data_store, get_derived_store
+from tyche.api.cloud_mode import require_inline_compute_allowed
 from tyche.broker.base import BrokerClient
 from tyche.config import TycheSettings, get_settings
 from tyche.market_data.data_store import OHLCVStore
@@ -106,6 +107,11 @@ async def analyze_batch(
     for the recommended strike/expiration.  Falls back to historical
     estimates otherwise.
     """
+    require_inline_compute_allowed(
+        settings,
+        operation="covered call analysis",
+        job_hint="tyche-options-covered-calls-batch (not yet scheduled)",
+    )
     engine = _get_engine(settings)
 
     positions = [
@@ -145,6 +151,11 @@ async def analyze_ticker(
     broker: BrokerClient = Depends(get_broker),
 ) -> CCDeepDiveResponse:
     """Analyze a single ticker for CC opportunities."""
+    require_inline_compute_allowed(
+        settings,
+        operation="covered call analysis",
+        job_hint="tyche-options-covered-calls-batch (not yet scheduled)",
+    )
     engine = _get_engine(settings)
 
     logger.info(
