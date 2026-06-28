@@ -29,7 +29,7 @@ This is an infrastructure spec, separate from the Multi-Bagger Discovery Engine 
 
 **Demand manifest fields:** `guidance_tickers_fetched` (Benzinga returned records) vs `guidance_catalysts_written` (raise/cut rows persisted). `guidance` mirrors `guidance_catalysts_written`.
 
-**Demand gate schedule:** `tyche-run-demand-gate` is **morning only** (Tue–Sat 2:30 AM, not evening). Evening runs **Mon–Fri** `tyche-ingest-demand-data`; gate runs after flatfiles+alpha in the morning workflow. Optional — publish proceeds if gate fails. **Memory, reuse, OOM:** see **§10.1**.
+**Demand gate schedule:** `tyche-run-demand-gate` is **morning only** (Tue–Sat 2:30 AM, not evening). Evening runs **Mon–Fri** `tyche-ingest-demand-data`; gate runs after flatfiles+alpha in the morning workflow. **Logical dependency:** gate does not block publish (only promotes sustained ML models). **Workflow bug (2026-06-27):** YAML waits on gate before stocks/options batches — publish ~12:30 PM PT vs **~7 AM PT target**; fix = parallel/async gate (`infra/gcp/README.md` § Morning SLA). **Memory, reuse, OOM:** see **§10.1**.
 
 **Pacific ingest session dates:** `market_data/ingest_dates.py` + per-job `TYCHE_INGEST_WINDOW=evening|morning` in `deploy_jobs.sh`. Evening → Pacific **today**; morning → Pacific **yesterday**. Region-independent (UTC Cloud Run, any GCP region, local laptop).
 
@@ -46,13 +46,13 @@ This is an infrastructure spec, separate from the Multi-Bagger Discovery Engine 
 | `/stocks/alpha/` | ✅ `get_stock_alpha_scan` | ✅ alpha Parquet | recompute API | ✅ `stocks_alpha.json` |
 | `/intelligence/news` | ✅ `get_intelligence_news_rows` | ✅ `signals/intelligence/news.parquet` | `news.db` / rebuild (local) | ✅ |
 | `/intelligence/filings` | ✅ `get_intelligence_filing_rows` | ✅ filings Parquet | local DB (local) | ✅ |
-| `/stocks/conviction` | ✅ `get_stocks_conviction_rows` | — | ✅ local `conviction.db` | ⚠️ empty on cloud (no SQLite in jobs) |
-| `/options/scanner` | ❌ | ❌ | ✅ Tradier morning scan | placeholder JSON only |
-| `/options/conviction` | ❌ | ❌ | ✅ live engine | placeholder |
-| `/stocks/deep-dips` | ❌ | ❌ | ✅ live engine | placeholder |
-| Options monitor / explore / CC | ❌ | ❌ | ✅ live | placeholders |
+| `/stocks/conviction` | ✅ `get_stocks_conviction_rows` | ✅ `signals/stocks/conviction.parquet` | local `conviction.db` (local mode) | ✅ `stocks_conviction.json` |
+| `/options/scanner` | ✅ `get_options_scanner_payload` | ✅ `signals/options/scanner.parquet` | 409 inline scan (GCS mode) | ✅ `options_scanner.json` |
+| `/options/conviction` | ✅ `get_options_conviction_scan` | ✅ stocks conviction Parquet | live engine (local mode) | ✅ `options_conviction.json` |
+| `/stocks/deep-dips` | ✅ published route | ✅ `signals/stocks/deep_dips.parquet` | live engine (local mode) | ✅ `stocks_deep_dips.json` |
+| Options explore / monitor / CC | placeholders | — | 409 or live (local mode) | placeholders (deferred) |
 
-**Implication:** GCS-mode laptop can serve Alpha + Intelligence from published artifacts. Options Conviction, Scanner, and Stocks Conviction (without local `conviction.db` refresh) still need live compute or local DB — not yet full cloud-computed UI.
+**Implication (June 2026):** GCS-mode laptop serves Alpha, Intelligence, Stocks Conviction/Deep Dips/History, and Options Scanner/Conviction from published artifacts. Explore/monitor/CC batch jobs deferred. See `docs/tyche_cloud_computed_signals_completion_spec_v1.md` §14.
 
 ---
 
@@ -638,24 +638,27 @@ Sources available after market close: Polygon grouped daily, Finnhub estimates, 
 | Step | Jobs |
 |------|------|
 | Parallel | `tyche-ingest-options-flatfiles` + `tyche-alpha-batch` |
-| Optional | `tyche-run-demand-gate` (failure does not block publish) |
-| Sequential | `tyche-stocks-conviction-batch` → `tyche-stocks-derived-batch` |
+| *(current YAML)* | `tyche-run-demand-gate` — **blocks** next steps until complete (~4–8h) |
+| Sequential | `tyche-stocks-conviction-batch` → `tyche-stocks-derived-batch` → `tyche-candidate-universe-batch` → `tyche-options-chain-prep-batch` → `tyche-options-scanner-batch` |
 | Sequential | `tyche-publish-signals` → `tyche-audit-snapshots` |
 
-Massive options flatfiles land ~2 AM PT; morning window starts at 2:30 AM.
+Massive options flatfiles land ~2 AM PT; flatfile ingest often completes ~6:30 AM PT. **Target publish ~7 AM PT** — see `infra/gcp/README.md` § Morning SLA.
 
 ### Demand gate vs publish (morning)
 
 | Job | Blocks UI? | Depends on |
 |-----|------------|------------|
 | `tyche-alpha-batch` | **Yes** — Alpha page reads `alpha_signals*.parquet` | OHLCV + demand stores (evening ingest) |
-| `tyche-stocks-conviction-batch` | **Yes** — Stocks Conviction | OHLCV + `ticker_meta`; exports `signals/stocks/conviction.parquet` |
+| `tyche-stocks-conviction-batch` | **Yes** — Stocks + Options Conviction | OHLCV + `ticker_meta`; exports `signals/stocks/conviction.parquet` |
 | `tyche-stocks-derived-batch` | **Yes** — Deep Dips + History | conviction Parquet + OHLCV subset |
-| `tyche-publish-signals` | **Yes** — frontend reads `published/routes/*.json` | Alpha + stocks signal Parquet (+ intelligence) |
-| `tyche-run-demand-gate` | **No** — retrains optional `big_move_sustained_*` XGBoost models | Fresh evening demand data; builds/reuses `ml/alpha_dataset.parquet` |
-| `tyche-ingest-options-flatfiles` | **No** for Alpha/stocks publish — IV/options history only | Massive S3 flat file (~2 AM) |
+| `tyche-candidate-universe-batch` | **Yes** — Options scanner input | meta + alpha + conviction |
+| `tyche-options-chain-prep-batch` | **Yes** — Options scanner chains | flatfiles + candidates |
+| `tyche-options-scanner-batch` | **Yes** — Options Scanner page | chain contracts + `csp_scan_tickers` |
+| `tyche-publish-signals` | **Yes** — frontend reads `published/routes/*.json` | Alpha + stocks + options scanner artifacts (+ intelligence) |
+| `tyche-run-demand-gate` | **No (logical)** — retrains optional `big_move_sustained_*` XGBoost models | Fresh evening demand data; builds/reuses `ml/alpha_dataset.parquet` |
+| `tyche-ingest-options-flatfiles` | **Yes** for options scanner — IV/history for chain prep | Massive S3 flat file (~2 AM PT) |
 
-Gate runs **after** evening `ingest-demand-data` (estimates/fundamentals) and **after** the parallel flatfiles+alpha step in the workflow YAML — so it sees fresh demand Parquet and can run while alpha artifacts already exist. Typical cloud runtime **4–8h** (see **§10.1** for phase timings, memory, reuse, and OOM diagnosis). Manual recovery: alpha done → gate (optional) → publish.
+**Workflow mismatch:** gate is listed as optional for publish but the YAML **waits** on it before stocks/options batches — observed publish ~12:30 PM PT (2026-06-27). Recommended v2: run gate in parallel (evening or fire-and-forget) so UI path starts when flatfiles complete. Typical cloud runtime **4–8h** (see **§10.1**). Manual recovery: flatfiles+alpha done → skip/wait gate → stocks → universe → chain → scanner → publish.
 
 ### Schedule rationale
 

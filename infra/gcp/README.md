@@ -44,6 +44,38 @@ Cloud Scheduler (America/Los_Angeles)
 
 **Not in evening:** demand gate, flatfiles, alpha, publish. Evening `ingest-demand-data` ingests estimates; gate runs the next morning (optional).
 
+### Morning SLA (target vs current)
+
+**Product target:** prior-session computed signals in `published/routes/*.json` **ready by ~7 AM PT**
+so the laptop/Cloud Run app can load scanner, conviction, stocks, and alpha without inline scans.
+
+| Milestone | Target (PT) | Typical / observed |
+|-----------|-------------|----------------------|
+| Massive options flatfile available | ~2:00 AM | Vendor-dependent |
+| Scheduler fires `tyche-morning-pipeline` | 2:30 AM | ✓ |
+| Flatfile ingest complete | ~6:30 AM | ✓ (often ~4h after start) |
+| **Publish (UI-ready JSON)** | **~7:00 AM** | **~12:30 PM** (2026-06-27) ✗ |
+
+**Why publish is late:** `tyche-run-demand-gate` is wired **sequentially after** flatfiles+alpha
+and **blocks** stocks batches, options chain/scanner, and publish until it finishes (~4–8h;
+~5h observed). The UI path does **not** need gate output — publish uses alpha-batch + stocks
+conviction + options scanner artifacts, not gate-promoted `big_move_sustained_*` models.
+
+**Recommended workflow v2 (TODO — not implemented):**
+
+1. **Decouple gate from UI path** — run `tyche-run-demand-gate` in parallel (evening branch or
+   fire-and-forget second workflow) so conviction → scanner → publish starts when flatfiles
+   complete (~6:30 AM PT).
+2. **Evening stocks batches** — run `tyche-stocks-conviction-batch` + `tyche-stocks-derived-batch`
+   after evening OHLCV ingest (6 PM PT) so morning only waits on flatfiles + options chain.
+3. **`TYCHE_DEMAND_GATE_REUSE_DATASET=true`** — skip ~90 min dataset rebuild when
+   `ml/alpha_dataset.parquet` exists on GCS.
+
+See `docs/alpha/cloud_signals_slice67_completion_note.md` and spec §10.
+
+**Manual options-only slice** (no flatfiles/gate): `tyche-options-morning-slice` — use when
+re-running scanner after conviction/universe/chain artifacts already exist.
+
 Intelligence rollups are computed **in memory from article/filing Parquet** — no SQLite in
 cloud jobs. Every 100 tickers, checkpoints flush to
 `signals/intelligence/_checkpoints/*.partial.parquet` (crash-safe resume).

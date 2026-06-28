@@ -738,33 +738,43 @@ infra/gcp/workflows/morning-pipeline.yaml
 infra/gcp/workflows/evening-pipeline.yaml if needed
 ```
 
-Recommended morning flow:
+Recommended morning flow (UI path — **must finish ~7 AM PT**):
 
 ```text
-Parallel:
-  tyche-ingest-options-flatfiles
+Parallel (2:30 AM PT start):
+  tyche-ingest-options-flatfiles   # Massive file ~2 AM PT; ingest often done ~6:30 AM PT
   tyche-alpha-batch
 
-Then:
+Then (do NOT wait on demand gate for UI):
   tyche-stocks-conviction-batch
   tyche-stocks-derived-batch
   tyche-candidate-universe-batch
-  tyche-options-chain-prep-batch    # flatfile chains for candidates — NOT Tradier
+  tyche-options-chain-prep-batch    # flatfile chains — NOT Tradier snapshot
   tyche-options-scanner-batch
-
-Optional:
-  tyche-run-demand-gate
-
-Then:
   tyche-publish-signals
   tyche-audit-snapshots
 ```
 
-Alternative:
-- run stocks conviction/derived in evening after OHLCV/demand/news ingest;
-- run options snapshot/scanner in morning after options flatfiles and alpha.
+**ML path (does not block UI publish):**
 
-Choose the simpler implementation first, but guarantee `publish_signals` runs after all route artifacts needed for UI.
+```text
+tyche-run-demand-gate   # ~4–8h; promotes big_move_sustained_* models only
+```
+
+**Current implementation (2026-06-27):** gate runs **sequentially after** flatfiles+alpha and
+**blocks** the UI path until complete — observed ~5h delay, publish ~12:30 PM PT instead of
+~7 AM PT target. See `docs/alpha/cloud_signals_slice67_completion_note.md` and
+`infra/gcp/README.md` § Morning SLA.
+
+**Recommended workflow v2 (TODO):** run demand gate in **parallel** (evening ingest branch or
+fire-and-forget second workflow) so publish never waits on walk-forward ML.
+
+Alternative (partial):
+- run stocks conviction/derived in **evening** after OHLCV/demand/news ingest;
+- morning runs flatfiles → options chain/scanner → publish only.
+
+Choose the simpler implementation first, but guarantee `publish_signals` runs after all route
+artifacts needed for **page load** (not after optional ML promotion).
 
 ---
 
@@ -920,6 +930,10 @@ Add jobs to morning/evening workflow before publish.
 Run end-to-end.
 ```
 
+**Completed 2026-06-27:** `tyche-morning-pipeline` SUCCEEDED end-to-end on latest image.
+See `docs/alpha/cloud_signals_slice67_completion_note.md`. **Follow-up:** decouple
+`tyche-run-demand-gate` from UI publish path to hit ~7 AM PT SLA (currently blocks ~5h).
+
 ---
 
 ## 14. Acceptance criteria
@@ -936,34 +950,31 @@ This spec is done when:
 [x] signals/universe/options_candidates.parquet produced in GCP.
 [x] signals/universe/csp_scan_tickers.parquet produced in GCP.
 [x] options chain prep from flatfiles runs in GCP morning pipeline (not Tradier at 2:30 AM).
-[ ] signals/options/scanner.parquet produced in GCP.
-[ ] published/routes/options_scanner.json produced in GCP.
-[ ] signals/options/conviction.parquet produced in GCP.
-[ ] published/routes/options_conviction.json produced in GCP.
-[ ] signals/options/explore.parquet produced in GCP.
-[ ] published/routes/options_explore.json produced in GCP.
-[ ] signals/options/monitor.parquet produced in GCP.
-[ ] published/routes/options_monitor.json produced in GCP.
-[ ] signals/options/covered_calls.parquet produced in GCP.
-[ ] published/routes/options_covered_calls.json produced in GCP.
-[ ] Local backend in GCS mode loads all listed pages from published/signals only.
-[ ] No normal page request scans 13K OHLCV Parquet files.
-[ ] No normal page request scans full options history/IV directories.
-[ ] No normal page request calls Tradier for the whole universe.
-[ ] No normal cloud-mode route depends on local SQLite.
-[ ] publish_signals no longer emits placeholders for completed routes.
-[ ] Morning/evening workflow produces all route artifacts before publish.
+[x] signals/options/scanner.parquet produced in GCP.
+[x] published/routes/options_scanner.json produced in GCP.
+[~] signals/options/conviction.parquet — deferred; options conviction uses signals/stocks/conviction.parquet.
+[x] published/routes/options_conviction.json produced in GCP.
+[ ] signals/options/explore.parquet produced in GCP. (deferred)
+[ ] published/routes/options_explore.json produced in GCP. (placeholder)
+[ ] signals/options/monitor.parquet produced in GCP. (deferred)
+[ ] published/routes/options_monitor.json produced in GCP. (placeholder)
+[ ] signals/options/covered_calls.parquet produced in GCP. (deferred)
+[ ] published/routes/options_covered_calls.json produced in GCP. (placeholder)
+[x] Local backend in GCS mode loads scanner + conviction from published/signals only.
+[x] No normal page request scans 13K OHLCV Parquet files (GCS mode scanner/conviction routes).
+[x] No normal page request scans full options history/IV directories (GCS mode scanner path).
+[x] No normal page request calls Tradier for the whole universe (409 on inline scan).
+[x] No normal cloud-mode route depends on local SQLite (conviction/scanner read paths).
+[~] publish_signals no longer emits placeholders for completed routes (explore/monitor/CC still placeholders).
+[x] Morning/evening workflow produces UI route artifacts before publish (verified 2026-06-27).
 ```
 
-Definition of done:
+**Slice completion notes:** 1–2 → `docs/alpha/stocks_cloud_signals_slice12_note.md`; 3–5 →
+`docs/alpha/candidate_universe_slice3_note.md`, `options_chain_prep_slice4_note.md`,
+`options_scanner_slice5_note.md`; 6–7 → `docs/alpha/cloud_signals_slice67_completion_note.md`.
 
-```text
-All visible Tyche app pages are cloud-computed and artifact-served.
-The app can run locally or on Cloud Run and page-load behavior is the same:
-read compact precomputed JSON/Parquet only.
-```
-
-**Slice 1–2 completion (2026-06-25):** verified in `tyche-data-prod`. See `docs/alpha/stocks_cloud_signals_slice12_note.md`.
+**Not done (pre-app-deploy follow-ons):** explore/monitor/CC batch jobs; ~7 AM PT publish SLA
+(demand gate currently blocks UI path — see §10); Cloud Run app deploy.
 
 ---
 

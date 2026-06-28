@@ -1,6 +1,7 @@
 # Options Scanner Batch — Slice 5
 
-**Status:** Implemented (pending GCP verification after deploy)
+**Status:** Verified in `tyche-data-prod` (2026-06-27). Morning pipeline E2E green.
+See `docs/alpha/cloud_signals_slice67_completion_note.md`.
 
 ## Contract
 

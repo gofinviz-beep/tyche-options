@@ -9,11 +9,15 @@ When `TYCHE_DATA_BACKEND=gcs`, **batch ingest runs in Cloud Run Jobs** — not o
 | Window (PT) | Days | Workflow | Jobs (parallel unless noted) |
 |-------------|------|----------|------------------------------|
 | **6:00 PM** | **Mon–Fri** | `tyche-evening-pipeline` | ingest-data, ingest-demand-data, ingest-news, ingest-edgar |
-| **2:30 AM** | **Tue–Sat** | `tyche-morning-pipeline` | options-flatfiles + alpha-batch → demand-gate (optional) → **stocks-conviction-batch** → **stocks-derived-batch** → publish-signals → audit |
+| **2:30 AM** | **Tue–Sat** | `tyche-morning-pipeline` | options-flatfiles + alpha-batch → *(currently blocks on)* demand-gate → stocks-conviction → stocks-derived → candidate-universe → chain-prep → scanner → publish-signals → audit |
 
-**Evening does not include demand gate or stocks compute** — only `ingest-data`, `ingest-demand-data`, `ingest-news`, `ingest-edgar`. Gate and stocks batches are morning-only. **Publish requires** alpha-batch + stocks signal Parquet (conviction, deep dips, history).
+**Evening does not include demand gate or stocks compute** — only `ingest-data`, `ingest-demand-data`, `ingest-news`, `ingest-edgar`. Gate and stocks batches are morning-only.
 
-**Manual recovery order:** stocks-conviction-batch → stocks-derived-batch → publish-signals (after alpha-batch). Optional: `tyche-run-demand-gate` (~4–8h). Flatfiles can finish in parallel; not a publish prerequisite.
+**Publish requires** alpha-batch + stocks signal Parquet + options scanner (for options routes). **Does not require** demand-gate output.
+
+**Morning SLA (target):** `published/routes/*.json` ready **~7 AM PT** (flatfiles often complete ~6:30 AM PT). **Current:** demand-gate blocks the UI path ~4–8h — publish often ~12:30 PM PT (see `infra/gcp/README.md` § Morning SLA). **TODO:** decouple gate from publish path.
+
+**Manual recovery order:** stocks-conviction-batch → stocks-derived-batch → candidate-universe → chain-prep → scanner → publish-signals (after alpha-batch). Gate is optional and should not block publish. Flatfiles can finish in parallel with alpha; options chain/scanner need flatfiles.
 
 - **Deploy:** `infra/gcp/README.md`
 - **Spec:** `docs/tyche_gcp_minimal_migration_spec_v2.md`

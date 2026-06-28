@@ -14,10 +14,12 @@ description: >-
 | Doc / path | Role |
 |------------|------|
 | `docs/tyche_gcp_minimal_migration_spec_v2.md` | **Authoritative** GCP spec — §10 job resources, **§10.1 demand gate memory/reuse/OOM**, §11 schedules, §20 acceptance |
-| `docs/tyche_cloud_computed_signals_completion_spec_v1.md` | Cloud-computed UI signals (slices 1–7); stocks done, options pending |
+| `docs/tyche_cloud_computed_signals_completion_spec_v1.md` | Cloud-computed UI signals (slices 1–7); stocks + options scanner/conviction done |
 | `docs/alpha/stocks_cloud_signals_slice12_note.md` | Slice 1–2 GCP verification + rollout fixes |
 | `docs/alpha/candidate_universe_slice3_note.md` | Slice 3 metadata-first candidate universe |
 | `docs/alpha/options_chain_prep_slice4_note.md` | Slice 4 flatfile chain prep (morning) + Tradier optional |
+| `docs/alpha/options_scanner_slice5_note.md` | Slice 5 options scanner batch (verified 2026-06-27) |
+| `docs/alpha/cloud_signals_slice67_completion_note.md` | Slices 6–7 API enforcement + E2E; **7 AM PT SLA vs gate blocking** |
 | `infra/gcp/README.md` | Deploy runbook (jobs, workflows, scheduler, secrets) |
 | `docs/data-operations.md` | GCP cloud mode schedule vs local APScheduler |
 
@@ -30,10 +32,11 @@ Cloud Scheduler (America/Los_Angeles)
             (NOT: flatfiles, alpha, stocks batches, demand-gate, publish)
   Tue–Sat 2:30 AM → tyche-morning-pipeline
             parallel: flatfiles + alpha-batch
-            optional: run-demand-gate (~4–8h; failure OK)
-            sequential: … → candidate-universe-batch → options-chain-prep-batch
-            (NOT Tradier snapshot — that is post-open optional)
+            ⚠ CURRENT: run-demand-gate blocks UI path (~4–8h) before stocks/options batches
+            TARGET: gate parallel/async; publish ~7 AM PT after flatfiles (~6:30 AM PT)
+            sequential: stocks batches → candidate-universe → chain-prep → scanner
             sequential: publish-signals → audit-snapshots
+            (NOT Tradier snapshot in morning — post-open optional)
     → Cloud Run Jobs (tyche-jobs SA)
     → gs://tyche-data-prod/ (flat paths = backend/data/ layout)
     → runs/{job}/{run_id}/manifest.json
@@ -134,7 +137,9 @@ Re-run `./infra/gcp/deploy_workflow.sh` after workflow edits.
    Fixed: `_run_subprocess` streams stdout; `ingest_options_flatfiles.py` logs
    `preload_ohlcv` / `download_dates` / `iv_extraction` via `job_progress`.
 8. **Demand gate is morning-only** — evening runs `ingest-demand-data` (estimates),
-   not `run-demand-gate`. Gate is optional before publish; UI needs alpha + stocks batches + publish.
+   not `run-demand-gate`. UI publish needs alpha + stocks batches + options scanner, **not**
+   gate. **Current workflow blocks on gate** (~5h) before publish — target ~7 AM PT publish;
+   see `infra/gcp/README.md` § Morning SLA. Recommended fix: parallel/async gate.
 9. **`ingest_data.py` locally** — pass `storage_context_from_settings()` to stores;
    `IntradayStore` needs `ctx` for `_MetadataCache` (cloud jobs don't use intraday).
 10. **Pacific ingest dates** — `TYCHE_INGEST_WINDOW=evening|morning` on Cloud Run jobs;
