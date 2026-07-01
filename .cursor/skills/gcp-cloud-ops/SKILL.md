@@ -41,6 +41,9 @@ Cloud Scheduler (America/Los_Angeles)
     → gs://tyche-data-prod/ (flat paths = backend/data/ layout)
     → runs/{job}/{run_id}/manifest.json
 Local backend: TYCHE_DATA_BACKEND=gcs → reads published/ + signals/ only
+               Mutation endpoints (conviction/refresh, ohlcv/refresh, bootstrap, update)
+               are guarded: return 409 or clear caches instead of running inline compute.
+               Override: TYCHE_ALLOW_INLINE_SCAN=true (local-dev only).
 Local CLI: same scripts (ingest_data, demand_data, flatfiles, run_demand_gate)
            against local data/ or GCS via ADC
 ```

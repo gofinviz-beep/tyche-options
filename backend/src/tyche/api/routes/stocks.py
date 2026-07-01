@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import structlog
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from tyche.api.deps import (
     get_conviction_engine,
@@ -577,13 +577,36 @@ async def get_transitions_endpoint(
 @router.post("/conviction/refresh", response_model=ConvictionBatchStatusResponse)
 async def refresh_conviction(
     settings: TycheSettings = Depends(get_settings),
-    conviction_engine: ConvictionEngine = Depends(get_conviction_engine),
-    data_store: OHLCVStore = Depends(get_data_store),
-    ticker_meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
 ) -> ConvictionBatchStatusResponse:
-    """Trigger a full conviction batch recompute on demand."""
+    """Trigger a full conviction batch recompute on demand.
+
+    In GCS mode, clears local caches so the next read fetches fresh published
+    artifacts from the bucket (the batch itself runs on Cloud Run).
+    """
+    from tyche.api.cloud_mode import cloud_inline_compute_blocked
     from tyche.api.routes.conviction import invalidate_conviction_cache
+
+    if cloud_inline_compute_blocked(settings):
+        invalidate_conviction_cache(clear_engine=False)
+        return ConvictionBatchStatusResponse(
+            as_of_date=date.today().isoformat(),
+            total_tickers_in_store=0,
+            tickers_after_market_cap_filter=0,
+            tickers_after_price_volume_filter=0,
+            signals_computed=0,
+            snapshots_upserted=0,
+            transitions_detected=0,
+            new_pullback_transitions=0,
+            duration_ms=0,
+            errors=["Cloud mode: caches cleared. Page will reload from latest GCS artifacts."],
+        )
+
+    from tyche.api.deps import get_conviction_engine, get_data_store, get_ticker_meta_store
     from tyche.workflow.conviction_batch import run_conviction_batch
+
+    conviction_engine = get_conviction_engine(settings)
+    data_store = get_data_store(settings)
+    ticker_meta_store = get_ticker_meta_store(settings)
 
     result = await run_conviction_batch(
         data_store=data_store,
@@ -742,18 +765,22 @@ async def remove_csp_expiry(
 
 @router.post("/ohlcv/refresh")
 async def refresh_ohlcv(
-    data_store: OHLCVStore = Depends(get_data_store),
     include_today: bool = Query(True, description="Include today's bars (use after market close)"),
 ) -> dict:
     """On-demand OHLCV data refresh from Polygon."""
-    from tyche.api.deps import get_polygon
-    from tyche.market_data.data_store import bootstrap_ohlcv
+    from tyche.api.cloud_mode import require_inline_compute_allowed
 
     settings = get_settings()
+    require_inline_compute_allowed(
+        settings, operation="OHLCV refresh", job_hint="tyche-ingest-data"
+    )
+
+    from tyche.api.deps import get_data_store, get_polygon
+    from tyche.market_data.data_store import bootstrap_ohlcv
+
+    data_store = get_data_store(settings)
     polygon = get_polygon(settings)
     if polygon is None:
-        from fastapi import HTTPException
-
         raise HTTPException(
             status_code=503,
             detail="Polygon API key not configured",

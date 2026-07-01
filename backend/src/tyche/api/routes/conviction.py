@@ -105,8 +105,12 @@ async def bootstrap_data(
     req: BootstrapRequest,
     polygon: PolygonClient | None = Depends(get_polygon),
     store: OHLCVStore = Depends(get_data_store),
+    settings: TycheSettings = Depends(get_settings),
 ) -> BootstrapResponse:
     """Bootstrap the OHLCV data store with historical grouped daily bars."""
+    require_inline_compute_allowed(
+        settings, operation="OHLCV bootstrap", job_hint="tyche-ingest-data"
+    )
     if polygon is None:
         raise HTTPException(
             status_code=400,
@@ -126,8 +130,12 @@ async def bootstrap_data(
 async def update_daily_data(
     polygon: PolygonClient | None = Depends(get_polygon),
     store: OHLCVStore = Depends(get_data_store),
+    settings: TycheSettings = Depends(get_settings),
 ) -> dict[str, Any]:
     """Fetch today's grouped daily bars and append to the store."""
+    require_inline_compute_allowed(
+        settings, operation="daily OHLCV update", job_hint="tyche-ingest-data"
+    )
     if polygon is None:
         raise HTTPException(
             status_code=400,
