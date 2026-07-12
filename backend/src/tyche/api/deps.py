@@ -76,6 +76,7 @@ _short_interest_store: Any | None = None
 _catalyst_store: Any | None = None
 _policy_calendar: Any | None = None
 _supply_chain_graph: Any | None = None
+_deep_dive_store: Any | None = None
 
 
 def get_broker(settings: TycheSettings = Depends(get_settings)) -> BrokerClient:
@@ -658,6 +659,19 @@ def get_insider_tx_store(
     return _insider_tx_store
 
 
+def get_deep_dive_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> Any:
+    """Provide the per-ticker precomputed Stock Deep Dive Parquet store."""
+    global _deep_dive_store
+    if _deep_dive_store is None:
+        from tyche.market_data.deep_dive_store import DeepDiveStore
+
+        _deep_dive_store = DeepDiveStore(data_dir=settings.data_dir)
+        logger.info("deep_dive_store_initialized")
+    return _deep_dive_store
+
+
 def reset_all() -> None:
     """Reset all singleton instances and flush stale caches.
 
@@ -676,9 +690,13 @@ def reset_all() -> None:
     global _edgar_client, _filing_8k_store, _insider_tx_store
     global _csp_predictor, _breakout_predictor, _alpha_engine
     global _catalyst_store, _policy_calendar, _supply_chain_graph
+    global _deep_dive_store
 
     from tyche.api.routes.conviction import invalidate_conviction_cache
     invalidate_conviction_cache(clear_engine=True)
+
+    from tyche.api.routes.deep_dive import invalidate_deep_dive_cache
+    invalidate_deep_dive_cache()
 
     _breakout_predictor = None
     _alpha_engine = None
@@ -715,3 +733,4 @@ def reset_all() -> None:
     _catalyst_store = None
     _policy_calendar = None
     _supply_chain_graph = None
+    _deep_dive_store = None

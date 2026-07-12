@@ -1,0 +1,144 @@
+# Task: Precompute & persist Stock Deep Dive per ticker for instant loads (v2)
+
+You are working in **tyche-options** (Python 3.12 + FastAPI backend; run from `backend/`). The Stock Deep Dive endpoint `GET /api/v1/stocks/deep-dive/{ticker}` currently recomputes everything on every request (`backend/src/tyche/api/routes/deep_dive.py` → `TickerDeepDiveEngine.analyze()`), which is ~200 ms locally and ~2 s in GCS cloud mode. Add a per-ticker nightly precompute + read-through cache so page loads are instant, with on-demand fallback for cache misses.
+
+**The response schema and endpoint contract are UNCHANGED** (the frontend is unaffected).
+
+> **Hard requirement:** persist ONE Parquet file PER TICKER. Never write a single monolithic universe file — it will not scale.
+
+---
+
+## Prerequisite — Prompt 1 review follow-ups (frontend, quick)
+
+Prompt 1 (the recharts rebuild of `frontend/src/pages/stocks/DeepDive.tsx`) was reviewed and is functionally complete: `npm run build` passes, all chart wrappers exist under `frontend/src/components/charts/`, the percent double-count bug is fixed with `formatPercentScale`, data-driven callouts render, and empty/null data degrades gracefully. Do these small cleanups first, then proceed to the backend work below.
+
+1. **Make `npm run lint` pass.** The repo has `eslint` + `typescript-eslint` in `frontend/package.json` and a `"lint": "eslint ."` script, but there is **no `eslint.config.js`** checked in, so lint currently errors out ("ESLint couldn't find an eslint.config.(js|mjs|cjs) file"). Add a minimal ESLint 9 flat config (`frontend/eslint.config.js`) wiring `@eslint/js`, `typescript-eslint`, `eslint-plugin-react-hooks`, and `eslint-plugin-react-refresh` (all already in `devDependencies`), ignoring `dist/`. Then run `cd frontend && npm run lint` and fix any errors it surfaces in the deep-dive files you touched. This closes the one unchecked Prompt 1 acceptance box.
+2. **Finish the percent-scale spot-check.** Prompt 1 only verified `AAPL` live (`gross_margin: 46.88` → renders `46.9%`). Spot-check `RKLB` and `MSFT` against the running backend (`GET /api/v1/stocks/deep-dive/RKLB` / `MSFT`) and confirm `gross_margin`, `operating_margin`, `net_margin`, `rev_growth_*`, `gross_margin_ttm`, `op_margin_ttm` all land in a plausible 0–100% range (no `2781%`). No code change expected — just confirm the fix generalizes.
+3. **(Optional polish) Per-series tooltip formatting on the dual-axis Quarterly RSI chart.** `LineChartCard` applies one `valuePrefix`/`valueSuffix` to every series, so on the Quarterly RSI-vs-Price chart the right-axis "Close ($)" value shows in the tooltip without a `$`. If quick, allow an optional per-`Series` value formatter (e.g. `Series.valuePrefix?`/`valueSuffix?`) and thread it through `ChartTooltip`; otherwise leave as-is (it is cosmetic and not blocking).
+
+Everything below is the main task.
+
+---
+
+## Mirror the proven deep-dips pipeline
+
+Read these first to copy the idiom exactly:
+
+- `backend/src/tyche/workflow/stocks_derived_batch.py`
+- `backend/src/tyche/market_data/stocks_deep_dips_store.py`
+- `backend/src/tyche/ops/gcp_jobs.py` (`run_stocks_derived_batch_job`, ~lines 486–541, and the `JOB_RUNNERS` registry)
+- `backend/src/tyche/api/routes/deep_dive.py` (current on-demand route + `_result_to_response`)
+- `backend/src/tyche/analysis/ticker_deep_dive.py`, `backend/src/tyche/schemas/deep_dive.py`
+- `backend/src/tyche/api/cloud_mode.py` (`cloud_inline_compute_blocked`, `require_inline_compute_allowed`)
+- `.cursor/rules/data-layout.mdc`, `.cursor/rules/concurrency-patterns.mdc`
+- `docs/stock-deep-dive.md` (§v2)
+
+---
+
+## 1. Store — `backend/src/tyche/market_data/deep_dive_store.py`
+
+`DEEP_DIVE_REL = "signals/stocks/deep_dive"` — a per-ticker Parquet directory (one file per ticker: `signals/stocks/deep_dive/{TICKER}.parquet`).
+
+`DeepDiveStore`:
+
+- `write_batch(payloads: dict[str, TickerDeepDiveResponse], ctx=None) -> int` — one Parquet per ticker, single row, columns: `ticker`, `as_of_date`, `computed_at` (UTC ISO), `payload_json` (str = `response.model_dump_json()`). Storing the serialized payload avoids fragile nested-array Parquet schemas and is schema-evolution safe.
+- `read_ticker(ticker, ctx=None) -> tuple[TickerDeepDiveResponse, str] | None` — returns `(payload, as_of_date)` via `TickerDeepDiveResponse.model_validate_json(...)`, or `None` if missing.
+- `write_ticker(ticker, payload, ctx=None)` — single-ticker write (used by route write-back).
+
+Use `StoreBackend` / `context_for_data_access()` so it works local + GCS (copy `stocks_deep_dips_store.py`).
+
+---
+
+## 2. Shared serialization
+
+Refactor the existing dataclass→Pydantic mapper `_result_to_response` out of `routes/deep_dive.py` into a shared importable helper (e.g. a `to_response()` function in `schemas/deep_dive.py` or `analysis/ticker_deep_dive.py`) so the route and the batch use ONE serialization path. Update the route to import it.
+
+> **Payload parity with the v1 frontend (do not drop fields).** The recharts page now renders **every** section of the payload: `price_history`, `volume_bars`, `fundamentals` (Revenue/Cash/Net Income/Gross Margin charts + the numeric table), `estimates` (incl. `pt_high`/`pt_mean` for callouts and the percent-scale `gross_margin_ttm`/`op_margin_ttm`/`rev_growth_*` fields), and `catalysts`. The precomputed payload MUST be byte-for-byte the same shape as the on-demand path — a single shared serializer guarantees this. In particular, keep margin/growth fields **percent-scale** (e.g. `46.88`), because the frontend now formats them with `formatPercentScale` (no `×100`); re-scaling them here would reintroduce the `4688%` bug. This is why there is exactly one serialization path.
+
+---
+
+## 3. Batch workflow — `backend/src/tyche/workflow/deep_dive_batch.py`
+
+```python
+async def run_deep_dive_batch(
+    *,
+    ohlcv_store,
+    meta_store,
+    fundamentals_store,
+    estimates_store,
+    catalyst_store,
+    min_market_cap_millions: float,
+    ctx=None,
+) -> DeepDiveBatchResult:
+    ...
+```
+
+- **Universe:** `ohlcv_store.get_all_tickers()` → `meta_store.filter_equity_only()` → market-cap floor (tickers with no cap pass through, matching existing filter semantics).
+- **Per ticker:** `TickerDeepDiveEngine(...).analyze(ticker)`; skip when `last_close == 0.0`. Map via the shared serializer. Isolate per-ticker errors (log + continue; one bad ticker must not abort the batch).
+- **Concurrency:** internal I/O only (no rate-limited external API) → `asyncio.gather` bounded by `Semaphore(8)`.
+- **Write:** batch-write via `DeepDiveStore.write_batch`. Emit `job_phase`/`job_progress` (`ops/job_progress.py`) every 250 tickers.
+- `DeepDiveBatchResult` reports `tickers_computed`, `tickers_skipped`; include a `to_dict()`.
+
+---
+
+## 4. GCP job — `backend/src/tyche/ops/gcp_jobs.py`
+
+- Add `async def run_deep_dive_batch_job(...)` mirroring `run_stocks_derived_batch_job` (resolve stores, call `run_deep_dive_batch`, write run manifest, log phases).
+- Register `"stocks-deep-dive-batch": run_deep_dive_batch_job` in the `JOB_RUNNERS` dict.
+
+---
+
+## 5. Route — `backend/src/tyche/api/routes/deep_dive.py` (read-through + fallback)
+
+Resolution order for `GET /stocks/deep-dive/{ticker}`:
+
+1. **In-memory cache** (small dict/LRU keyed by `(ticker, latest_session_date)`) → return.
+2. **`DeepDiveStore.read_ticker(ticker)`** — if present and fresh (`as_of_date` within `deep_dive_max_staleness_sessions` of the latest OHLCV session) → return + populate cache.
+3. **Fallback:** if missing/stale AND inline compute allowed → `engine.analyze()` (existing path), return, and write back to the store.
+4. **Cloud mode:** if inline compute is blocked (GCS without `TYCHE_ALLOW_INLINE_SCAN`) but a precomputed payload exists → serve it even if stale (keep its `as_of_date`); only 404 when nothing exists at all. Use `cloud_inline_compute_blocked()` / `require_inline_compute_allowed()`.
+
+Add a `force: bool = False` query param to bypass cache/store and recompute (mirrors `/stocks/deep-dips?force=true`).
+
+---
+
+## 6. Config — `backend/src/tyche/config.py` (+ wire via `deps.py`)
+
+```python
+deep_dive_batch_enabled: bool = True
+deep_dive_batch_min_market_cap_millions: float = 1000
+deep_dive_max_staleness_sessions: int = 2
+```
+
+---
+
+## 7. Scheduling / cloud wiring
+
+- **Local (APScheduler):** chain after the daily OHLCV refresh + conviction batch (~16:08–16:15 ET), gated by `deep_dive_batch_enabled`. Add the handler in `app.py` and the scheduler method in `workflow/scheduler.py`, following the conviction-batch registration.
+- **Cloud:** add `stocks-deep-dive-batch` to the morning pipeline in parallel with the stocks derived/conviction batches (depends only on OHLCV + demand stores, not the demand gate). Update the relevant `infra/gcp/*.yaml` and `deploy_jobs.sh` (8 h timeout, `--tasks=1`). Do NOT block `publish-signals` on it.
+- **No published-JSON step needed** — the route reads the store directly (works local + GCS).
+
+---
+
+## 8. Tests (`backend/tests/unit/`, all external APIs mocked)
+
+- `test_deep_dive_store.py`: write/read round-trip, `model_dump_json` ↔ `model_validate_json` fidelity, missing-ticker → `None`, one-file-per-ticker layout.
+- `test_deep_dive_batch.py`: equity-only + cap-floor filtering, skips zero-close tickers, per-ticker error isolation, write count.
+- Extend route tests: in-memory cache hit, store hit, stale→recompute fallback, `force=true` bypass, cloud-mode serves stale instead of erroring. Mock `DeepDiveStore` and `TickerDeepDiveEngine`.
+
+---
+
+## 9. Docs
+
+Update `docs/stock-deep-dive.md` §v2 to match this implementation: it currently describes a single monolithic `signals/stocks/deep_dive.parquet` + a `published/routes/stocks_deep_dive.json` publish step, but the chosen design (and what v3's screener depends on) is **one Parquet per ticker** at `signals/stocks/deep_dive/{TICKER}.parquet` with the route reading the store directly (**no publish step**). Fix the §v2 architecture paragraph and add the three new config knobs to the config section. Add a changelog entry.
+
+---
+
+## Acceptance criteria
+
+- Batch writes ONE Parquet per ticker under `signals/stocks/deep_dive/{TICKER}.parquet` for the equity universe ≥ cap floor. **No monolithic file anywhere.**
+- `GET /stocks/deep-dive/{ticker}` returns a precomputed payload via a single store read when fresh (no full recompute); p50 well under 100 ms locally.
+- Cache miss/stale falls back to on-demand compute + write-back; **identical JSON shape either way** (and the frontend renders identically from cache vs. live — all sections present, margins percent-scale).
+- GCS cloud mode serves precomputed payloads without inline compute; no error when a payload exists.
+- `deep_dive_batch_enabled=false` disables the batch; route reverts to pure on-demand (v1 behavior).
+- New + existing unit tests pass: `cd backend && pytest tests/unit/`.
+- Prompt 1 follow-ups done: `cd frontend && npm run lint` passes and `npm run build` still passes.

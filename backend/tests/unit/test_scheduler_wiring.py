@@ -51,6 +51,15 @@ class TestWorkflowScheduler:
             for name in ["morning_scan", "order_monitor", "midday_review", "eod_journal"]
         )
 
+    def test_schedule_deep_dive_batch_registers_job(self):
+        scheduler = WorkflowScheduler()
+
+        async def dummy():
+            pass
+
+        scheduler.schedule_deep_dive_batch(dummy, hour=16, minute=15)
+        assert "deep_dive_batch" in scheduler._jobs
+
     def test_get_job_status_before_start(self):
         scheduler = WorkflowScheduler()
 

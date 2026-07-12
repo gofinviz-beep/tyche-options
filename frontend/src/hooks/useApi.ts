@@ -305,6 +305,16 @@ export function useDeepDips() {
   });
 }
 
+export function useTickerDeepDive(ticker: string | null) {
+  return useQuery({
+    queryKey: ["stocks", "deep-dive", ticker],
+    queryFn: () => api.stocks.getDeepDive(ticker!),
+    enabled: !!ticker,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
+  });
+}
+
 export function useTickerGates(ticker: string | null) {
   return useQuery({
     queryKey: ["stocks", "gates", ticker],

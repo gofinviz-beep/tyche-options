@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import {
   Rocket,
   RefreshCw,
+  Download,
   Zap,
   TrendingUp,
   Telescope,
@@ -619,6 +620,76 @@ function Pill({ label, value, accent }: { label: string; value: string; accent?:
   );
 }
 
+function exportToExcel(signals: AlphaSignal[], asOfDate: string | null, variant: string) {
+  const headers = [
+    "Ticker", "Signal", "Alpha Score", "Horizon", "Regime", "Demand Net",
+    "Demand Multiplier", "Move Prob (%)", "Exp. Move (%)",
+    "RS vs SPY 6m (%)", "Return 6m (%)", "Off 52w High (%)",
+    "Price", "Market Cap", "Inst Own (%)", "Sector",
+    "Prob Swing (%)", "Prob Trend (%)", "Prob Thematic (%)",
+    "Momentum", "Rel Strength", "Trend Quality", "Breakout", "Volume Thrust",
+    "D-Fund", "D-Est", "D-Catalyst", "D-Policy", "D-Squeeze",
+    "Overextension", "Anti-Chase Penalty",
+  ];
+
+  const rows = signals.map((r) => {
+    const prob = horizonProb(r);
+    const expMove = expectedMovePct(r);
+    return [
+      r.ticker,
+      SIGNAL_META[r.signal]?.label ?? r.signal,
+      r.alpha_score.toFixed(1),
+      HORIZON_META[r.horizon]?.label ?? r.horizon,
+      REGIME_META[r.regime]?.label ?? r.regime,
+      r.demand?.net?.toFixed(3) ?? "",
+      r.demand_multiplier?.toFixed(3) ?? "",
+      prob != null ? (prob * 100).toFixed(1) : "",
+      expMove != null ? expMove.toFixed(1) : "",
+      r.rs_126d != null ? (r.rs_126d * 100).toFixed(1) : "",
+      r.return_126d != null ? (r.return_126d * 100).toFixed(1) : "",
+      r.pct_off_52w_high?.toFixed(1) ?? "",
+      r.last_close.toFixed(2),
+      r.market_cap?.toFixed(0) ?? "",
+      r.institutional_pct != null ? (r.institutional_pct * 100).toFixed(0) : "",
+      r.sector ?? "",
+      r.breakout_prob_swing != null ? (r.breakout_prob_swing * 100).toFixed(1) : "",
+      r.breakout_prob_trend != null ? (r.breakout_prob_trend * 100).toFixed(1) : "",
+      r.breakout_prob_thematic != null ? (r.breakout_prob_thematic * 100).toFixed(1) : "",
+      r.factors.momentum.toFixed(3),
+      r.factors.relative_strength.toFixed(3),
+      r.factors.trend_quality.toFixed(3),
+      r.factors.breakout.toFixed(3),
+      r.factors.volume_thrust.toFixed(3),
+      r.demand?.fund?.toFixed(3) ?? "",
+      r.demand?.est?.toFixed(3) ?? "",
+      r.demand?.catalyst?.toFixed(3) ?? "",
+      r.demand?.policy?.toFixed(3) ?? "",
+      r.demand?.squeeze?.toFixed(3) ?? "",
+      r.overextension_score?.toFixed(3) ?? "",
+      r.overextension_penalty?.toFixed(3) ?? "",
+    ];
+  });
+
+  const escape = (v: string) => {
+    if (v.includes("\t") || v.includes('"') || v.includes("\n"))
+      return `"${v.replace(/"/g, '""')}"`;
+    return v;
+  };
+  const tsv = [headers.map(escape).join("\t"), ...rows.map((r) => r.map(escape).join("\t"))].join("\n");
+
+  const bom = "\uFEFF";
+  const blob = new Blob([bom + tsv], { type: "text/tab-separated-values;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const dateStr = asOfDate ?? new Date().toISOString().slice(0, 10);
+  a.download = `tyche_alpha_${variant}_${dateStr}.tsv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 export function Alpha() {
   const [minCapM, setMinCapM] = useState<number>(loadMinCap);
   const [variant, setVariant] = useState<AlphaVariant>(loadVariant);
@@ -721,6 +792,15 @@ export function Alpha() {
               ))}
             </select>
           </label>
+          <button
+            onClick={() => exportToExcel(signals, data?.as_of_date ?? null, servedVariant)}
+            disabled={signals.length === 0}
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            title="Export current signals to CSV (opens in Excel)"
+          >
+            <Download className="h-4 w-4" />
+            Export
+          </button>
           <button
             onClick={handleRecompute}
             disabled={recompute.isPending}

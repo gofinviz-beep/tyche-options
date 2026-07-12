@@ -329,6 +329,14 @@ class TycheSettings(BaseModel):
     conviction_batch_min_avg_volume: int = 500_000
     conviction_snapshot_retention_days: int = 90
 
+    # --- Stock Deep Dive Batch (v2 precompute) ---
+    deep_dive_batch_enabled: bool = True
+    deep_dive_batch_min_market_cap_millions: float = 1000.0
+    # Serve a precomputed payload as "fresh" when its as_of_date is within N
+    # trading sessions of the latest OHLCV session; otherwise recompute
+    # inline (or serve stale in cloud mode when inline compute is blocked).
+    deep_dive_max_staleness_sessions: int = 2
+
     # --- Workflow ---
     morning_scan_time: str = "09:35"
     order_monitor_interval_min: int = 15

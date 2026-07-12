@@ -17,7 +17,7 @@
 
 ## Navigation
 
-Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, Conviction, Explore, Monitor, Settings), Stocks (Dashboard, Conviction, Deep Dips, Covered Calls, Directional Alpha), Intelligence, Research. Hybrid collapsibility — opening one section auto-collapses others.
+Modular sidebar defined in `config/modules.ts`. Sections: Options (Scanner, Conviction, Explore, Monitor, Settings), Stocks (Dashboard, Directional Alpha, Deep Dive, Conviction, Deep Dips, History), Intelligence, Research. Hybrid collapsibility — opening one section auto-collapses others.
 
 ## Pages
 
@@ -31,6 +31,7 @@ Modular sidebar defined in `navigation/modules.ts`. Sections: Options (Scanner, 
 | Dashboard (Stocks) | `useActivePullbacks`, `useActivePositions`, `useCreatePosition`, `useExitPosition`, `useCheckExits`, `useRecentSignals` |
 | Conviction (Stocks) | `useConvictionSnapshots`, `useBacktestProfile` |
 | Deep Dips | `useDeepDips` |
+| Deep Dive | `useTickerDeepDive` |
 | Directional Alpha | `useAlphaScan`, `useRecomputeAlpha` |
 
 ## UI Conventions

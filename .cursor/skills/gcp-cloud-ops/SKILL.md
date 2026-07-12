@@ -51,13 +51,19 @@ Local CLI: same scripts (ingest_data, demand_data, flatfiles, run_demand_gate)
 ### Stocks signal artifacts (Slice 1–2, live)
 
 ```text
-signals/stocks/conviction.parquet       ← tyche-stocks-conviction-batch
-signals/stocks/deep_dips.parquet        ← tyche-stocks-derived-batch
-signals/stocks/history_summary.parquet  ← tyche-stocks-derived-batch
+signals/stocks/conviction.parquet          ← tyche-stocks-conviction-batch
+signals/stocks/deep_dips.parquet           ← tyche-stocks-derived-batch
+signals/stocks/history_summary.parquet     ← tyche-stocks-derived-batch
+signals/stocks/deep_dive/{TICKER}.parquet  ← tyche-stocks-deep-dive-batch (one file per ticker, NOT published)
 published/routes/stocks_conviction.json
 published/routes/stocks_deep_dips.json
 published/routes/stocks_history.json
 ```
+
+`stocks-deep-dive-batch` is the odd one out here: it has no `published/routes/*.json`
+counterpart. `GET /stocks/deep-dive/{ticker}` reads `DeepDiveStore` (per-ticker Parquet)
+directly in both local and GCS modes — a publish step would be pointless since the store
+is already a cheap point-read, unlike a full-universe scan.
 
 ### Candidate universe (Slice 3)
 
@@ -101,14 +107,15 @@ Not in morning workflow. Run after market open when live bid/ask/OI matter.
 | `tyche-options-snapshot-batch` | Tradier chains for candidates |
 | Evening ingest (OHLCV, demand, intelligence inputs) | |
 
-## Jobs (14)
+## Jobs (17)
 
 `ingest-data`, `ingest-options-flatfiles`, `ingest-demand-data`, `ingest-news`,
 `ingest-edgar`, `alpha-batch`, `stocks-conviction-batch`, `stocks-derived-batch`,
-`candidate-universe-batch`, `options-snapshot-batch`, `run-demand-gate`, `publish-signals`,
+`stocks-deep-dive-batch`, `candidate-universe-batch`, `options-chain-prep-batch`,
+`options-scanner-batch`, `options-snapshot-batch`, `run-demand-gate`, `publish-signals`,
 `audit-snapshots`, `nightly-pipeline` (fallback).
 
-Entry: `backend/scripts/run_gcp_job.py` → `tyche/ops/gcp_jobs.py`.
+Entry: `backend/scripts/run_gcp_job.py` → `tyche/ops/gcp_jobs.py` (`JOB_NAMES` / `JOB_RUNNERS`).
 
 ## Deploy sequence
 
@@ -159,6 +166,14 @@ Re-run `./infra/gcp/deploy_workflow.sh` after workflow edits.
 15. **Deep dip batch needs `prior_streak` on conviction rows** — derived batch converts
     conviction Parquet → `ConvictionSignal`; missing schema field caused
     `derived_batch_deep_dips_failed` until fixed (2026-06-25).
+16. **`stocks-deep-dive-batch` is fire-and-forget, not polled.** `morning-pipeline.yaml`
+    kicks it off with a bare `http.post :run` at the very start of the workflow (own
+    try/except, logs a warning on failure) and never polls `executions.get` for it —
+    unlike every other job in the pipeline. It only depends on OHLCV + demand stores
+    (not flatfiles/alpha/gate) and nothing downstream waits on it (no publish step), so
+    blocking the workflow on its runtime would violate the 7 AM PT publish SLA for zero
+    benefit. `GET /stocks/deep-dive/{ticker}` reads whatever `DeepDiveStore` has —
+    serves stale in cloud mode (inline compute blocked) rather than 500ing.
 
 ## Observability
 

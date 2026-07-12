@@ -423,6 +423,47 @@ async def _scheduled_conviction_batch() -> None:
         logger.error("scheduled_conviction_batch_failed", exc_info=True)
 
 
+async def _scheduled_deep_dive_batch() -> None:
+    """Precompute Stock Deep Dive payloads after the conviction batch.
+
+    Writes one Parquet per ticker (``signals/stocks/deep_dive/{TICKER}.parquet``)
+    so ``GET /stocks/deep-dive/{ticker}`` serves precomputed payloads instead of
+    recomputing on every request. Clears the route's in-memory response cache
+    so freshly-written payloads are picked up on the next request.
+    """
+    from tyche.api.deps import get_data_store, get_ticker_meta_store
+    from tyche.api.routes.deep_dive import invalidate_deep_dive_cache
+    from tyche.config import get_settings as _gs
+    from tyche.market_data.catalyst_store import CatalystSignalStore
+    from tyche.market_data.estimates_store import EstimatesStore
+    from tyche.market_data.fundamentals_store import FundamentalsStore
+    from tyche.storage.paths import storage_context_from_settings
+    from tyche.workflow.deep_dive_batch import run_deep_dive_batch
+
+    settings = _gs()
+    try:
+        ohlcv_store = get_data_store(settings)
+        meta_store = get_ticker_meta_store(settings)
+        result = await run_deep_dive_batch(
+            ohlcv_store=ohlcv_store,
+            meta_store=meta_store,
+            fundamentals_store=FundamentalsStore(data_dir=settings.data_dir),
+            estimates_store=EstimatesStore(data_dir=settings.data_dir),
+            catalyst_store=CatalystSignalStore(data_dir=settings.data_dir),
+            min_market_cap_millions=settings.deep_dive_batch_min_market_cap_millions,
+            ctx=storage_context_from_settings(settings),
+        )
+        invalidate_deep_dive_cache()
+        logger.info(
+            "scheduled_deep_dive_batch_complete",
+            computed=result.tickers_computed,
+            written=result.tickers_written,
+            duration_ms=round(result.duration_ms),
+        )
+    except Exception:
+        logger.error("scheduled_deep_dive_batch_failed", exc_info=True)
+
+
 async def _scheduled_alpha_batch() -> None:
     """Run the directional alpha batch (Demand Conviction + ML scoring).
 
@@ -991,6 +1032,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if settings.conviction_batch_after_ohlcv:
             scheduler.schedule_conviction_batch(_scheduled_conviction_batch)
 
+        if settings.deep_dive_batch_enabled:
+            scheduler.schedule_deep_dive_batch(_scheduled_deep_dive_batch)
+
         if getattr(settings, "alpha_batch_enabled", True) and not settings.alpha_batch_after_flatfile:
             scheduler.schedule_alpha_batch(_scheduled_alpha_batch)
 
@@ -1074,6 +1118,7 @@ def create_app() -> FastAPI:
         alpha,
         conviction,
         covered_calls,
+        deep_dive,
         events,
         filings,
         monitor,
@@ -1087,6 +1132,7 @@ def create_app() -> FastAPI:
 
     app.include_router(account.router, prefix="/api/v1")
     app.include_router(stocks.router, prefix="/api/v1")
+    app.include_router(deep_dive.router, prefix="/api/v1")
     app.include_router(scanner.router, prefix="/api/v1")
     app.include_router(watchlist.router, prefix="/api/v1")
     app.include_router(events.router, prefix="/api/v1")

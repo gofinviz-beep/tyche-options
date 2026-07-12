@@ -17,6 +17,7 @@ import {
   FileText,
   Users,
   PhoneOutgoing,
+  Microscope,
 } from "lucide-react";
 
 export interface ModulePage {
@@ -56,6 +57,7 @@ export const modules: AppModule[] = [
     pages: [
       { path: "", label: "Dashboard", icon: LayoutDashboard },
       { path: "/alpha", label: "Directional Alpha", icon: Rocket },
+      { path: "/deep-dive", label: "Deep Dive", icon: Microscope },
       { path: "/conviction", label: "Conviction", icon: BarChart3 },
       { path: "/deep-dips", label: "Deep Dips", icon: TrendingDown },
       { path: "/history", label: "History", icon: Clock },

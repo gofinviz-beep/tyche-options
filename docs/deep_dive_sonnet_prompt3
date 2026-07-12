@@ -1,0 +1,217 @@
+# Task: Build a universe-wide Stock Screener over multi-timeframe RSI / EMA-stack signals (v3)
+
+You are working in **tyche-options**: Python 3.12 + FastAPI backend (run from `backend/`) and a React 19 + TypeScript + Vite + Tailwind + @tanstack/react-query + react-router + lucide frontend (run from `frontend/`). Light theme only; no emojis.
+
+The Stock Deep Dive feature already computes per-ticker multi-timeframe RSI (daily/weekly/monthly/quarterly), EMA stack (8/21/50 + 200-SMA with slopes, days-above, stack score), returns, and market cap / institutional / sector metadata. **v2 (prompt 2)** precomputes and persists each ticker's deep dive as **one Parquet per ticker** at `signals/stocks/deep_dive/{TICKER}.parquet` (via `DeepDiveStore` in `backend/src/tyche/market_data/deep_dive_store.py`).
+
+Build a **screener**: a nightly batch that extracts compact scalar signals for the whole equity universe into a single queryable index, an API to filter/sort it, and a frontend page with filters + preset "recipes" that link into each ticker's Deep Dive. The goal is to scan thousands of tickers for high-conviction "buy strength on a dip" setups — the strategy's core thesis.
+
+> **Prerequisite:** this continues after prompt 2. It reads the v2 `DeepDiveStore`, so land prompt 2 first (or ensure `deep_dive_store.py` + the deep-dive batch exist).
+
+---
+
+## Read these first to match existing patterns
+
+- `backend/src/tyche/market_data/deep_dive_store.py` and `backend/src/tyche/analysis/ticker_deep_dive.py` (source of the signals; v2)
+- `backend/src/tyche/market_data/stocks_deep_dips_store.py` (single-file signal store + `StoreBackend`/ctx idiom)
+- `backend/src/tyche/workflow/stocks_derived_batch.py`, `backend/src/tyche/ops/gcp_jobs.py` (batch + job registry patterns)
+- `backend/src/tyche/workflow/publish_signals.py` (publishing a compact route JSON)
+- `backend/src/tyche/api/cloud_mode.py`
+- `frontend/src/pages/stocks/Alpha.tsx` (closest template: DataTable, multiselect/range filters, localStorage min-market-cap selector, sortable columns, nulls sort last)
+- `frontend/src/api/client.ts`, `frontend/src/hooks/useApi.ts`, `frontend/src/types/index.ts`, `frontend/src/config/modules.ts`, `frontend/src/App.tsx`
+- `.cursor/rules/strategy-philosophy.mdc` (the "buy strength on dips" thesis and RSI reading guide), `.cursor/rules/data-layout.mdc`, `.cursor/rules/frontend-patterns.mdc`
+
+---
+
+## Design decision (do this, don't deviate)
+
+The screener index is a **single compact Parquet** (`signals/stocks/screener_index.parquet`), one row per ticker, scalar columns only. This mirrors `conviction_signals.parquet` / `alpha_signals.parquet`. Do NOT touch the conviction SQLite snapshots or its 5-layer cache — keep the screener fully standalone to avoid that complexity. (The large per-ticker deep-dive payloads remain one-file-per-ticker; only compact scalars go in this index.)
+
+---
+
+## 1. Store — `backend/src/tyche/market_data/screener_index_store.py`
+
+`SCREENER_INDEX_REL = "signals/stocks/screener_index.parquet"` (single file).
+
+`ScreenerIndexStore`:
+
+- `write(rows: list[dict], ctx=None) -> int` — overwrite the single Parquet with all rows.
+- `read(ctx=None) -> pd.DataFrame | None`.
+
+Columns (one row per ticker):
+
+```
+ticker, name, sector, as_of_date, last_close, market_cap, institutional_pct,
+pct_off_52w_high, rsi_daily, rsi_weekly, rsi_monthly, rsi_quarterly,
+ema_8, ema_21, ema_50, sma_200, pct_vs_ema_8, pct_vs_ema_21, pct_vs_sma_200,
+slope_ema_8, slope_ema_21, slope_ema_50, days_above_ema_8, days_above_ema_21,
+stack_score, above_sma_200 (bool), ret_1m, ret_3m, ret_6m, ret_1y,
+macd_histogram, setup_score, setup_label
+```
+
+Use `StoreBackend` / `context_for_data_access()` (local + GCS).
+
+---
+
+## 2. Batch — `backend/src/tyche/workflow/screener_index_batch.py`
+
+```python
+async def run_screener_index_batch(
+    *,
+    deep_dive_store,
+    ohlcv_store,
+    meta_store,
+    fundamentals_store,
+    estimates_store,
+    catalyst_store,
+    min_market_cap_millions,
+    ctx=None,
+) -> ScreenerIndexResult:
+    ...
+```
+
+For each equity-universe ticker (`ohlcv_store.get_all_tickers()` → `meta_store.filter_equity_only()` → cap floor; no-cap passes through):
+
+- **Prefer reading the v2 `DeepDiveStore.read_ticker(ticker)`** (already computed) and extracting scalars. If absent, fall back to `TickerDeepDiveEngine(...).analyze(ticker)` inline. Skip when `last_close == 0.0`.
+- Compute `setup_score` (0–100) and `setup_label` (see §"The Diamond Finder" below).
+- Append a row dict.
+
+Isolate per-ticker errors (log + continue). Bounded internal concurrency `Semaphore(8)` (no external API). Emit `job_phase`/`job_progress` every 250 tickers. Write the whole index in one `ScreenerIndexStore.write(...)`. Result reports `tickers_indexed`, `tickers_skipped` with `to_dict()`.
+
+---
+
+## 3. GCP job — `backend/src/tyche/ops/gcp_jobs.py`
+
+Add `run_screener_index_batch_job(...)` mirroring the derived-batch job; register `"stocks-screener-index-batch"` in `JOB_RUNNERS`. Chain it after `stocks-deep-dive-batch` (it reads that store).
+
+---
+
+## 4. Route — `backend/src/tyche/api/routes/screener.py` (mounted under `/stocks`)
+
+`GET /stocks/screener` reads the index once and filters in pandas. Query params (all optional):
+
+- `q_rsi_min`, `q_rsi_max`, `m_rsi_min`, `m_rsi_max`, `w_rsi_min`, `w_rsi_max`, `d_rsi_min`, `d_rsi_max`
+- `above_sma200: bool`, `stack_score_min: int`, `ext_max_pct: float` (max `pct_vs_ema_8`, i.e. overextension cap), `min_market_cap_millions: float`, `sector: str`
+- `setup_label: str` (repeatable / comma-separated), `setup_score_min: float`
+- `sort: str` (default `setup_score`), `desc: bool = true`, `limit: int = 200`
+
+Return a compact list of rows (typed response schema in `schemas/screener.py`). If the index is missing → return **200 + empty list** with a stale/empty flag (do not 500). Respect cloud mode: pure read, no inline compute needed.
+
+---
+
+## 5. Config — `backend/src/tyche/config.py` (+ wire via `deps.py`)
+
+```python
+screener_index_batch_enabled: bool = True
+screener_index_min_market_cap_millions: float = 1000
+```
+
+---
+
+## 6. Scheduling / cloud / publish
+
+- **Local APScheduler:** chain after the v2 deep-dive batch; gate on `screener_index_batch_enabled`. Add handler in `app.py` + method in `workflow/scheduler.py`.
+- **Cloud:** add `stocks-screener-index-batch` to the morning pipeline after `stocks-deep-dive-batch` (`infra/gcp/*.yaml`, `deploy_jobs.sh`, 8 h timeout, `--tasks=1`). Don't block publish.
+- **Publish** (safe — single compact file): add `publish_stocks_screener` in `publish_signals.py` → `published/routes/stocks_screener.json`, registered like `stocks_deep_dips`. The route reads the store (local) / published JSON (GCS) following the existing read-path convention.
+
+---
+
+## 7. Frontend
+
+- **Types** (`types/index.ts`): `ScreenerRow` (matches the response) + `ScreenerResponse`.
+- **API** (`api/client.ts`): `api.stocks.getScreener(params)` → `GET /stocks/screener` with query string.
+- **Hook** (`hooks/useApi.ts`): `useScreener(params)` (react-query; `staleTime` 5 min).
+- **Page** `frontend/src/pages/stocks/Screener.tsx` — model on `Alpha.tsx`:
+  - `DataTable` with columns: Ticker (links to `/stocks/deep-dive?ticker=X`), Setup (label badge), Setup Score, Q-RSI, M-RSI, W-RSI, D-RSI, Stack, % vs 8-EMA, Above 200-SMA, 3M/6M Return, Off 52w High, Mkt Cap, Inst Own, Sector.
+  - Inline filters: range/min/max on the RSI + score + ext columns; multiselect on Setup label and Sector; boolean on Above 200-SMA. Sortable columns; nulls sort last (use existing `compareValues`).
+  - Preset recipe buttons that set the filter state (see §Diamond finder recipes). Persist chosen min-market-cap to localStorage (like Alpha's `tyche_alpha_min_market_cap_m`).
+  - Conviction/label color mapping: Prime Pullback = emerald, Structural Uptrend = blue, Emerging Breakout = violet, Watch/Base Building = gray, Overextended/Weak = red.
+- **Nav** (`config/modules.ts`): add under Stocks → "Screener" (lucide icon, e.g. `Telescope` or `Filter`). Route in `App.tsx`: `/stocks/screener`.
+
+---
+
+## 8. Tests (`backend/tests/unit/`, mock everything external)
+
+- `test_screener_index_store.py`: write/read round-trip, single-file layout, column presence.
+- `test_screener_index_batch.py`: reads from mocked `DeepDiveStore`, falls back to engine when absent, cap-floor filtering, `setup_score`/`setup_label` correctness on crafted inputs (assert a Prime Pullback fixture scores ≥ 70 and labels correctly; assert an overbought/weak fixture is penalized/avoided).
+- `test_screener_routes.py`: filter combinations (RSI ranges, `above_sma200`, `setup_label`), sort/limit, empty-index returns 200 + empty.
+
+---
+
+## The Diamond Finder — setup scoring, labels, recipes, and calibration
+
+This is the heart of v3. The strategy thesis (`strategy-philosophy.mdc`): **buy strong stocks in confirmed structural uptrends when they pull back to support — don't chase.** The screener encodes this as a composite `setup_score` (0–100) and a `setup_label`. Implement these thresholds exactly (they're the calibration; the frontend presets just set filter ranges).
+
+### `setup_score` (0–100) — deterministic, computed in the batch
+
+Compute four components, sum, then apply an anti-chase haircut. Use `clamp(x, 0, 1)` helpers.
+
+**A. Structural trend (0–40)** — is this a real high-timeframe uptrend?
+
+- Quarterly RSI: `clamp((rsi_quarterly - 45) / (65 - 45), 0, 1) * 20` (0 at ≤ 45, full 20 at ≥ 65)
+- Monthly RSI: `clamp((rsi_monthly - 45) / (60 - 45), 0, 1) * 8`
+- Above 200-SMA: `7` if `last_close > sma_200` (and `sma_200 > 0`) else `0`
+- 21-EMA slope rising: `clamp(slope_ema_21 / 0.5, 0, 1) * 5`
+
+**B. Entry timing (0–30)** — is it pulling back to a buy zone (not extended, not a falling knife)?
+
+- Daily-RSI sweet spot (0–18): `18` if `35 ≤ rsi_daily ≤ 50`; linearly ramp `0→18` over `25→35`; linearly decay `18→0` over `50→65`; else `0`.
+- Proximity to support (0–12): based on `pct_vs_ema_8` — `12` if `-3% ≤ pct_vs_ema_8 ≤ +5%` (sitting on/near the 8-EMA); if price is below 8-EMA but above 21-EMA (deeper healthy pullback) → `10`; decay to `0` as `pct_vs_ema_8` rises `+5%→+12%` (getting extended); `0` when `pct_vs_ema_8 > 12%`.
+
+**C. Quality (0–20)** — is it institutional-grade?
+
+- Market cap: `≥ $10B → 8`, `$4–10B → 6`, `$1–4B → 4`, `< $1B → 2`, no data → `1`
+- Institutional ownership: `clamp(institutional_pct / 60, 0, 1) * 7`
+- Above 50-EMA: `5` if `last_close > ema_50` else `0`
+
+**D. Momentum confirmation (0–10)**
+
+- Weekly RSI ≥ 50: `+5`
+- 3M return in a healthy band: `+5` if `0 < ret_3m ≤ 40`; `+2` if `ret_3m > 40`; `0` otherwise
+
+**Anti-chase haircut:** if `rsi_daily ≥ 70 AND pct_vs_ema_8 > 10` → multiply total by `0.6`. Clamp final to `[0, 100]`, round 1 dp.
+
+### `setup_label` (evaluate in order; first match wins)
+
+| Label | Condition | Meaning |
+|---|---|---|
+| **Prime Pullback** (the diamond) | `setup_score ≥ 70 AND rsi_quarterly ≥ 58 AND 35 ≤ rsi_daily ≤ 52 AND last_close > sma_200` | Strong structure + cooled timing — the buy |
+| **Structural Uptrend** | `setup_score ≥ 60 AND rsi_quarterly ≥ 55 AND last_close > sma_200` | Confirmed trend, timing not perfect |
+| **Emerging Breakout** | `50 ≤ rsi_quarterly < 60 AND 40 ≤ rsi_daily ≤ 60 AND last_close > sma_200` | Fresh quarterly-RSI 50→60 regime change |
+| **Overextended** | `rsi_daily ≥ 70 AND rsi_quarterly < 55` | Spike on weak structure — avoid |
+| **Weak Structure** | `rsi_quarterly < 40 AND rsi_monthly < 45` | Value-trap risk — avoid |
+| **Watch / Base Building** | everything else | On the watchlist |
+
+### Preset recipes (frontend buttons → filter state)
+
+1. **Diamond — Prime Pullback** (default, highest conviction): `setup_label = Prime Pullback`, `q_rsi_min=58`, `d_rsi ∈ [35,52]`, `above_sma200=true`, `stack_score_min=2`, `ext_max_pct=6`, `min_market_cap=4000`, sort `setup_score desc`.
+2. **Structural Breakout Pulling Back**: `q_rsi_min=55`, `d_rsi ∈ [35,55]`, `above_sma200=true`, `ext_max_pct=8`, `min_market_cap=1000`.
+3. **Emerging Breakout (early)**: `q_rsi ∈ [50,60]`, `d_rsi ∈ [40,60]`, `above_sma200=true` — catches the quarterly-RSI 50→60 regime cross before it's obvious.
+4. **Deep Reversal (higher risk)**: `q_rsi ∈ [40,55]`, `d_rsi_max=35` (oversold), `above_sma200` off — reclaim plays; pair with catalysts. Label these clearly as speculative.
+5. **Show me what to AVOID**: `setup_label ∈ {Overextended, Weak Structure}` — teaching tool / short-avoid list.
+
+### How to calibrate (guidance to surface in the page's help text / doc)
+
+- **The core diamond pattern:** high quarterly RSI (≥ 60) + low-ish daily RSI (35–50) + price on/near the 8-or-21 EMA + above the 200-SMA. Structure says "this is a real uptrend"; daily RSI says "it's on sale right now." That combination is the backtest-validated "buy strength on a dip."
+- **Widen the funnel** (too few results): drop `q_rsi_min` 60→55, allow `min_market_cap` to $1B, raise `ext_max_pct` to 8–10, or include "Emerging Breakout".
+- **Tighten to only diamonds** (too many/noisy): raise `q_rsi_min` to 62–65, require `stack_score_min=3` (price above all of 8/21/50), `institutional_pct ≥ 50`, `ext_max_pct ≤ 5`, and `setup_score_min ≥ 75`.
+- **Timing rule (critical):** a name with quarterly RSI 65 but daily RSI 75 is NOT a buy today — it's on the watchlist. Re-run the screen daily; act when daily RSI cools into 35–50 while quarterly stays ≥ 60. The "Prime Pullback" label is specifically the intersection of strong structure and cooled timing.
+- **Traps to respect:** daily RSI ≥ 70 with quarterly < 55 = short-term spike on weak structure (mean-reversion risk, not a diamond). Quarterly < 40 and falling = value trap; wait for the quarterly RSI to base and cross 50 before trusting a reversal.
+- **Always pair with a Deep Dive:** the screener narrows thousands → a shortlist; click into `/stocks/deep-dive?ticker=X` to confirm fundamentals (revenue/cash trend), estimates (price-target upside), and catalysts before committing. The screener finds candidates; the deep dive confirms conviction.
+
+---
+
+## Acceptance criteria
+
+- Nightly batch writes a single `signals/stocks/screener_index.parquet` (one row per ticker; scalar columns only). No per-ticker screener files; no monolithic deep-dive payloads in the index.
+- Batch reads the v2 `DeepDiveStore` where present (no recompute), falls back to inline engine otherwise.
+- `setup_score` / `setup_label` match the formulas above (unit-tested with crafted fixtures: a diamond scores ≥ 70 + "Prime Pullback"; an overbought-weak fixture is haircut + "Overextended").
+- `GET /stocks/screener` filters/sorts correctly across all params and returns 200 + empty on a missing index.
+- Frontend Screener page: `DataTable` with RSI/score range filters, Setup + Sector multiselect, Above-200-SMA boolean, preset recipe buttons, rows linking to Deep Dive; nav entry + `/stocks/screener` route.
+- Screener works in GCS cloud mode via published JSON (no inline compute).
+- `screener_index_batch_enabled=false` disables the batch cleanly.
+- `cd backend && pytest tests/unit/` and `cd frontend && npm run build` both pass.
+
+---
+
+> **Note:** After v3 ships and the index has data, **Prompt 3b** (in `docs/stock-deep-dive.md` → "Prompt 3b — Backtest calibration of screener weights") validates and tunes the `setup_score` weights and `setup_label` thresholds against historical forward returns. Run it in its own session; do not fold it into this task.

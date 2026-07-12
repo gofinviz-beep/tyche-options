@@ -46,6 +46,9 @@ if $BUILD; then
       tests/unit/test_cloud_options_snapshot.py \
       tests/unit/test_gcp_jobs.py \
       tests/unit/test_ingest_dates.py \
+      tests/unit/test_deep_dive_store.py \
+      tests/unit/test_deep_dive_batch.py \
+      tests/unit/test_deep_dive_route.py \
       -q --no-cov
   )
   echo "==> Building and pushing ${TYCHE_JOBS_IMAGE} (linux/amd64 for Cloud Run)"
@@ -120,6 +123,7 @@ deploy_job tyche-ingest-options-flatfiles ingest-options-flatfiles  2 4Gi  "${TI
 deploy_job tyche-alpha-batch              alpha-batch               4 8Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-stocks-conviction-batch  stocks-conviction-batch   4 8Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-stocks-derived-batch      stocks-derived-batch        4 8Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
+deploy_job tyche-stocks-deep-dive-batch    stocks-deep-dive-batch      4 8Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-candidate-universe-batch candidate-universe-batch  2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-options-chain-prep-batch  options-chain-prep-batch  2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-options-scanner-batch    options-scanner-batch    2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"

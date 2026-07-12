@@ -37,6 +37,7 @@ With `TYCHE_DATA_BACKEND=gcs`, the same relative paths resolve under `gs://{buck
 | Conviction signals cache (local EMA) | `backend/data/conviction_signals.parquet` | Single file — **local dev only**; cloud publish uses `signals/stocks/conviction.parquet` |
 | Cloud stocks conviction | `signals/stocks/conviction.parquet` | GCS batch output (`tyche-stocks-conviction-batch`) → `published/routes/stocks_conviction.json` |
 | Cloud deep dips | `signals/stocks/deep_dips.parquet` | GCS batch output (`tyche-stocks-derived-batch`) → `published/routes/stocks_deep_dips.json` |
+| Stock deep dive (per-ticker precompute) | `signals/stocks/deep_dive/{TICKER}.parquet` (local mode: `backend/data/signals/stocks/deep_dive/{TICKER}.parquet`) | One Parquet per ticker (`DeepDiveStore`), written by `tyche-stocks-deep-dive-batch` / local scheduler. JSON-blob payload column. No published JSON — `GET /stocks/deep-dive/{ticker}` reads the store directly |
 | Cloud stocks history | `signals/stocks/history_summary.parquet` | Per-ticker OHLCV summaries → `published/routes/stocks_history.json` |
 | Cloud candidate universe | `signals/universe/options_candidates.parquet`, `signals/universe/stocks_candidates.parquet` | Metadata-first ranked universes (`tyche-candidate-universe-batch`) |
 | Cloud options chain prep | `signals/options/options_chain_contracts.parquet`, `signals/options/options_chain_snapshot.parquet` | Prior-session flatfile chains for candidates (`tyche-options-chain-prep-batch`) |
@@ -111,6 +112,7 @@ from tyche.market_data.data_store import TickerMetaStore
 | `tyche/ops/intelligence_export.py` | Parquet-only news/filing rollups (batched checkpoints) |
 | `workflow/publish_signals.py` | Route-level JSON publisher (sanitizes intelligence Parquet rows before write) |
 | `workflow/stocks_derived_batch.py` | Deep dips + history summary batch (Slice 2) |
+| `workflow/deep_dive_batch.py` | Stock Deep Dive v2 per-ticker precompute batch (`run_deep_dive_batch`) — writes `DeepDiveStore`, no publish step |
 | `market_data/stocks_conviction_store.py` | Cloud conviction Parquet I/O |
 | `market_data/ingest_dates.py` | Pacific session end-date helpers for cloud/local ingest |
 | `infra/gcp/deploy_jobs.sh` | Deploy/update Cloud Run Jobs (pre-build ruff F821 + job unit tests) |

@@ -32,6 +32,8 @@
 - Blank Scanner / scheduled morning scan passes `watchlist=[]` — full equity universe. Settings `watchlist_symbols` is highlight-only for UI badges.
 - `POST /scanner/scan` accepts `available_capital` query param for per-scan deploy capital override (MILP allocator input).
 - `CCAnalysisEngine` exposes `ema_21_slope` on `CCSignal` for informational display — does not gate sell signal (extension-based).
+- `TickerDeepDiveEngine` (`analysis/ticker_deep_dive.py`) computes per-ticker multi-timeframe RSI, EMA stack, MACD, BB, fundamentals, estimates, catalysts. Stateless, follows the CC engine pattern.
+- Deep Dive v2: `GET /stocks/deep-dive/{ticker}` is a read-through cache over `DeepDiveStore` (one Parquet per ticker, `signals/stocks/deep_dive/{TICKER}.parquet`), precomputed nightly by `workflow/deep_dive_batch.py` (local scheduler 4:15pm ET + GCP `stocks-deep-dive-batch`, fire-and-forget in the morning workflow). Falls back to on-demand `TickerDeepDiveEngine` + write-back when stale/missing. `force=true` bypasses cache/store. Shared serializer: `schemas/deep_dive.to_response()`.
 - Scanner pipeline has 10 timed stages — each records OTel histogram metrics
 - `PipelineStage.duration_ms` and `MorningScanResult.total_duration_ms` track performance
 - Error branches in workflows are swallowed with logging + OTel counter — pipeline continues

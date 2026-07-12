@@ -9,6 +9,28 @@ main:
           - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
           - region: "us-central1"
 
+    # Fire-and-forget: stocks-deep-dive-batch only depends on OHLCV + demand
+    # stores (not flatfiles/alpha/gate), so it is kicked off immediately and
+    # never polled — it runs in the background for its own duration and must
+    # NOT block run_publish. The route reads DeepDiveStore directly (no
+    # publish step), so there is nothing downstream waiting on it either.
+    - start_deep_dive_batch:
+        try:
+          call: http.post
+          args:
+            url: ${"https://run.googleapis.com/v2/projects/" + project_id + "/locations/" + region + "/jobs/tyche-stocks-deep-dive-batch:run"}
+            auth:
+              type: OAuth2
+            body: {}
+        except:
+          as: e
+          steps:
+            - log_deep_dive_start_failure:
+                call: sys.log
+                args:
+                  text: '${"Failed to start stocks-deep-dive-batch - " + string(e)}'
+                  severity: "WARNING"
+
     - parallel_morning:
         parallel:
           shared: []

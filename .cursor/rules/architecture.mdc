@@ -73,6 +73,7 @@ All routes are mounted under `/api/v1`. Health endpoints are at the root.
 | `/api/v1/scanner/scan` | POST | Trigger full pipeline scan. Query: `tickers` (optional), `top_n`, `enable_llm`, `target_expiration`, `available_capital` (per-scan deploy capital override) |
 | `/api/v1/scanner/latest` | GET | Latest scan result (200 + null if none) |
 | `/api/v1/covered-calls/analyze` | POST | Batch CC analysis for held positions |
+| `/api/v1/stocks/deep-dive/{ticker}` | GET | On-demand multi-timeframe deep dive (RSI, EMA stack, MACD, BB, fundamentals, estimates, catalysts) |
 | `/api/v1/conviction/scan` | GET | EMA conviction scan (local Parquet, no network) |
 | `/api/v1/account/balances` | GET | Account balances from Tradier |
 | `/api/v1/system/config` | GET/PATCH | Read/update system configuration |

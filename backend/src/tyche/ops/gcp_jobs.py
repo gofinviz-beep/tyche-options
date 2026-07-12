@@ -33,6 +33,7 @@ JOB_NAMES = (
     "alpha-batch",
     "stocks-conviction-batch",
     "stocks-derived-batch",
+    "stocks-deep-dive-batch",
     "candidate-universe-batch",
     "options-chain-prep-batch",
     "options-scanner-batch",
@@ -546,6 +547,76 @@ async def run_stocks_derived_batch_job(
     rel = manifest.write(ctx=ctx)
     status = "success" if manifest.status == "success" else "failed"
     return JobResult("stocks-derived-batch", rid, status, rel, summary)
+
+
+async def run_deep_dive_batch_job(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+    run_id: str | None = None,
+) -> JobResult:
+    """Precompute Stock Deep Dive payloads and write one Parquet per ticker."""
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+    rid = run_id or new_run_id()
+    manifest = RunManifest.start(
+        job_name="deep_dive_batch",
+        run_id=rid,
+        data_backend=ctx.backend,
+    )
+    manifest.input_paths = [
+        "ohlcv_daily/",
+        "ticker_meta.parquet",
+        "fundamentals/",
+        "estimates/",
+        "catalyst_signals/",
+    ]
+
+    from tyche.market_data.catalyst_store import CatalystSignalStore
+    from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
+    from tyche.market_data.deep_dive_store import DEEP_DIVE_REL
+    from tyche.market_data.estimates_store import EstimatesStore
+    from tyche.market_data.fundamentals_store import FundamentalsStore
+    from tyche.ops.job_progress import log_job_phase
+    from tyche.workflow.deep_dive_batch import run_deep_dive_batch
+
+    store = OHLCVStore(data_dir=settings.data_dir, ctx=ctx)
+    meta = TickerMetaStore(data_dir=settings.data_dir, ctx=ctx)
+    fundamentals = FundamentalsStore(data_dir=settings.data_dir, ctx=ctx)
+    estimates = EstimatesStore(data_dir=settings.data_dir, ctx=ctx)
+    catalysts = CatalystSignalStore(data_dir=settings.data_dir, ctx=ctx)
+
+    log_job_phase("stocks-deep-dive-batch", "execute", status="start")
+    result = await run_deep_dive_batch(
+        ohlcv_store=store,
+        meta_store=meta,
+        fundamentals_store=fundamentals,
+        estimates_store=estimates,
+        catalyst_store=catalysts,
+        min_market_cap_millions=settings.deep_dive_batch_min_market_cap_millions,
+        ctx=ctx,
+    )
+    summary = result.to_dict()
+    log_job_phase(
+        "stocks-deep-dive-batch",
+        "execute",
+        status="complete",
+        computed=result.tickers_computed,
+        written=result.tickers_written,
+    )
+
+    manifest.extra = summary
+    manifest.output_paths = [f"{DEEP_DIVE_REL}/"]
+    if result.errors:
+        manifest.warnings.extend(result.errors)
+    if result.tickers_written == 0:
+        manifest.finish(status="failed")
+    else:
+        manifest.finish(status="success")
+
+    rel = manifest.write(ctx=ctx)
+    status = "success" if manifest.status == "success" else "failed"
+    return JobResult("stocks-deep-dive-batch", rid, status, rel, summary)
 
 
 async def run_candidate_universe_batch_job(
@@ -1150,6 +1221,7 @@ _JOB_RUNNERS: dict[str, Callable[..., Any]] = {
     "alpha-batch": run_alpha_batch_job,
     "stocks-conviction-batch": run_stocks_conviction_batch_job,
     "stocks-derived-batch": run_stocks_derived_batch_job,
+    "stocks-deep-dive-batch": run_deep_dive_batch_job,
     "candidate-universe-batch": run_candidate_universe_batch_job,
     "options-chain-prep-batch": run_options_chain_prep_batch_job,
     "options-scanner-batch": run_options_scanner_batch_job,

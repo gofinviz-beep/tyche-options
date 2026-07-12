@@ -976,3 +976,127 @@ export interface AlphaBatchResult {
   as_of_date: string | null;
   elapsed_s: number | null;
 }
+
+// ── Ticker Deep Dive ──────────────────────────────────────────────────
+
+export interface RSIReading {
+  date: string;
+  value: number;
+  close: number;
+}
+
+export interface MultiTimeframeRSI {
+  daily: number;
+  weekly: number;
+  monthly: number;
+  quarterly: number;
+  weekly_history: RSIReading[];
+  monthly_history: RSIReading[];
+  quarterly_history: RSIReading[];
+}
+
+export interface EMAStack {
+  ema_8: number;
+  ema_21: number;
+  ema_50: number;
+  sma_200: number;
+  pct_vs_ema_8: number;
+  pct_vs_ema_21: number;
+  pct_vs_ema_50: number;
+  pct_vs_sma_200: number;
+  slope_ema_8: number;
+  slope_ema_21: number;
+  slope_ema_50: number;
+  days_above_ema_8: number;
+  days_above_ema_21: number;
+  stack_score: number;
+}
+
+export interface MACDData {
+  macd_line: number;
+  signal_line: number;
+  histogram: number;
+}
+
+export interface BollingerBands {
+  upper: number;
+  middle: number;
+  lower: number;
+  width_pct: number;
+  pct_b: number;
+}
+
+export interface VolumeBar {
+  date: string;
+  volume: number;
+  close: number;
+}
+
+export interface PricePoint {
+  date: string;
+  close: number;
+}
+
+export interface FundamentalsPeriod {
+  period: string;
+  revenue: number | null;
+  gross_profit: number | null;
+  gross_margin: number | null;
+  operating_income: number | null;
+  operating_margin: number | null;
+  net_income: number | null;
+  net_margin: number | null;
+  eps_diluted: number | null;
+  cash: number | null;
+  operating_cash_flow: number | null;
+  total_debt: number | null;
+}
+
+export interface EstimatesSnapshot {
+  pt_mean: number | null;
+  pt_median: number | null;
+  pt_high: number | null;
+  pt_low: number | null;
+  analyst_count: number | null;
+  rev_growth_q_yoy: number | null;
+  rev_growth_ttm_yoy: number | null;
+  gross_margin_ttm: number | null;
+  op_margin_ttm: number | null;
+  current_ratio: number | null;
+  debt_to_equity: number | null;
+  forward_eps: Array<{ period: string; value: number }>;
+  forward_rev: Array<{ period: string; value: number }>;
+}
+
+export interface CatalystEvent {
+  date: string;
+  tag: string;
+  impact: number;
+  source: string;
+}
+
+export interface TickerDeepDive {
+  ticker: string;
+  name: string;
+  sector: string;
+  last_close: number;
+  market_cap: number | null;
+  institutional_pct: number | null;
+  high_52w: number;
+  low_52w: number;
+  pct_off_52w_high: number;
+  as_of_date: string;
+
+  rsi: MultiTimeframeRSI;
+  ema_stack: EMAStack;
+  macd: MACDData;
+  bollinger: BollingerBands;
+
+  returns: Record<string, number>;
+  price_history: PricePoint[];
+  volume_bars: VolumeBar[];
+
+  fundamentals: FundamentalsPeriod[];
+  estimates: EstimatesSnapshot;
+  catalysts: CatalystEvent[];
+}

@@ -24,7 +24,7 @@ const FLUSH_INTERVAL_MS = 10_000;
 const SLOW_THRESHOLD_MS = 5_000;
 const TELEMETRY_URL = "/api/v1/telemetry/events";
 
-let buffer: TelemetryEvent[] = [];
+const buffer: TelemetryEvent[] = [];
 let flushTimer: ReturnType<typeof setInterval> | null = null;
 
 function enqueue(event: TelemetryEvent): void {

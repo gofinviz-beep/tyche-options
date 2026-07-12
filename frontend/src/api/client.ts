@@ -172,6 +172,10 @@ export const api = {
       ),
     getDeepDips: () =>
       request<import("@/types").DeepDipScanResult>("/stocks/deep-dips"),
+    getDeepDive: (ticker: string) =>
+      request<import("@/types").TickerDeepDive>(
+        `/stocks/deep-dive/${encodeURIComponent(ticker)}`,
+      ),
     getConvictionSnapshots: (asOfDate?: string) => {
       const params = asOfDate ? `?as_of_date=${asOfDate}` : "";
       return request<import("@/types").ConvictionSnapshot[]>(

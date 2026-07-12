@@ -14,6 +14,7 @@ import { StocksConviction } from "@/pages/stocks/Conviction";
 import { ConvictionHistory } from "@/pages/stocks/History";
 import { DeepDipDashboard } from "@/pages/stocks/DeepDips";
 import { Alpha } from "@/pages/stocks/Alpha";
+import { StockDeepDive } from "@/pages/stocks/DeepDive";
 import { IntelligenceDashboard } from "@/pages/intelligence/Dashboard";
 import { IntelligenceNews } from "@/pages/intelligence/News";
 import { IntelligenceFilings } from "@/pages/intelligence/Filings";
@@ -49,6 +50,7 @@ export default function App() {
             <Route path="/stocks/history" element={<ConvictionHistory />} />
             <Route path="/stocks/deep-dips" element={<DeepDipDashboard />} />
             <Route path="/stocks/alpha" element={<Alpha />} />
+            <Route path="/stocks/deep-dive" element={<StockDeepDive />} />
 
             {/* Intelligence module */}
             <Route path="/intelligence" element={<IntelligenceDashboard />} />

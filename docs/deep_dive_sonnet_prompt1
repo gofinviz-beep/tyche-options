@@ -1,0 +1,140 @@
+Task: Rebuild the Stock Deep Dive page with real charts (recharts)
+You are working in tyche-options, a React 19 + TypeScript + Vite + Tailwind CSS app (frontend) with a Python FastAPI backend. Light theme only (financial-broker aesthetic); no dark mode; no emojis. Frontend commands run from the frontend/ directory.
+
+Rebuild frontend/src/pages/stocks/DeepDive.tsx to use real, polished charts via recharts, replacing the current crude fixed-height <div>-bar "charts". The page already fetches all needed data via the useTickerDeepDive(ticker) hook (GET /api/v1/stocks/deep-dive/{ticker}) and receives a fully-populated TickerDeepDive object. You are only changing rendering — the data is already available.
+
+First, read these to ground yourself
+frontend/src/pages/stocks/DeepDive.tsx (current page)
+frontend/src/types/index.ts (find TickerDeepDive and its nested interfaces — the exact data contract)
+frontend/package.json
+canvases/BFLY-multi-timeframe-analysis.canvas.tsx — the visual reference. It uses cursor/canvas primitives (LineChart, BarChart, Stat, Card, Callout) that DO NOT exist in this app; study it only for the intended look, chart types, reference lines, and section order. You will reproduce that quality with recharts wrappers.
+Data contract (already returned; do not change the types)
+TickerDeepDive includes:
+
+ticker, name, sector, last_close, market_cap, institutional_pct, high_52w, low_52w, pct_off_52w_high, as_of_date
+rsi: { daily, weekly, monthly, quarterly, weekly_history[], monthly_history[], quarterly_history[] } where each history item is { date, value, close }
+ema_stack: { ema_8, ema_21, ema_50, sma_200, pct_vs_ema_8, pct_vs_ema_21, pct_vs_ema_50, pct_vs_sma_200, slope_ema_8, slope_ema_21, slope_ema_50, days_above_ema_8, days_above_ema_21, stack_score }
+macd: { macd_line, signal_line, histogram }
+bollinger: { upper, middle, lower, width_pct, pct_b }
+returns: Record<string, number> (keys 1W,2W,1M,3M,6M,1Y)
+price_history: { date, close }[] (up to 104 weekly closes) — currently fetched but never rendered; you will render it
+volume_bars: { date, volume, close }[] (last 60 daily bars; volume is already in millions)
+fundamentals: { period, revenue, gross_profit, gross_margin, operating_income, operating_margin, net_income, net_margin, eps_diluted, cash, operating_cash_flow, total_debt }[] (chronological, up to 6 quarters). Revenue/cash/income are raw dollars. Margins are ALREADY percent-scale (e.g. 27.8 means 27.8%).
+estimates: { pt_mean, pt_median, pt_high, pt_low, analyst_count, rev_growth_q_yoy, rev_growth_ttm_yoy, gross_margin_ttm, op_margin_ttm, current_ratio, debt_to_equity, forward_eps[], forward_rev[] }. rev_growth_*, gross_margin_ttm, op_margin_ttm are ALREADY percent-scale.
+catalysts: { date, tag, impact, source }[]
+Constraints
+Do not modify the backend, the API route, frontend/src/types/index.ts, frontend/src/hooks/useApi.ts, or frontend/src/api/client.ts. All required data already flows through.
+Light theme; reuse existing helpers formatLargeNumber, formatPct in the file.
+Graceful degradation: every section renders sensibly when its array is empty or a field is null (many tickers lack fundamentals/estimates/catalysts). Never crash; hide the section or show a muted "No data" note.
+Match the existing code style in the file.
+Step 1 — Add recharts
+cd frontend && npm install recharts@^3.9.2
+Recharts 3.9.x supports React 19 natively (no react-is override). If a peer warning appears, do not add overrides; just confirm npm run build passes.
+
+Step 2 — Reusable chart library (frontend/src/components/charts/)
+Build thin wrappers so every chart shares ONE light-theme look. Do not scatter raw recharts JSX across the page.
+
+theme.ts:
+
+export const CHART_COLORS = {
+  blue: "#2563eb", emerald: "#059669", red: "#dc2626", amber: "#d97706",
+  violet: "#7c3aed", gray: "#9ca3af", grid: "#f0f1f3", axis: "#9ca3af",
+};
+export type ChartTone = "blue" | "emerald" | "red" | "amber" | "violet" | "gray";
+ChartTooltip.tsx — a shared custom tooltip: white card (bg-white border border-gray-200 rounded-lg shadow-sm px-3 py-2 text-xs), x-label bold gray-700, one row per series ({color dot} {name}: {formattedValue}). Accept a formatValue?: (v: number, key: string) => string from the parent.
+
+LineChartCard.tsx — props:
+
+interface Series { key: string; name: string; tone?: ChartTone; yAxisId?: "left" | "right"; }
+interface RefLine { y: number; label: string; tone?: ChartTone; }
+interface LineChartCardProps {
+  data: Record<string, unknown>[]; xKey: string; series: Series[];
+  height?: number;                     // default 220
+  yDomain?: [number | "auto", number | "auto"];
+  referenceLines?: RefLine[];
+  valuePrefix?: string; valueSuffix?: string;
+  rightAxis?: boolean;                 // second Y axis for dual-series
+  decimals?: number;                   // default 1
+}
+ResponsiveContainer width="100%" height={height} → recharts LineChart.
+CartesianGrid vertical={false} stroke={CHART_COLORS.grid}.
+XAxis dataKey={xKey} with tick={{fontSize:11, fill:CHART_COLORS.axis}}, tickLine={false}, axisLine={false}, thin ticks for dense data: interval={data.length > 14 ? Math.floor(data.length/6) : 0}, minTickGap={16}.
+YAxis (+ a second YAxis yAxisId="right" orientation="right" when rightAxis), width={44}, small gray ticks, domain={yDomain ?? ["auto","auto"]}, tick formatter applying prefix/suffix.
+Each series → Line type="monotone" strokeWidth={2} dot={false} activeDot={{r:3}} yAxisId={s.yAxisId ?? "left"}, color from tone.
+referenceLines → ReferenceLine y strokeDasharray="4 4" with a small right-positioned Label in the tone color.
+Use the shared ChartTooltip.
+BarChartCard.tsx — props:
+
+interface BarChartCardProps {
+  data: Record<string, unknown>[]; xKey: string; barKey: string; name: string;
+  height?: number;                     // default 200
+  tone?: ChartTone;                    // default "blue"
+  colorFn?: (row: Record<string, unknown>, i: number) => string; // per-bar color
+  valuePrefix?: string; valueSuffix?: string;
+  decimals?: number; referenceZero?: boolean;
+}
+Same grid/axis/tooltip conventions. Bar dataKey={barKey} radius={[3,3,0,0]}; if colorFn, render <Cell> per row, else solid tone. If referenceZero, add ReferenceLine y={0} in gray.
+Callout.tsx — props { tone: "info"|"warning"|"danger"|"success"; title: string; children }. Rounded, left-border-accented panel:
+
+info bg-blue-50 border-blue-200 text-blue-900; warning bg-amber-50 border-amber-200 text-amber-900; danger bg-red-50 border-red-200 text-red-900; success bg-emerald-50 border-emerald-200 text-emerald-900. Title text-sm font-semibold; body text-xs mt-1 leading-relaxed.
+Step 3 — Rewrite DeepDive.tsx sections
+Keep the page shell (search bar, loading/error/empty states, Section wrapper, header card). Bump container to max-w-6xl. Delete the old RSITimeline component and the old inline volume <div>-bar block.
+
+3a. Multi-Timeframe RSI — keep the 4 RSICard gauges. Replace the three div-strips with LineChartCards:
+
+Weekly RSI (rsi.weekly_history, series [{key:"value",name:"Weekly RSI",tone:"blue"}]), yDomain={[30,90]}, refLines 70 Overbought (red) / 50 Neutral (gray) / 30 Oversold (emerald), height 200.
+Monthly RSI (rsi.monthly_history) — same, refLines 70/50/30.
+Quarterly RSI (rsi.quarterly_history) — dual-axis: rightAxis, series [{key:"value",name:"Quarterly RSI",tone:"violet",yAxisId:"left"},{key:"close",name:"Close ($)",tone:"gray",yAxisId:"right"}], refLines 60 Breakout (emerald) / 30 Deep Oversold (red), height 240.
+Layout: weekly+monthly in grid grid-cols-1 md:grid-cols-2 gap-4; quarterly full-width below. Keep the "Reading Guide" footer.
+3b. NEW section — "Price History & Volume" (render only if price_history.length > 0):
+
+Price line: LineChartCard on price_history (series [{key:"close",name:"Weekly Close",tone:"blue"}]), valuePrefix="$", height 260, EMA reference lines from ema_stack (include a line only if the EMA value > 0): ema_8 (blue, "EMA-8"), ema_21 (amber, "EMA-21"). Caption: "Weekly closes (up to 2 years)."
+Volume bars: BarChartCard on volume_bars (barKey volume, name "Volume (M)", valueSuffix="M", height 200). Highlight surges via colorFn: compute median volume; bar ≥ 3 × median → amber, else blue. Caption dynamically notes the largest surge, e.g. "Peak: {max}M on {date} — {ratio}× median."
+3c. Keep EMA Stack, MACD, Bollinger metric cards as-is (acceptable; don't rework).
+
+3d. Fundamentals — above the existing numeric table, add charts (only if fundamentals.length > 0), xKey period:
+
+Revenue — BarChartCard, map revenue/1e6, valuePrefix="$", valueSuffix="M", tone blue.
+Cash — BarChartCard, map cash/1e6, $…M, tone emerald.
+Net Income — LineChartCard, map net_income/1e6, $…M, tone violet, referenceLines=[{y:0,label:"",tone:"gray"}].
+Gross Margin — LineChartCard, gross_margin as-is (already percent), valueSuffix="%", tone emerald.
+Layout: grid grid-cols-1 md:grid-cols-2 gap-4 (Revenue+Cash, then Net Income+Gross Margin).
+Keep the numeric FundamentalsTable below, but FIX units (Step 4).
+3e. Estimates & Catalysts — keep estimates stat tiles + metric grid (fix units in Step 4). Add one data-driven Callout (Step 5). Keep the catalyst list as-is.
+
+Step 4 — Fix the percent double-count bug
+Margins/growth are ALREADY percent-scale (confirmed in backend fundamentals_store.py: net/rev*100; Finnhub TTM metrics likewise). The current frontend multiplies by 100 again, producing values like 2781%. Add and use:
+
+function formatPercentScale(v: number | null | undefined, decimals = 1): string {
+  if (v == null) return "—";
+  return `${v.toFixed(decimals)}%`;
+}
+Apply (remove the * 100) to: fundamentals gross_margin, operating_margin, net_margin; estimates rev_growth_q_yoy, rev_growth_ttm_yoy, gross_margin_ttm, op_margin_ttm. Verify by spot-checking RKLB, AAPL, MSFT — margins must land in a plausible 0–100% range.
+
+Step 5 — Data-driven callouts (no hardcoded ticker prose)
+Implement a pure buildCallouts(data) returning {tone,title,body}[], rendered below the header. Include a callout only when its condition holds; keep bodies one sentence:
+
+rsi.quarterly>=60 && rsi.daily>=70 → warning "Structurally strong but short-term overbought" — quarterly confirms trend, daily hot, wait for pullback to 40–50.
+rsi.quarterly>=60 && rsi.daily<=50 → success "Trend intact, momentum cooled" — the pullback entry window.
+estimates.pt_high != null && last_close > estimates.pt_high → danger "Trading above all analyst targets".
+else if estimates.pt_mean != null and upside >15% → success "{n}% upside to mean target".
+any volume bar ≥ 3× median → info "Recent volume surge — {ratio}× median on {date}".
+Step 6 — Verify
+cd frontend && npm run build && npm run lint
+Fix all TS errors and any lint issues you introduce.
+
+Files
+Create: frontend/src/components/charts/{theme.ts,ChartTooltip.tsx,LineChartCard.tsx,BarChartCard.tsx} and Callout.tsx.
+Modify: frontend/package.json, frontend/src/pages/stocks/DeepDive.tsx.
+Do NOT modify: backend, types/index.ts, hooks/useApi.ts, api/client.ts.
+Acceptance criteria
+npm run build passes, no TS errors.
+RSI histories are line charts with 70/50/30 (and 60 for quarterly) reference lines; quarterly overlays RSI + price on dual axes.
+A price-history line chart renders (previously absent) with EMA-8/EMA-21 reference lines.
+Volume is a bar chart with surge days highlighted amber + dynamic peak caption.
+Fundamentals show Revenue (bar), Cash (bar), Net Income (line), Gross Margin (line) + the numeric table.
+All percentages render plausibly (no 2781%).
+2–3 data-driven callouts appear; no hardcoded ticker names.
+Empty/null data degrades gracefully; no crash.
+All charts share one consistent light-theme look via the wrappers.
+

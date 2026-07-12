@@ -302,6 +302,28 @@ class WorkflowScheduler:
         self._jobs["conviction_batch"] = job.id
         logger.info("scheduled_conviction_batch", time=f"{hour:02d}:{minute:02d} ET")
 
+    def schedule_deep_dive_batch(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        hour: int = 16,
+        minute: int = 15,
+    ) -> None:
+        """Schedule Stock Deep Dive precompute after conviction batch (default 4:15 PM ET)."""
+        job = self._scheduler.add_job(
+            func,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=hour,
+                minute=minute,
+                timezone="US/Eastern",
+            ),
+            id="deep_dive_batch",
+            replace_existing=True,
+            name="Stock Deep Dive Precompute",
+        )
+        self._jobs["deep_dive_batch"] = job.id
+        logger.info("scheduled_deep_dive_batch", time=f"{hour:02d}:{minute:02d} ET")
+
     def schedule_alpha_batch(
         self,
         func: Callable[..., Coroutine[Any, Any, Any]],
