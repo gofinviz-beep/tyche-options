@@ -28,11 +28,12 @@ def test_job_names_match_spec() -> None:
     assert "publish-signals" in JOB_NAMES
     assert "stocks-derived-batch" in JOB_NAMES
     assert "stocks-deep-dive-batch" in JOB_NAMES
+    assert "stocks-screener-index-batch" in JOB_NAMES
     assert "candidate-universe-batch" in JOB_NAMES
     assert "options-chain-prep-batch" in JOB_NAMES
     assert "options-scanner-batch" in JOB_NAMES
     assert "options-snapshot-batch" in JOB_NAMES
-    assert len(JOB_NAMES) == 17
+    assert len(JOB_NAMES) == 18
 
 
 @pytest.mark.asyncio

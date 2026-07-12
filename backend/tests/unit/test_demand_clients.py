@@ -452,7 +452,9 @@ class TestBenzingaGuidance:
 
 class TestClassifyGuidance:
     def test_revenue_raise_from_range_midpoints(self):
-        # Current midpoint 11000 vs prior midpoint 10000 → +10% saturated raise.
+        # Current midpoint 11000 vs prior midpoint 10000 → +10% raise on the
+        # ±10% revision scale. tanh(log1p(pct / full_pct)) is tail-preserving
+        # (asymptotic, never a hard clamp at 1.0) — see _pct_verdict.
         verdict = classify_guidance(
             {
                 "positioning": "primary",
@@ -465,7 +467,7 @@ class TestClassifyGuidance:
         assert verdict is not None
         catalyst, impact = verdict
         assert catalyst == "guidance_raise"
-        assert impact == pytest.approx(1.0)
+        assert impact == pytest.approx(0.6)
 
     def test_explicit_midpoint_preferred(self):
         verdict = classify_guidance(
@@ -475,10 +477,10 @@ class TestClassifyGuidance:
                 "previous_max_revenue_guidance": 10200.0,
             }
         )
-        # 10500 vs prior mid 10000 → +5% → mid magnitude.
+        # 10500 vs prior mid 10000 → +5% → tanh(log1p(0.5)) mid magnitude.
         catalyst, impact = verdict
         assert catalyst == "guidance_raise"
-        assert impact == pytest.approx(0.5)
+        assert impact == pytest.approx(0.38461538461538464)
 
     def test_eps_cut_fallback(self):
         # No revenue prior → falls back to EPS midpoints; −5% → cut.
@@ -492,7 +494,7 @@ class TestClassifyGuidance:
         )
         catalyst, impact = verdict
         assert catalyst == "guidance_cut"
-        assert impact == pytest.approx(0.5)
+        assert impact == pytest.approx(0.38461538461538464)
 
     def test_reiteration_is_none(self):
         assert (
@@ -595,9 +597,15 @@ class TestDeriveGuidanceCatalysts:
         # The two FY2027 guides have a year-ago comparator; the FY2026 ones do not.
         dates = {r["date"] for r, _, _ in out}
         assert dates == {"2026-02-25", "2026-05-20"}
-        for _, catalyst, impact in out:
+        by_date = {r["date"]: (catalyst, impact) for r, catalyst, impact in out}
+        for catalyst, _impact in by_date.values():
             assert catalyst == "guidance_raise"
-            assert impact == pytest.approx(1.0)  # >30% YoY saturates
+        # +57% and +89% YoY on the ±30% scale — tanh/log1p is tail-preserving
+        # (asymptotic toward 1.0, never a hard clamp), so a bigger beat still
+        # scores strictly higher without saturating identically.
+        assert by_date["2026-02-25"][1] == pytest.approx(0.786851394393375)
+        assert by_date["2026-05-20"][1] == pytest.approx(0.8810737213689296)
+        assert by_date["2026-02-25"][1] < by_date["2026-05-20"][1]
 
     def test_first_period_has_no_comparator(self):
         recs = [self._rec("2025-02-26", 2026, "Q1", 42.05e9)]
@@ -622,8 +630,8 @@ class TestDeriveGuidanceCatalysts:
         assert len(out) == 1
         _, catalyst, impact = out[0]
         assert catalyst == "guidance_raise"
-        # Revision scale (±10%): +4% → 0.4, not the YoY +30% → 1.0.
-        assert impact == pytest.approx(0.4)
+        # Revision scale (±10%): +4% → ~0.324, not the YoY +30% → ~0.79.
+        assert impact == pytest.approx(0.3243243243243243)
 
     def test_yoy_cut(self):
         recs = [
@@ -634,7 +642,7 @@ class TestDeriveGuidanceCatalysts:
         assert len(out) == 1
         _, catalyst, impact = out[0]
         assert catalyst == "guidance_cut"
-        assert impact == pytest.approx(1.0)
+        assert impact == pytest.approx(0.6896551724137931)
 
     def test_secondary_skipped(self):
         recs = [
@@ -670,18 +678,18 @@ class TestGuideVsConsensus:
         assert len(out) == 1
         _, catalyst, impact = out[0]
         assert catalyst == "guidance_raise"
-        assert impact == pytest.approx(1.0)
+        assert impact == pytest.approx(0.7230824667090647)
 
     def test_disappointment(self):
         # Guide below consensus → guidance_cut.
         recs = [self._rec("2026-05-20", 2027, "Q2", 78.0e9)]
-        consensus = [(date(2026, 6, 30), 80.0e9, None)]  # −2.5% → impact 0.5
+        consensus = [(date(2026, 6, 30), 80.0e9, None)]  # −2.5% → impact ~0.385
         out = derive_guidance_catalysts(
             recs, consensus_by_period=consensus, fye_month=self.NVDA_FYE
         )
         _, catalyst, impact = out[0]
         assert catalyst == "guidance_cut"
-        assert impact == pytest.approx(0.5)
+        assert impact == pytest.approx(0.38461538461538464)
 
     def test_consensus_preferred_over_yoy(self):
         # Two guides: YoY would saturate (1.0) on the second, but consensus
@@ -691,7 +699,7 @@ class TestGuideVsConsensus:
             self._rec("2026-05-20", 2027, "Q2", 51.0e9),  # +30.8% YoY → would be 1.0
         ]
         # Consensus only for FY2027 Q2's quarter (calendar 2026-06-30): 50.0B.
-        consensus = [(date(2026, 6, 30), 50.0e9, None)]  # +2.0% → 0.4
+        consensus = [(date(2026, 6, 30), 50.0e9, None)]  # +2.0% → ~0.324
         out = derive_guidance_catalysts(
             recs, consensus_by_period=consensus, fye_month=self.NVDA_FYE
         )
@@ -700,7 +708,7 @@ class TestGuideVsConsensus:
         assert len(matched) == 1
         _, catalyst, impact = matched[0]
         assert catalyst == "guidance_raise"
-        assert impact == pytest.approx(0.4)  # consensus scale, not YoY
+        assert impact == pytest.approx(0.3243243243243243)  # consensus scale, not YoY
 
     def test_no_matching_quarter_falls_back_to_yoy(self):
         # The guide's fiscal quarter has no nearby consensus period → falls back
@@ -718,7 +726,7 @@ class TestGuideVsConsensus:
         assert len(matched) == 1
         _, catalyst, impact = matched[0]
         assert catalyst == "guidance_raise"
-        assert impact == pytest.approx(1.0)  # YoY scale (>30% saturates)
+        assert impact == pytest.approx(0.6896551724137931)  # YoY scale (+40%)
 
     def test_offcalendar_fiscal_aligns_to_right_quarter(self):
         # AAPL (FYE September): fiscal Q1 FY2026 ends ~Dec 2025. The consensus
@@ -735,7 +743,8 @@ class TestGuideVsConsensus:
         assert len(out) == 1
         _, catalyst, impact = out[0]
         assert catalyst == "guidance_raise"
-        assert impact == pytest.approx((130.0 - 124.0) / 124.0 / 0.05, rel=1e-6)
+        # +4.8% vs consensus on the ±5% scale, tanh/log1p transformed.
+        assert impact == pytest.approx(0.5894916702263989)
 
     def test_no_fye_month_skips_consensus(self):
         # Without a fiscal-year-end month, consensus is skipped (no wrong-quarter
@@ -749,7 +758,7 @@ class TestGuideVsConsensus:
         matched = [o for o in out if o[0]["date"] == "2026-05-20"]
         assert len(matched) == 1
         _, catalyst, impact = matched[0]
-        assert impact == pytest.approx(1.0)  # YoY, not consensus
+        assert impact == pytest.approx(0.6896551724137931)  # YoY, not consensus
 
     def test_reiteration_vs_consensus_is_none(self):
         # Guide essentially in line with consensus (<0.5%) → no catalyst.
@@ -769,13 +778,13 @@ class TestGuideVsConsensus:
             "positioning": "primary",
             "estimated_eps_guidance": 2.2,
         }
-        consensus = [(date(2026, 6, 30), None, 2.0)]  # eps +10% → saturates
+        consensus = [(date(2026, 6, 30), None, 2.0)]  # eps +10% on the ±5% scale
         out = derive_guidance_catalysts(
             [rec], consensus_by_period=consensus, fye_month=self.NVDA_FYE
         )
         _, catalyst, impact = out[0]
         assert catalyst == "guidance_raise"
-        assert impact == pytest.approx(1.0)
+        assert impact == pytest.approx(0.8000000000000002)
 
 
 class TestFiscalQuarterEnd:

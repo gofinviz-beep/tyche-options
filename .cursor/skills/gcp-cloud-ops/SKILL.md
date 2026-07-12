@@ -55,15 +55,24 @@ signals/stocks/conviction.parquet          ← tyche-stocks-conviction-batch
 signals/stocks/deep_dips.parquet           ← tyche-stocks-derived-batch
 signals/stocks/history_summary.parquet     ← tyche-stocks-derived-batch
 signals/stocks/deep_dive/{TICKER}.parquet  ← tyche-stocks-deep-dive-batch (one file per ticker, NOT published)
+signals/stocks/screener_index.parquet      ← tyche-stocks-screener-index-batch
 published/routes/stocks_conviction.json
 published/routes/stocks_deep_dips.json
 published/routes/stocks_history.json
+published/routes/stocks_screener.json
 ```
 
 `stocks-deep-dive-batch` is the odd one out here: it has no `published/routes/*.json`
 counterpart. `GET /stocks/deep-dive/{ticker}` reads `DeepDiveStore` (per-ticker Parquet)
 directly in both local and GCS modes — a publish step would be pointless since the store
 is already a cheap point-read, unlike a full-universe scan.
+
+`stocks-screener-index-batch` (v3 "Diamond Finder") IS published (single compact index,
+not per-ticker) — mirrors `stocks_deep_dips`. It's chained after `stocks-deep-dive-batch`
+locally and fire-and-forget in the morning workflow (same non-blocking pattern as the
+deep-dive batch itself); prefers `DeepDiveStore.read_ticker()`, falls back to an inline
+`TickerDeepDiveEngine.analyze()` per ticker so it works even when the deep-dive batch
+hasn't populated GCS yet.
 
 ### Candidate universe (Slice 3)
 
@@ -107,13 +116,13 @@ Not in morning workflow. Run after market open when live bid/ask/OI matter.
 | `tyche-options-snapshot-batch` | Tradier chains for candidates |
 | Evening ingest (OHLCV, demand, intelligence inputs) | |
 
-## Jobs (17)
+## Jobs (18)
 
 `ingest-data`, `ingest-options-flatfiles`, `ingest-demand-data`, `ingest-news`,
 `ingest-edgar`, `alpha-batch`, `stocks-conviction-batch`, `stocks-derived-batch`,
-`stocks-deep-dive-batch`, `candidate-universe-batch`, `options-chain-prep-batch`,
-`options-scanner-batch`, `options-snapshot-batch`, `run-demand-gate`, `publish-signals`,
-`audit-snapshots`, `nightly-pipeline` (fallback).
+`stocks-deep-dive-batch`, `stocks-screener-index-batch`, `candidate-universe-batch`,
+`options-chain-prep-batch`, `options-scanner-batch`, `options-snapshot-batch`,
+`run-demand-gate`, `publish-signals`, `audit-snapshots`, `nightly-pipeline` (fallback).
 
 Entry: `backend/scripts/run_gcp_job.py` → `tyche/ops/gcp_jobs.py` (`JOB_NAMES` / `JOB_RUNNERS`).
 
@@ -174,6 +183,13 @@ Re-run `./infra/gcp/deploy_workflow.sh` after workflow edits.
     blocking the workflow on its runtime would violate the 7 AM PT publish SLA for zero
     benefit. `GET /stocks/deep-dive/{ticker}` reads whatever `DeepDiveStore` has —
     serves stale in cloud mode (inline compute blocked) rather than 500ing.
+17. **`stocks-screener-index-batch` (v3) IS published, unlike `stocks-deep-dive-batch`.**
+    Single compact index Parquet → `stocks_screener` route JSON (mirrors `stocks_deep_dips`,
+    NOT the per-ticker fire-and-forget pattern). Chained after the deep-dive batch locally;
+    fire-and-forget at workflow start in the cloud (own try/except, not polled — same
+    non-blocking rationale as `stocks-deep-dive-batch`). Reads `DeepDiveStore` per ticker
+    with an inline `TickerDeepDiveEngine.analyze()` fallback, so it produces a full index
+    even on a fresh GCS bucket where the deep-dive batch hasn't run yet.
 
 ## Observability
 

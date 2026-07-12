@@ -460,8 +460,52 @@ async def _scheduled_deep_dive_batch() -> None:
             written=result.tickers_written,
             duration_ms=round(result.duration_ms),
         )
+
+        if settings.screener_index_batch_enabled:
+            await _scheduled_screener_index_batch()
     except Exception:
         logger.error("scheduled_deep_dive_batch_failed", exc_info=True)
+
+
+async def _scheduled_screener_index_batch() -> None:
+    """Precompute the v3 Stock Screener index after the deep-dive batch.
+
+    Writes the single compact ``signals/stocks/screener_index.parquet``
+    snapshot consumed by ``GET /stocks/screener``. Standalone from the
+    conviction SQLite/5-layer cache — no cache invalidation needed here.
+    """
+    from tyche.api.deps import get_data_store, get_deep_dive_store, get_ticker_meta_store
+    from tyche.config import get_settings as _gs
+    from tyche.market_data.catalyst_store import CatalystSignalStore
+    from tyche.market_data.estimates_store import EstimatesStore
+    from tyche.market_data.fundamentals_store import FundamentalsStore
+    from tyche.storage.paths import storage_context_from_settings
+    from tyche.workflow.screener_index_batch import run_screener_index_batch
+
+    settings = _gs()
+    try:
+        ohlcv_store = get_data_store(settings)
+        meta_store = get_ticker_meta_store(settings)
+        deep_dive_store = get_deep_dive_store(settings)
+        result = await run_screener_index_batch(
+            deep_dive_store=deep_dive_store,
+            ohlcv_store=ohlcv_store,
+            meta_store=meta_store,
+            fundamentals_store=FundamentalsStore(data_dir=settings.data_dir),
+            estimates_store=EstimatesStore(data_dir=settings.data_dir),
+            catalyst_store=CatalystSignalStore(data_dir=settings.data_dir),
+            min_market_cap_millions=settings.screener_index_min_market_cap_millions,
+            ctx=storage_context_from_settings(settings),
+        )
+        logger.info(
+            "scheduled_screener_index_batch_complete",
+            indexed=result.tickers_indexed,
+            skipped=result.tickers_skipped,
+            written=result.tickers_written,
+            duration_ms=round(result.duration_ms),
+        )
+    except Exception:
+        logger.error("scheduled_screener_index_batch_failed", exc_info=True)
 
 
 async def _scheduled_alpha_batch() -> None:
@@ -1124,6 +1168,7 @@ def create_app() -> FastAPI:
         monitor,
         news,
         scanner,
+        screener,
         stocks,
         system,
         telemetry,
@@ -1133,6 +1178,7 @@ def create_app() -> FastAPI:
     app.include_router(account.router, prefix="/api/v1")
     app.include_router(stocks.router, prefix="/api/v1")
     app.include_router(deep_dive.router, prefix="/api/v1")
+    app.include_router(screener.router, prefix="/api/v1")
     app.include_router(scanner.router, prefix="/api/v1")
     app.include_router(watchlist.router, prefix="/api/v1")
     app.include_router(events.router, prefix="/api/v1")

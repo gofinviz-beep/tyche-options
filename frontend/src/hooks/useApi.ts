@@ -340,6 +340,16 @@ export function useAlphaScan(params?: {
   });
 }
 
+export function useScreener(params?: import("@/types").ScreenerParams) {
+  return useQuery({
+    queryKey: ["stocks", "screener", params],
+    queryFn: () => api.stocks.getScreener(params),
+    staleTime: Infinity,
+    gcTime: 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+}
+
 export function useRecomputeAlpha() {
   const queryClient = useQueryClient();
   return useMutation({

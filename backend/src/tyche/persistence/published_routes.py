@@ -436,6 +436,56 @@ def get_stocks_deep_dips_scan(
     return None
 
 
+def get_stocks_screener_scan(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+):
+    """Return the screener index scan from published JSON or signal Parquet."""
+    from tyche.market_data.screener_index_store import (
+        SCREENER_INDEX_REL,
+        load_screener_rows,
+    )
+    from tyche.schemas.screener import ScreenerResponse, ScreenerRow
+
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+
+    if _prefer_published(settings):
+        env = _usable_published(
+            load_published_route("stocks_screener", settings=settings, ctx=ctx),
+            settings=settings,
+        )
+        if env is not None and isinstance(env.data, dict):
+            try:
+                scan = ScreenerResponse.model_validate(env.data)
+                logger.debug("screener_source", layer="published", route=env.rel_path)
+                return scan, "published"
+            except Exception as exc:
+                logger.warning("published_screener_parse_failed", error=str(exc))
+
+    signal_rel = first_existing_path((SCREENER_INDEX_REL,), ctx=ctx)
+    if not signal_rel:
+        return None
+
+    records, as_of, computed_at = load_screener_rows(ctx=ctx, rel_path=signal_rel)
+    if not records:
+        return None
+
+    rows = [ScreenerRow.model_validate(r) for r in records]
+    rows.sort(key=lambda r: r.setup_score, reverse=True)
+    scan = ScreenerResponse(
+        scanned_at=datetime.now(timezone.utc).isoformat(),
+        as_of_date=as_of,
+        computed_at=computed_at,
+        total=len(rows),
+        stale=False,
+        rows=rows,
+    )
+    logger.debug("screener_source", layer="signals", rows=len(rows))
+    return scan, "signals"
+
+
 def get_stocks_history_payload(
     *,
     settings: TycheSettings | None = None,

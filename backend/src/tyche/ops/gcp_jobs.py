@@ -34,6 +34,7 @@ JOB_NAMES = (
     "stocks-conviction-batch",
     "stocks-derived-batch",
     "stocks-deep-dive-batch",
+    "stocks-screener-index-batch",
     "candidate-universe-batch",
     "options-chain-prep-batch",
     "options-scanner-batch",
@@ -617,6 +618,86 @@ async def run_deep_dive_batch_job(
     rel = manifest.write(ctx=ctx)
     status = "success" if manifest.status == "success" else "failed"
     return JobResult("stocks-deep-dive-batch", rid, status, rel, summary)
+
+
+async def run_screener_index_batch_job(
+    *,
+    settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
+    run_id: str | None = None,
+) -> JobResult:
+    """Precompute the v3 Stock Screener index (single compact universe file).
+
+    Reads the v2 ``DeepDiveStore`` where present (chained after
+    ``stocks-deep-dive-batch``), falls back to the inline
+    ``TickerDeepDiveEngine`` otherwise. Fully standalone from conviction
+    SQLite / its 5-layer cache.
+    """
+    settings = settings or get_settings()
+    ctx = ctx or storage_context_from_settings(settings)
+    rid = run_id or new_run_id()
+    manifest = RunManifest.start(
+        job_name="screener_index_batch",
+        run_id=rid,
+        data_backend=ctx.backend,
+    )
+    manifest.input_paths = [
+        "ohlcv_daily/",
+        "ticker_meta.parquet",
+        "signals/stocks/deep_dive/",
+        "fundamentals/",
+        "estimates/",
+        "catalyst_signals/",
+    ]
+
+    from tyche.market_data.catalyst_store import CatalystSignalStore
+    from tyche.market_data.data_store import OHLCVStore, TickerMetaStore
+    from tyche.market_data.deep_dive_store import DeepDiveStore
+    from tyche.market_data.estimates_store import EstimatesStore
+    from tyche.market_data.fundamentals_store import FundamentalsStore
+    from tyche.market_data.screener_index_store import SCREENER_INDEX_REL
+    from tyche.ops.job_progress import log_job_phase
+    from tyche.workflow.screener_index_batch import run_screener_index_batch
+
+    store = OHLCVStore(data_dir=settings.data_dir, ctx=ctx)
+    meta = TickerMetaStore(data_dir=settings.data_dir, ctx=ctx)
+    deep_dive_store = DeepDiveStore(data_dir=settings.data_dir, ctx=ctx)
+    fundamentals = FundamentalsStore(data_dir=settings.data_dir, ctx=ctx)
+    estimates = EstimatesStore(data_dir=settings.data_dir, ctx=ctx)
+    catalysts = CatalystSignalStore(data_dir=settings.data_dir, ctx=ctx)
+
+    log_job_phase("stocks-screener-index-batch", "execute", status="start")
+    result = await run_screener_index_batch(
+        deep_dive_store=deep_dive_store,
+        ohlcv_store=store,
+        meta_store=meta,
+        fundamentals_store=fundamentals,
+        estimates_store=estimates,
+        catalyst_store=catalysts,
+        min_market_cap_millions=settings.screener_index_min_market_cap_millions,
+        ctx=ctx,
+    )
+    summary = result.to_dict()
+    log_job_phase(
+        "stocks-screener-index-batch",
+        "execute",
+        status="complete",
+        indexed=result.tickers_indexed,
+        written=result.tickers_written,
+    )
+
+    manifest.extra = summary
+    manifest.output_paths = [SCREENER_INDEX_REL]
+    if result.errors:
+        manifest.warnings.extend(result.errors)
+    if result.tickers_written == 0:
+        manifest.finish(status="failed")
+    else:
+        manifest.finish(status="success")
+
+    rel = manifest.write(ctx=ctx)
+    status = "success" if manifest.status == "success" else "failed"
+    return JobResult("stocks-screener-index-batch", rid, status, rel, summary)
 
 
 async def run_candidate_universe_batch_job(
@@ -1222,6 +1303,7 @@ _JOB_RUNNERS: dict[str, Callable[..., Any]] = {
     "stocks-conviction-batch": run_stocks_conviction_batch_job,
     "stocks-derived-batch": run_stocks_derived_batch_job,
     "stocks-deep-dive-batch": run_deep_dive_batch_job,
+    "stocks-screener-index-batch": run_screener_index_batch_job,
     "candidate-universe-batch": run_candidate_universe_batch_job,
     "options-chain-prep-batch": run_options_chain_prep_batch_job,
     "options-scanner-batch": run_options_scanner_batch_job,

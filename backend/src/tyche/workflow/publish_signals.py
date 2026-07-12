@@ -55,6 +55,7 @@ def _run_coroutine(coro):
 _STOCKS_CONVICTION_CANDIDATES = ("signals/stocks/conviction.parquet",)
 _STOCKS_DEEP_DIPS_CANDIDATES = ("signals/stocks/deep_dips.parquet",)
 _STOCKS_HISTORY_CANDIDATES = ("signals/stocks/history_summary.parquet",)
+_STOCKS_SCREENER_CANDIDATES = ("signals/stocks/screener_index.parquet",)
 _STOCKS_TRANSITIONS_CANDIDATES = ("signals/stocks/transitions.parquet",)
 _INTELLIGENCE_NEWS_CANDIDATES = (
     "signals/intelligence/news.parquet",
@@ -748,6 +749,64 @@ def publish_stocks_deep_dips(
     )
 
 
+def publish_stocks_screener(
+    *,
+    config: PublishConfig,
+    run_id: str,
+    settings: TycheSettings,
+) -> RoutePublishResult:
+    """Publish the v3 Stock Screener index as a compact route JSON.
+
+    Standalone from conviction/alpha/deep-dips — reads only the single
+    ``screener_index.parquet`` snapshot.
+    """
+    from tyche.market_data.screener_index_store import load_screener_rows
+    from tyche.schemas.screener import ScreenerResponse, ScreenerRow
+
+    ctx = config.ctx or storage_context_from_settings(settings)
+    signal_rel = first_existing_path(_STOCKS_SCREENER_CANDIDATES, ctx=ctx)
+    sources = [signal_rel] if signal_rel else []
+
+    scan: ScreenerResponse | None = None
+    if signal_rel:
+        records, as_of, computed_at = load_screener_rows(ctx=ctx, rel_path=signal_rel)
+        if records:
+            rows = [ScreenerRow.model_validate(r) for r in records]
+            rows.sort(key=lambda r: r.setup_score, reverse=True)
+            scan = ScreenerResponse(
+                scanned_at=_utc_now_iso(),
+                as_of_date=as_of,
+                computed_at=computed_at,
+                total=len(rows),
+                stale=False,
+                rows=rows,
+            )
+
+    status: RouteStatus = "ok" if scan is not None else "unavailable"
+    row_count = scan.total if scan else 0
+    data = scan.model_dump(mode="json") if scan else _unavailable_data("No screener index available")
+    envelope = _build_route_envelope(
+        route_key="stocks_screener",
+        run_id=run_id,
+        as_of=scan.as_of_date if scan else None,
+        row_count=row_count,
+        source_paths=sources,
+        status=status,
+        data=data,
+    )
+    rel = _write_route_artifact("stocks_screener", envelope, ctx=ctx)
+    return RoutePublishResult(
+        route_key="stocks_screener",
+        route=ROUTE_PATHS["stocks_screener"],
+        rel_path=rel,
+        as_of=scan.as_of_date if scan else None,
+        row_count=row_count,
+        source_paths=sources,
+        status=status,
+        generated_at=envelope["generated_at"],
+    )
+
+
 def publish_stocks_history(
     *,
     config: PublishConfig,
@@ -1231,6 +1290,20 @@ def run_publish_signals(config: PublishConfig | None = None) -> PublishResult:
         routes.append(history)
         if history.source_paths:
             job_manifest.input_paths.extend(history.source_paths)
+
+        log_job_phase("publish-signals", "stocks_screener")
+        screener = publish_stocks_screener(
+            config=cfg, run_id=run_id, settings=settings
+        )
+        routes.append(screener)
+        log_job_phase(
+            "publish-signals",
+            "stocks_screener",
+            status="complete",
+            rows=screener.row_count,
+        )
+        if screener.source_paths:
+            job_manifest.input_paths.extend(screener.source_paths)
 
         log_job_phase("publish-signals", "intelligence")
         news = publish_intelligence_news(

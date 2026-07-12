@@ -18,6 +18,7 @@ import {
   Users,
   PhoneOutgoing,
   Microscope,
+  Gem,
 } from "lucide-react";
 
 export interface ModulePage {
@@ -56,6 +57,7 @@ export const modules: AppModule[] = [
     basePath: "/stocks",
     pages: [
       { path: "", label: "Dashboard", icon: LayoutDashboard },
+      { path: "/screener", label: "Screener", icon: Gem },
       { path: "/alpha", label: "Directional Alpha", icon: Rocket },
       { path: "/deep-dive", label: "Deep Dive", icon: Microscope },
       { path: "/conviction", label: "Conviction", icon: BarChart3 },

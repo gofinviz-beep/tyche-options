@@ -337,6 +337,10 @@ class TycheSettings(BaseModel):
     # inline (or serve stale in cloud mode when inline compute is blocked).
     deep_dive_max_staleness_sessions: int = 2
 
+    # v3 Stock Screener ("Diamond Finder") — universe-wide compact index batch
+    screener_index_batch_enabled: bool = True
+    screener_index_min_market_cap_millions: float = 1000.0
+
     # --- Workflow ---
     morning_scan_time: str = "09:35"
     order_monitor_interval_min: int = 15

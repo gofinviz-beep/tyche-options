@@ -12,7 +12,7 @@ alwaysApply: false
 
 - pytest with `pytest-asyncio` (mode=auto), `pytest-cov` for coverage
 - Config in `backend/pyproject.toml` under `[tool.pytest.ini_options]`
-- Run: `cd backend && pytest tests/unit/` (556 tests, ~5min)
+- Run: `cd backend && pytest tests/unit/` (~1800 tests)
 - Coverage report included automatically via `--cov` flags in pyproject.toml
 
 ## Test File Layout
@@ -40,6 +40,10 @@ tests/unit/
 ├── test_backtest_routes.py        # Backtest + position API endpoint tests
 ├── test_backtest_pullbacks.py     # Backtest pullback scan logic (trend classify, EMA, aggregation)
 ├── test_exit_monitor.py           # Exit monitor workflow (profit target, stop loss, edge cases)
+├── test_deep_dive_route.py        # Deep dive cache/store/fallback/force/cloud-mode route tests
+├── test_screener_index_store.py   # Screener index single-Parquet store round-trip
+├── test_screener_index_batch.py   # Diamond Finder setup_score/setup_label fixtures + batch logic
+├── test_screener_routes.py        # GET /stocks/screener filter/sort coverage
 └── ...
 ```
 
@@ -152,3 +156,6 @@ Field is `last_close`, NOT `current_price`.
 - **Don't use `ConvictionEngine._compute_prior_streak()`.** The static method moved to `ConvictionFeatureEngine`. Import from `tyche.conviction.features`.
 - **Don't assert `sig1 is sig2` for ConvictionSignal caching.** The wrapper creates a new `ConvictionSignal` per call from cached features. Use `sig1.to_dict() == sig2.to_dict()` for value equality.
 - **Use `ConvictionFeatureEngine` for feature-only tests.** When testing EMA computation without CSP gates, use `ConvictionFeatureEngine` directly — it returns `FeatureSignal` objects (no `csp_eligible`, no `gate_results`).
+- **Don't build a `TestClient` without overriding `deps.get_settings`.** The repo `.env` has `TYCHE_DATA_BACKEND=gcs`; an un-overridden fixture makes real GCS network calls (DNS failures offline/sandboxed). Override with an isolated `TycheSettings.model_copy(update={"data_backend": "local", "data_dir": str(tmp_path), "db_dir": str(tmp_path), "api_prefer_published_signals": False, "api_allow_local_db_fallback": True})` — see `test_api.py::client`.
+- **Don't use `pd.bdate_range(end=date.today(), periods=n)` to build `n` rows of fixture OHLCV.** It silently returns `n-1` dates when today is a weekend. Use `pd.bdate_range(end=date.today(), periods=n + 1)[-n:]`.
+- **Don't hardcode absolute date strings as "N days ago" fixtures.** They become time bombs once real time passes the staleness/retention window being tested. Compute with `date.today() - timedelta(days=N)`.

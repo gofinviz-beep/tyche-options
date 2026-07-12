@@ -77,6 +77,7 @@ _catalyst_store: Any | None = None
 _policy_calendar: Any | None = None
 _supply_chain_graph: Any | None = None
 _deep_dive_store: Any | None = None
+_screener_index_store: Any | None = None
 
 
 def get_broker(settings: TycheSettings = Depends(get_settings)) -> BrokerClient:
@@ -672,6 +673,19 @@ def get_deep_dive_store(
     return _deep_dive_store
 
 
+def get_screener_index_store(
+    settings: TycheSettings = Depends(get_settings),
+) -> Any:
+    """Provide the universe-wide Stock Screener index store (v3)."""
+    global _screener_index_store
+    if _screener_index_store is None:
+        from tyche.market_data.screener_index_store import ScreenerIndexStore
+
+        _screener_index_store = ScreenerIndexStore(data_dir=settings.data_dir)
+        logger.info("screener_index_store_initialized")
+    return _screener_index_store
+
+
 def reset_all() -> None:
     """Reset all singleton instances and flush stale caches.
 
@@ -690,7 +704,7 @@ def reset_all() -> None:
     global _edgar_client, _filing_8k_store, _insider_tx_store
     global _csp_predictor, _breakout_predictor, _alpha_engine
     global _catalyst_store, _policy_calendar, _supply_chain_graph
-    global _deep_dive_store
+    global _deep_dive_store, _screener_index_store
 
     from tyche.api.routes.conviction import invalidate_conviction_cache
     invalidate_conviction_cache(clear_engine=True)
@@ -734,3 +748,4 @@ def reset_all() -> None:
     _policy_calendar = None
     _supply_chain_graph = None
     _deep_dive_store = None
+    _screener_index_store = None

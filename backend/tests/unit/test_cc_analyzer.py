@@ -32,7 +32,11 @@ def _make_ohlcv(
 ) -> pd.DataFrame:
     """Generate synthetic OHLCV data."""
     np.random.seed(42)
-    dates = pd.bdate_range(end=date.today(), periods=n)
+    # bdate_range(end=..., periods=n) under-counts by 1 when `end` itself
+    # falls on a weekend (it doesn't roll back to the prior business day the
+    # way one might expect) — over-fetch by one and slice to guarantee
+    # exactly n dates regardless of which weekday "today" happens to be.
+    dates = pd.bdate_range(end=date.today(), periods=n + 1)[-n:]
     prices = [base_price]
     for i in range(1, n):
         ret = trend + np.random.normal(0, volatility)

@@ -362,8 +362,13 @@ class TestTransitionsEndpointUnit:
 
 class TestRefreshConvictionEndpointUnit:
     @pytest.mark.asyncio
+    @patch("tyche.api.deps.get_ticker_meta_store")
+    @patch("tyche.api.deps.get_data_store")
+    @patch("tyche.api.deps.get_conviction_engine")
     @patch("tyche.workflow.conviction_batch.run_conviction_batch", new_callable=AsyncMock)
-    async def test_triggers_batch(self, mock_batch):
+    async def test_triggers_batch(
+        self, mock_batch, mock_engine, mock_data_store, mock_meta_store
+    ):
         from tyche.workflow.conviction_batch import ConvictionBatchResult
 
         mock_batch.return_value = ConvictionBatchResult(
@@ -374,20 +379,25 @@ class TestRefreshConvictionEndpointUnit:
             new_pullback_transitions=2,
             duration_ms=5000.0,
         )
+        mock_engine.return_value = MagicMock()
+        mock_data_store.return_value = MagicMock()
+        mock_meta_store.return_value = MagicMock()
 
         from tyche.api.routes.stocks import refresh_conviction
+        from tyche.config import TycheSettings
 
-        settings = MagicMock()
-        settings.conviction_batch_min_market_cap_millions = 500.0
-        settings.conviction_batch_min_price = 5.0
-        settings.conviction_batch_min_avg_volume = 500_000
-        settings.conviction_snapshot_retention_days = 90
+        settings = TycheSettings(
+            tradier_api_token="t",
+            tradier_account_id="a",
+            gemini_api_key="g",
+            data_backend="local",
+            conviction_batch_min_market_cap_millions=500.0,
+            conviction_batch_min_price=5.0,
+            conviction_batch_min_avg_volume=500_000,
+            conviction_snapshot_retention_days=90,
+        )
 
-        engine = MagicMock()
-        store = MagicMock()
-        meta = MagicMock()
-
-        resp = await refresh_conviction(settings, engine, store, meta)
+        resp = await refresh_conviction(settings)
         assert resp.signals_computed == 100
         assert resp.snapshots_upserted == 100
 

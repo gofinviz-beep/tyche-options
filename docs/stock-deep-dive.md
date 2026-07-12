@@ -1,6 +1,6 @@
 # Stock Deep Dive — Multi-Timeframe Technical + Fundamental Analysis
 
-**Status:** v1 implemented — **2026-07-01**; v2 (per-ticker precompute + read-through cache) implemented — **2026-07-12**
+**Status:** v1 implemented — **2026-07-01**; v2 (per-ticker precompute + read-through cache) implemented — **2026-07-12**; v3 (universe-wide Screener Index / "Diamond Finder") implemented — **2026-07-12**
 
 ## Purpose
 
@@ -59,18 +59,20 @@ Because the route and the batch share one serializer (`schemas/deep_dive.py::to_
 - **Local (APScheduler):** `WorkflowScheduler.schedule_deep_dive_batch()`, default 4:15 PM ET weekdays — chained after the OHLCV refresh + conviction batch, gated by `deep_dive_batch_enabled`. Handler: `app.py::_scheduled_deep_dive_batch`.
 - **Cloud:** `tyche-stocks-deep-dive-batch` Cloud Run Job (`ops/gcp_jobs.py::run_deep_dive_batch_job`, registered in `JOB_RUNNERS`). Fired fire-and-forget at the very start of `infra/gcp/workflows/morning-pipeline.yaml` (depends only on OHLCV + demand stores, not the demand gate/flatfiles/alpha) — the workflow never polls it, so it cannot block `run_publish`.
 
-### v3 — Screener Index (Planned)
+### v3 — Screener Index (Shipped)
 
 **Clarification:** v3 does NOT introduce multi-timeframe RSI — that already lives in Deep Dive (v1). v3 **reuses** Deep Dive's existing per-ticker RSI + EMA-stack signals and exposes them as filterable/sortable columns across the *whole universe*, so you can scan thousands of tickers for setups like "quarterly RSI ≥ 60, daily RSI 35–50, above 200-SMA" and jump into any name's Deep Dive to confirm.
 
 The screener is a compact **single Parquet index** (`signals/stocks/screener_index.parquet`) — one row per ticker, scalar columns only (like `conviction_signals.parquet` / `alpha_signals.parquet`). This is distinct from the large per-ticker deep-dive payloads (`signals/stocks/deep_dive/{TICKER}.parquet`), which stay one-file-per-ticker. A screener must query one table, so the index is intentionally a single compact file; sharding it per-ticker would defeat the purpose.
 
 Integration points:
-- New batch (`stocks-screener-index-batch`) reads the v2 `DeepDiveStore` and extracts scalar signals → `ScreenerIndexStore` (single Parquet). Chained after the v2 deep-dive batch.
-- Standalone store — does **not** touch conviction SQLite snapshots or its 5-layer cache.
-- API: `GET /stocks/screener?q_rsi_min=60&d_rsi_min=35&d_rsi_max=50&above_sma200=true&setup_label=Prime%20Pullback`
-- New screener page with DataTable multiselect/range filters + preset "recipe" buttons; each row links to its Deep Dive page.
-- Each row carries a composite `setup_score` (0–100) and `setup_label` — the "diamond finder" (see [v3 Screener — Diamond Finder Calibration](#v3-screener--diamond-finder-calibration)).
+- Batch (`stocks-screener-index-batch`, `workflow/screener_index_batch.py::run_screener_index_batch`) prefers the v2 `DeepDiveStore` per ticker and falls back to an inline `TickerDeepDiveEngine.analyze()` when the store has no payload yet — extracts scalar signals → `ScreenerIndexStore` (single Parquet). Chained after the v2 deep-dive batch locally (`app.py::_scheduled_screener_index_batch`) and fire-and-forget in `morning-pipeline.yaml` (same pattern as the deep-dive batch — does not block `run_publish`).
+- Standalone store — does **not** touch conviction SQLite snapshots or its 5-layer cache. Registered in the GCS publish convention (`published/routes/stocks_screener.json`, `ROUTE_PATHS["stocks_screener"]`, `publish_stocks_screener` in `workflow/publish_signals.py`) mirroring `publish_stocks_deep_dips`.
+- API: `GET /stocks/screener?q_rsi_min=60&d_rsi_min=35&d_rsi_max=50&above_sma200=true&setup_label=Prime%20Pullback` (`api/routes/screener.py`).
+- Screener page (`frontend/src/pages/stocks/Screener.tsx`) with DataTable multiselect/range filters + preset "recipe" buttons (Prime Pullback, Structural Breakout, Emerging Breakout, Deep Reversal, Avoid List); each row links to its Deep Dive page. Nav entry under Stocks → Screener (Gem icon).
+- Each row carries a composite `setup_score` (0–100) and `setup_label` — the "diamond finder" (see [v3 Screener — Diamond Finder Calibration](#v3-screener--diamond-finder-calibration)). Implemented verbatim per the calibration spec below; unit-tested against Prime Pullback / Overextended fixtures.
+- Return keys from `TickerDeepDiveResponse.returns` are upper-case (`"1M"`, `"3M"`, `"6M"`, `"1Y"`, plus `"1W"`/`"2W"`) — the batch maps them to lower-case `ret_1m`/`ret_3m`/`ret_6m`/`ret_1y` index columns.
+- Full implementation write-up: `docs/sonnet_deep_dive_prompt3_implementation_report.md`.
 
 ---
 
@@ -93,6 +95,16 @@ Integration points:
 | `frontend/src/hooks/useApi.ts` | `useTickerDeepDive(ticker)` hook |
 | `frontend/src/api/client.ts` | `api.stocks.getDeepDive(ticker)` |
 | `frontend/src/config/modules.ts` | Nav entry under Stocks → Deep Dive |
+| `backend/src/tyche/market_data/screener_index_store.py` | `ScreenerIndexStore` — single-file universe index (`signals/stocks/screener_index.parquet`) + `load_screener_rows()` |
+| `backend/src/tyche/workflow/screener_index_batch.py` | `run_screener_index_batch()` — Diamond Finder `setup_score`/`setup_label`, DeepDiveStore-preferred + inline-engine-fallback row extraction |
+| `backend/src/tyche/schemas/screener.py` | `ScreenerRow` / `ScreenerResponse` Pydantic schemas |
+| `backend/src/tyche/api/routes/screener.py` | `GET /stocks/screener` route — server-side filter/sort over the index |
+| `backend/src/tyche/persistence/published_routes.py` | `get_stocks_screener_scan()` — published-JSON-first read (GCS mode) |
+| `backend/src/tyche/ops/gcp_jobs.py` | `run_screener_index_batch_job()` — Cloud Run Job entry (`stocks-screener-index-batch`) |
+| `backend/tests/unit/test_screener_index_store.py` | Store round-trip, single-file layout, overwrite behavior |
+| `backend/tests/unit/test_screener_index_batch.py` | `setup_score`/`setup_label` fixtures, store-preference + inline fallback, filtering, error isolation |
+| `backend/tests/unit/test_screener_routes.py` | Route filter/sort coverage (RSI ranges, booleans, market cap, sector, setup label) |
+| `frontend/src/pages/stocks/Screener.tsx` | React page — DataTable + preset recipes + Excel export |
 
 ## API
 
@@ -177,6 +189,8 @@ Uses Wilder-style EMA smoothing (`alpha = 1/period`) matching the existing `comp
 | `deep_dive_batch_enabled` | `true` | Feature flag for the nightly batch precompute (local scheduler + informs cloud wiring). When `false`, the route reverts to pure on-demand (v1 behavior) — the store is simply never populated by the batch. |
 | `deep_dive_batch_min_market_cap_millions` | `1000` | Market-cap floor for the batch universe (tickers with no cap data still pass through, matching existing filter semantics). |
 | `deep_dive_max_staleness_sessions` | `2` | A precomputed payload is served as "fresh" when its `as_of_date` is within N trading sessions of the latest OHLCV session; otherwise the route recomputes inline (or serves stale in cloud mode when inline compute is blocked). |
+| `screener_index_batch_enabled` | `true` | Feature flag for the v3 screener index batch (chained after the deep-dive batch, local + cloud). |
+| `screener_index_min_market_cap_millions` | `1000` | Market-cap floor for the screener index universe. |
 
 v3 will add:
 - `screener_index_batch_enabled` — feature flag for the screener index batch
@@ -270,6 +284,7 @@ The `setup_score` weights and label thresholds above are principled but hand-set
 
 ## Changelog
 
+- **2026-07-12:** v3 (Screener Index / "Diamond Finder") implemented — single-file `screener_index.parquet` universe index, nightly batch chained after v2's deep-dive batch (DeepDiveStore-preferred + inline `TickerDeepDiveEngine` fallback), `GET /stocks/screener` with server-side filters, published-JSON GCS read path (`stocks_screener` route, mirrors `stocks_deep_dips`), Cloud Run job (`stocks-screener-index-batch`, fire-and-forget in `morning-pipeline.yaml`), and the frontend Screener page with preset recipes + Excel export. `setup_score`/`setup_label` implemented verbatim per the Diamond Finder calibration below, unit-tested against crafted fixtures. Standalone from conviction SQLite/cache. Full write-up: `docs/sonnet_deep_dive_prompt3_implementation_report.md`. Prompt 3b (backtest calibration of the weights) intentionally deferred.
 - **2026-07-12:** v2 implemented — per-ticker precompute (`DeepDiveStore`, one Parquet per ticker at `signals/stocks/deep_dive/{TICKER}.parquet`, no monolithic file), nightly batch (`run_deep_dive_batch`), Cloud Run job (`stocks-deep-dive-batch`), read-through cache with cloud-mode stale-serve + `force` param on the route, shared `to_response()` serializer (route + batch parity), local APScheduler + fire-and-forget cloud morning-pipeline wiring. No publish-JSON step — route reads the store directly.
 - **2026-07-11:** Documented v3 screener design ("diamond finder") — `setup_score`/`setup_label` calibration, preset recipes, funnel-tuning guidance, and Prompt 3b (backtest calibration of screener weights). Clarified that multi-timeframe RSI already lives in v1; v3 reuses it at universe scale via a single compact index Parquet. Added v2/v3 config knobs.
 - **2026-07-01:** v1 implemented — on-demand deep dive with multi-timeframe RSI, EMA stack, MACD, Bollinger Bands, fundamentals, estimates, catalysts. 36 unit tests. Frontend page with sidebar nav entry.

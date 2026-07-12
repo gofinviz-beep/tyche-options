@@ -19,10 +19,23 @@ def _reset_deps():
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client(settings, tmp_path) -> TestClient:
     app = create_app()
     app.dependency_overrides[deps.get_broker] = lambda: MockBroker()
     app.dependency_overrides[deps.get_analysis_agent] = lambda: None
+    # Isolate from the real .env (TYCHE_DATA_BACKEND=gcs on this laptop) and
+    # from real local data/db dirs — without this, published-route reads
+    # (e.g. scanner /latest) hit real GCS or serve real leftover local data.
+    isolated = settings.model_copy(
+        update={
+            "data_backend": "local",
+            "data_dir": str(tmp_path),
+            "db_dir": str(tmp_path),
+            "api_prefer_published_signals": False,
+            "api_allow_local_db_fallback": True,
+        }
+    )
+    app.dependency_overrides[deps.get_settings] = lambda: isolated
     return TestClient(app)
 
 

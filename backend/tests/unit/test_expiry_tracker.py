@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -88,8 +88,10 @@ class TestExpiryTracker:
         assert tracker.remove_ticker("AAPL") == 0
 
     def test_cleanup_old(self, tracker):
-        tracker.record_expiry("OLD", 100.0, "2025-01-01", 50.0)
-        tracker.record_expiry("RECENT", 200.0, "2026-03-25", 100.0)
+        old_date = (date.today() - timedelta(days=60)).isoformat()
+        recent_date = (date.today() - timedelta(days=5)).isoformat()
+        tracker.record_expiry("OLD", 100.0, old_date, 50.0)
+        tracker.record_expiry("RECENT", 200.0, recent_date, 100.0)
         removed = tracker.cleanup_old(max_age_days=30)
         assert removed == 1
         remaining = tracker.get_all_records()

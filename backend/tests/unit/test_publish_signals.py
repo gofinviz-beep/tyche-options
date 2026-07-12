@@ -116,7 +116,7 @@ class TestPublishSignals:
         result = run_publish_signals(config)
 
         assert result.run_id
-        assert len(result.routes) == 15
+        assert len(result.routes) == 16
 
         alpha_art = read_json("published/routes/stocks_alpha.json", ctx=local_ctx)
         assert alpha_art["route"] == "/stocks/alpha/"
@@ -208,4 +208,4 @@ class TestPublishSignals:
         result = await asyncio.to_thread(run_publish_signals, config)
 
         assert result.run_id
-        assert len(result.routes) == 15
+        assert len(result.routes) == 16

@@ -239,6 +239,20 @@ export const api = {
       ),
     getRecentSignals: () =>
       request<import("@/types").ExitSignal[]>("/stocks/positions/signals"),
+    getScreener: (params?: import("@/types").ScreenerParams) => {
+      const q = new URLSearchParams();
+      if (params) {
+        for (const [key, value] of Object.entries(params)) {
+          if (value !== undefined && value !== null && value !== "") {
+            q.set(key, String(value));
+          }
+        }
+      }
+      const qs = q.toString();
+      return request<import("@/types").ScreenerResponse>(
+        `/stocks/screener${qs ? `?${qs}` : ""}`,
+      );
+    },
   },
 
   alpha: {

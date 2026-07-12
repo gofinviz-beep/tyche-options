@@ -80,7 +80,7 @@ class ConvictionSnapshot(Base):
             "price_to_21ema_pct": round(self.price_to_21ema_pct, 2),
             "volume_declining": self.volume_declining,
             "days_above_both_emas": self.days_above_both_emas,
-            "prior_streak": self.prior_streak,
+            "prior_streak": self.prior_streak or 0,
             "avg_volume_20d": self.avg_volume_20d,
             "latest_volume": self.latest_volume,
             "ema_50": round(self.ema_50 or 0.0, 4),

@@ -1100,3 +1100,75 @@ export interface TickerDeepDive {
   estimates: EstimatesSnapshot;
   catalysts: CatalystEvent[];
 }
+
+// ── v3 Stock Screener ("Diamond Finder") ────────────────────────────────
+
+export interface ScreenerRow {
+  ticker: string;
+  name: string;
+  sector: string;
+  as_of_date: string;
+  last_close: number;
+  market_cap: number | null;
+  institutional_pct: number | null;
+  pct_off_52w_high: number | null;
+
+  rsi_daily: number;
+  rsi_weekly: number;
+  rsi_monthly: number;
+  rsi_quarterly: number;
+
+  ema_8: number;
+  ema_21: number;
+  ema_50: number;
+  sma_200: number;
+  pct_vs_ema_8: number;
+  pct_vs_ema_21: number;
+  pct_vs_sma_200: number;
+  slope_ema_8: number;
+  slope_ema_21: number;
+  slope_ema_50: number;
+  days_above_ema_8: number;
+  days_above_ema_21: number;
+  stack_score: number;
+  above_sma_200: boolean;
+
+  ret_1m: number | null;
+  ret_3m: number | null;
+  ret_6m: number | null;
+  ret_1y: number | null;
+  macd_histogram: number;
+
+  setup_score: number;
+  setup_label: string;
+}
+
+export interface ScreenerResponse {
+  scanned_at: string;
+  as_of_date: string | null;
+  computed_at: string | null;
+  total: number;
+  stale: boolean;
+  rows: ScreenerRow[];
+}
+
+export interface ScreenerParams {
+  q_rsi_min?: number;
+  q_rsi_max?: number;
+  m_rsi_min?: number;
+  m_rsi_max?: number;
+  w_rsi_min?: number;
+  w_rsi_max?: number;
+  d_rsi_min?: number;
+  d_rsi_max?: number;
+  above_sma200?: boolean;
+  stack_score_min?: number;
+  ext_max_pct?: number;
+  min_market_cap_millions?: number;
+  sector?: string;
+  setup_label?: string;
+  setup_score_min?: number;
+  sort?: string;
+  desc?: boolean;
+  limit?: number;
+}

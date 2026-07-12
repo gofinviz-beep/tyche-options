@@ -124,6 +124,7 @@ deploy_job tyche-alpha-batch              alpha-batch               4 8Gi  "${TI
 deploy_job tyche-stocks-conviction-batch  stocks-conviction-batch   4 8Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-stocks-derived-batch      stocks-derived-batch        4 8Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-stocks-deep-dive-batch    stocks-deep-dive-batch      4 8Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
+deploy_job tyche-stocks-screener-index-batch stocks-screener-index-batch 4 8Gi "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-candidate-universe-batch candidate-universe-batch  2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-options-chain-prep-batch  options-chain-prep-batch  2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"
 deploy_job tyche-options-scanner-batch    options-scanner-batch    2 4Gi  "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"

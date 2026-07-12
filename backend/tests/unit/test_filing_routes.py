@@ -32,12 +32,26 @@ def insider_store(tmp_path):
 
 
 @pytest.fixture
-def client(filing_store, insider_store) -> TestClient:
+def client(filing_store, insider_store, settings, tmp_path) -> TestClient:
     app = create_app()
     app.dependency_overrides[deps.get_broker] = lambda: MockBroker()
     app.dependency_overrides[deps.get_analysis_agent] = lambda: None
     app.dependency_overrides[deps.get_filing_8k_store] = lambda: filing_store
     app.dependency_overrides[deps.get_insider_tx_store] = lambda: insider_store
+    # Isolate from the real .env (TYCHE_DATA_BACKEND=gcs on this laptop) and
+    # from real local data dirs — without this, the published-route read in
+    # list_filing_signals hits real GCS or serves real leftover local data,
+    # bypassing the mocked get_all_filing_signals below.
+    isolated = settings.model_copy(
+        update={
+            "data_backend": "local",
+            "data_dir": str(tmp_path),
+            "db_dir": str(tmp_path),
+            "api_prefer_published_signals": False,
+            "api_allow_local_db_fallback": True,
+        }
+    )
+    app.dependency_overrides[deps.get_settings] = lambda: isolated
     return TestClient(app)
 
 
