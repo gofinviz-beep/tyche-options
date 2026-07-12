@@ -45,6 +45,10 @@ frontend is unaffected. Two small frontend follow-ups from the Prompt 1 review
 | `infra/gcp/workflows/morning-pipeline.yaml` | Added a fire-and-forget `start_deep_dive_batch` step (`http.post :run`, never polled) immediately after `init`, before `parallel_morning`. Deep-dive-batch only depends on OHLCV + demand stores (not flatfiles/alpha/the demand gate), so it starts immediately and runs in the background for its own duration — it cannot block `run_publish` because the workflow never awaits its completion. |
 | `infra/gcp/deploy_jobs.sh` | Added `deploy_job tyche-stocks-deep-dive-batch stocks-deep-dive-batch 4 8Gi "${TIMEOUT_8H}" 1 "TYCHE_INGEST_WINDOW=morning"` (8h timeout, `--tasks=1`, matching `stocks-derived-batch`). Added `test_deep_dive_store.py`/`test_deep_dive_batch.py`/`test_deep_dive_route.py` to the pre-build test gate. |
 | `docs/stock-deep-dive.md` | Rewrote §v2 to match the shipped design (per-ticker Parquet, no publish step, read-through resolution order, scheduling) instead of the originally-sketched monolithic-file + publish-JSON plan. Updated the Files table, added a Query Parameters subsection, updated the Config table with the three new knobs, added a 2026-07-12 changelog entry. |
+| `.cursor/rules/known-issues.mdc` | Replaced the stale "no batch precompute for v1" bullet with the v2 read-through resolution order, `DeepDiveStore`/shared-serializer/batch-job summary, local + cloud scheduling notes, and the updated test file list. |
+| `.cursor/rules/data-layout.mdc` | Added `signals/stocks/deep_dive/{TICKER}.parquet` to the Directory Map and `workflow/deep_dive_batch.py` to the GCP Cloud Jobs table. |
+| `.cursor/skills/gcp-cloud-ops/SKILL.md` | Added `stocks-deep-dive-batch` to the stocks signal artifacts diagram (with a note on why there's no `published/routes/*.json`), corrected the Jobs count/list (14→17, also fixed two pre-existing omissions — `options-chain-prep-batch`, `options-scanner-batch`), and added gotcha #16 on the fire-and-forget (non-polled) scheduling pattern. |
+| `backend/AGENTS.md` | Added a bullet summarizing the v2 read-through cache architecture next to the existing `TickerDeepDiveEngine` bullet. |
 
 ## Design Decisions
 
@@ -135,3 +139,7 @@ failure to *start* the job is caught and logged as a warning, not raised.
 - [x] `deep_dive_batch_enabled=false` disables the batch (never scheduled in `app.py`); the store stays empty and the route falls through to on-demand compute every time — pure v1 behavior, exercised by `TestStaleStoreFallsBackToCompute`/`TestNoDataAvailable` in the store-empty case.
 - [x] New + existing unit tests pass: `cd backend && pytest tests/unit/` — all deep-dive-related and diff-touched tests pass; the 74 pre-existing/unrelated failures are documented above.
 - [x] Prompt 1 follow-ups done: `cd frontend && npm run lint` passes and `npm run build` still passes.
+
+## Delivery
+
+Committed as `34b8c60` (`feat(stocks): add Stock Deep Dive v1+v2 (on-demand analysis + per-ticker precompute cache)`) on `main` and pushed to `origin/main`. The commit bundles the full v1+v2 feature (backend engine/store/batch/route/GCP job, frontend page + chart components, ESLint config, and the docs/rules/skill updates listed above) since none of it had been committed yet.
