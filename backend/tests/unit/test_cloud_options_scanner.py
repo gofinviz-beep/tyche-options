@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -40,6 +40,20 @@ def ctx(tmp_path: Path) -> StorageContext:
     return StorageContext(backend="local", local_root=tmp_path)
 
 
+# The CSP scan path derives DTE and picks target expirations from
+# ``date.today()`` (not the passed ``as_of_date``), so fixed fixture dates go
+# stale: once the expiration is in the past every contract is dropped and the
+# batch silently yields zero candidates.
+_AS_OF = date.today()
+_CHAIN_DATE = _AS_OF - timedelta(days=1)
+_EXPIRATION = _AS_OF + timedelta(days=21)
+_STRIKE = 98.0
+
+
+def _occ_symbol(ticker: str, expiration: date, strike: float) -> str:
+    return f"O:{ticker}{expiration:%y%m%d}P{round(strike * 1000):08d}"
+
+
 def _seed_scanner_inputs(tmp_path: Path) -> None:
     ctx = StorageContext(backend="local", local_root=tmp_path)
     write_parquet(
@@ -50,7 +64,7 @@ def _seed_scanner_inputs(tmp_path: Path) -> None:
                     "rank": 1,
                     "last_close": 100.0,
                     "csp_eligible": True,
-                    "as_of_date": "2026-06-24",
+                    "as_of_date": _AS_OF.isoformat(),
                 }
             ]
         ),
@@ -77,7 +91,7 @@ def _seed_scanner_inputs(tmp_path: Path) -> None:
                     "csp_safety_prob": 0.9,
                     "iv_rank": 60.0,
                     "vrp": 0.1,
-                    "as_of_date": "2026-06-24",
+                    "as_of_date": _AS_OF.isoformat(),
                 }
             ]
         ),
@@ -90,10 +104,10 @@ def _seed_scanner_inputs(tmp_path: Path) -> None:
             [
                 {
                     "ticker": "AAA",
-                    "option_symbol": "O:AAA260717P00090000",
-                    "chain_date": "2026-06-23",
-                    "expiration": "2026-07-17",
-                    "strike": 98.0,
+                    "option_symbol": _occ_symbol("AAA", _EXPIRATION, _STRIKE),
+                    "chain_date": _CHAIN_DATE.isoformat(),
+                    "expiration": _EXPIRATION.isoformat(),
+                    "strike": _STRIKE,
                     "option_type": "put",
                     "bid": 2.0,
                     "ask": 2.0,
@@ -101,7 +115,7 @@ def _seed_scanner_inputs(tmp_path: Path) -> None:
                     "last": 2.0,
                     "volume": 50,
                     "open_interest": 0,
-                    "dte": 24,
+                    "dte": (_EXPIRATION - _AS_OF).days,
                     "source": "flatfile",
                 }
             ]
@@ -122,13 +136,13 @@ async def test_run_options_scanner_batch_exports_candidates(
     result = await run_options_scanner_batch(
         settings=settings,
         ctx=ctx,
-        as_of_date=date(2026, 6, 24),
+        as_of_date=_AS_OF,
     )
 
     assert result.symbols_scanned == 1
     assert result.csp_candidates >= 1
     rows, as_of = load_scanner_parquet(ctx=ctx)
-    assert as_of == "2026-06-24"
+    assert as_of == _AS_OF.isoformat()
     assert rows[0]["symbol"] == "AAA"
     assert rows[0]["chain_source"] == "flatfile"
 
@@ -154,7 +168,7 @@ async def test_run_options_scanner_batch_accepts_flatfile_option_type_code(
     result = await run_options_scanner_batch(
         settings=settings,
         ctx=ctx,
-        as_of_date=date(2026, 6, 24),
+        as_of_date=_AS_OF,
     )
 
     assert result.symbols_scanned == 1
