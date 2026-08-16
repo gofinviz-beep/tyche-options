@@ -120,24 +120,36 @@ export function useConvictionVersion() {
   });
 
   useEffect(() => {
-    const computedAt = query.data?.last_computed_at ?? null;
+    // Prefer the publish run id: the endpoint now reports the whole publish
+    // run, so one change covers every daily route. last_computed_at is the
+    // local-mode fallback, where the value comes from conviction.db instead.
+    const version = query.data?.run_id ?? query.data?.last_computed_at ?? null;
     if (
-      computedAt &&
+      version &&
       prevComputedAt.current !== null &&
-      computedAt !== prevComputedAt.current
+      version !== prevComputedAt.current
     ) {
-      queryClient.invalidateQueries({ queryKey: ["conviction", "scan"] });
-      queryClient.invalidateQueries({
-        queryKey: ["stocks", "conviction-snapshots"],
-      });
-      queryClient.invalidateQueries({ queryKey: ["stocks", "deep-dips"] });
-      queryClient.invalidateQueries({ queryKey: ["stocks", "pullbacks"] });
-      queryClient.invalidateQueries({
-        queryKey: ["stocks", "recommendations"],
-      });
+      // Every family below is served from a published artifact and set to
+      // staleTime: Infinity, so this is their only path back to fresh data.
+      for (const key of [
+        ["conviction", "scan"],
+        ["stocks", "conviction-snapshots"],
+        ["stocks", "deep-dips"],
+        ["stocks", "pullbacks"],
+        ["stocks", "recommendations"],
+        ["stocks", "screener"],
+        ["stocks", "history"],
+        ["stocks", "deep-dive"],
+        ["alpha"],
+        ["scanner", "latest"],
+        ["news", "signals"],
+        ["filings", "signals"],
+      ]) {
+        queryClient.invalidateQueries({ queryKey: key });
+      }
     }
-    prevComputedAt.current = computedAt;
-  }, [query.data?.last_computed_at, queryClient]);
+    prevComputedAt.current = version;
+  }, [query.data?.run_id, query.data?.last_computed_at, queryClient]);
 
   return query;
 }

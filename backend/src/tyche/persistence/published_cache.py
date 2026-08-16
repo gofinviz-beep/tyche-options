@@ -96,6 +96,11 @@ class _ContextState:
     run_id: str | None = None
     manifest: PublishedManifest | None = None
     manifest_read_at: float = 0.0
+    # Whether a read has been attempted in the current TTL window. Tracked
+    # separately from `manifest` so an ABSENT manifest is also remembered:
+    # otherwise every request re-probes storage, which before any publish run
+    # means a GCS round trip per request.
+    manifest_probed: bool = False
 
 
 class PublishedArtifactCache:
@@ -136,7 +141,7 @@ class PublishedArtifactCache:
         with self._lock:
             state = self._state(ctx_key)
             fresh = (time.monotonic() - state.manifest_read_at) < self._manifest_ttl
-            if not force and fresh and state.manifest is not None:
+            if not force and fresh and state.manifest_probed:
                 return state.manifest
 
         loaded = read_manifest(ctx)
@@ -145,6 +150,7 @@ class PublishedArtifactCache:
             state = self._state(ctx_key)
             state.manifest = loaded
             state.manifest_read_at = time.monotonic()
+            state.manifest_probed = True
             if loaded is not None and loaded.run_id != state.run_id:
                 if state.run_id is not None:
                     logger.info(

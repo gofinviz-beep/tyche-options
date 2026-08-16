@@ -10,6 +10,7 @@ Fully additive — no existing route or behavior is modified.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import structlog
@@ -78,7 +79,8 @@ async def scan_alpha(
         )
     )
 
-    loaded = get_stock_alpha_scan(
+    loaded = await asyncio.to_thread(
+        get_stock_alpha_scan,
         settings=settings,
         variant=variant,
         prefer_published=prefer_published,

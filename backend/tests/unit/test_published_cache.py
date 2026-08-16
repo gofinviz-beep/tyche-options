@@ -148,6 +148,47 @@ class TestRunIdEviction:
         assert cache.get_or_load("route:a", lambda: "new", ctx=ctx) == "old"
 
 
+class TestNegativeCaching:
+    """An absent manifest must be remembered, not re-probed per request."""
+
+    def test_absent_manifest_is_probed_once_per_ttl(
+        self, tmp_path: Path, ctx, monkeypatch
+    ) -> None:
+        # Regression: only a non-None manifest was cached, so before any publish
+        # run every request re-probed storage — a GCS round trip per request.
+        probes = []
+
+        def counting_read(_ctx):
+            probes.append(1)
+            return None
+
+        monkeypatch.setattr(
+            "tyche.persistence.published_cache.read_manifest", counting_read
+        )
+        cache = PublishedArtifactCache(manifest_ttl_seconds=3600.0)
+
+        for _ in range(5):
+            cache.get_or_load("route:a", lambda: "x", ctx=ctx)
+
+        assert len(probes) == 1
+
+    def test_expired_ttl_probes_again(self, tmp_path: Path, ctx, monkeypatch) -> None:
+        probes = []
+
+        def counting_read(_ctx):
+            probes.append(1)
+            return None
+
+        monkeypatch.setattr(
+            "tyche.persistence.published_cache.read_manifest", counting_read
+        )
+        cache = PublishedArtifactCache(manifest_ttl_seconds=0.0)
+
+        cache.manifest(ctx)
+        cache.manifest(ctx)
+        assert len(probes) == 2
+
+
 class TestPassThroughWithoutManifest:
     def test_no_manifest_means_no_caching(self, tmp_path: Path, ctx) -> None:
         """Local dev and tests must behave exactly as before the cache existed."""

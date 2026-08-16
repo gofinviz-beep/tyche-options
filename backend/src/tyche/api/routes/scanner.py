@@ -347,7 +347,9 @@ async def get_latest_scan(
     if use_artifact_read_path(settings):
         from tyche.persistence.published_routes import get_options_scanner_payload
 
-        loaded = get_options_scanner_payload(settings=settings)
+        loaded = await asyncio.to_thread(
+            get_options_scanner_payload, settings=settings
+        )
         if loaded is not None:
             payload, _layer = loaded
             return payload

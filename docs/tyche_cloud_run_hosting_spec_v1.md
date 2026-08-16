@@ -218,8 +218,29 @@ Verified by building the image and running it:
 |---|---|---|
 | `PublishedArtifactCache` | done | New `persistence/published_cache.py`, wired into `load_published_route()` — the single choke point every published route already goes through, so all routes benefit without touching each one. Keyed on `(storage context, run_id)`. Passes through uncached when no manifest exists, so local dev and tests are unaffected. |
 | `/conviction/version` on the manifest | done | Was reading `conviction.db`, which cloud batch never writes (`persist_sqlite=False`) — the invalidation signal was **dead in cloud**. Now prefers the manifest and reports `run_id` + `source`; falls back to SQL for local mode. |
-| `asyncio.to_thread` + ETag/Cache-Control | pending | `/conviction/version` already offloads its manifest read. |
-| Frontend invalidation + lazy chunks | pending | Confirmed the need: the production bundle is a single eager **1,010 kB** chunk (272 kB gzipped). |
+| `asyncio.to_thread` on published reads | done | 12 call sites across 7 route modules were doing synchronous GCS/Parquet reads inside `async def` handlers, so a single 2.4 MiB fetch stalled every concurrent request. |
+| ETag / Cache-Control | done | `api/cache_headers.py` middleware tags the daily routes with the publish `run_id` plus path and query string, and answers `304`. Saves bandwidth, not server CPU — the body is still built before the comparison. Scoped by prefix so live broker routes are untouched. |
+| Frontend invalidation + lazy chunks | done | Routes are `React.lazy` (named exports mapped in place, so the 19 page files are unchanged) with manual `recharts` / `react` / `query` chunks. Version invalidation now keys on `run_id` and covers screener, history, deep-dive, alpha, scanner, news, and filings — all of which used `staleTime: Infinity` with no invalidation path at all. |
+
+Initial JS payload, measured from the real build:
+
+| | raw | gzip |
+|---|---|---|
+| Before (one eager chunk) | 1,010.7 kB | 272.2 kB |
+| After (entry + react + query) | 305.5 kB | **95.8 kB** |
+| recharts, now deferred to Deep Dive only | 376 kB | 108.5 kB |
+
+**Negative caching is not optional.** The first cache version only stored a
+non-`None` manifest, so before any publish run every request re-probed storage.
+It showed up as the test suite going from 88 s to 595 s (network probes per
+request); in production it would have been a GCS round trip on every request.
+`_ContextState.manifest_probed` now records the attempt separately from the
+result. Pinned by `TestNegativeCaching`.
+
+**Middleware must honour `app.dependency_overrides`.** Middleware sits outside
+FastAPI's dependency injection, so calling `get_settings()` directly ignored the
+isolated settings that test fixtures install and reached for the real GCS backend
+from `.env`. `_resolve_settings()` checks the override first.
 
 Cache design note worth keeping: the first version keyed entries on `route_key`
 alone. That let one storage root serve another root's artifacts — it surfaced as

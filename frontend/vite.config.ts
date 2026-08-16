@@ -11,6 +11,21 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split the large, rarely-changing dependencies into their own chunks so
+        // they stay cached across deploys instead of being invalidated by any
+        // application change. recharts is separate because only the Deep Dive
+        // page pulls it in, so most sessions never download it.
+        manualChunks: {
+          recharts: ["recharts"],
+          react: ["react", "react-dom", "react-router-dom"],
+          query: ["@tanstack/react-query"],
+        },
+      },
+    },
+  },
   server: {
     // Bind IPv4 loopback only — avoids IPv6 localhost issues and plays
     // better with corporate PAC proxies (e.g. Walmart anycast-universal.pac).

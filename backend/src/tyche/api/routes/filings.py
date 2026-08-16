@@ -33,7 +33,9 @@ async def list_filing_signals(
     settings: TycheSettings = Depends(get_settings),
 ) -> list[FilingSignalResponse]:
     """Get all tickers with active filing signals."""
-    published = get_intelligence_filing_rows(settings=settings)
+    published = await asyncio.to_thread(
+        get_intelligence_filing_rows, settings=settings
+    )
     if published is not None:
         rows, _layer = published
         return [

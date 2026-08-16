@@ -7,6 +7,7 @@ just serves whatever the index/published artifact currently has.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -50,7 +51,7 @@ async def get_screener(
     settings: TycheSettings = Depends(get_settings),
 ) -> ScreenerResponse:
     """Filter/sort the universe-wide screener index."""
-    loaded = get_stocks_screener_scan(settings=settings)
+    loaded = await asyncio.to_thread(get_stocks_screener_scan, settings=settings)
     if loaded is None:
         return ScreenerResponse(
             scanned_at=datetime.now(timezone.utc).isoformat(),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, timedelta
 
 import structlog
@@ -382,7 +383,9 @@ async def get_conviction_snapshots_endpoint(
     )
 
     if use_artifact_path:
-        published = get_stocks_conviction_rows(settings=settings)
+        published = await asyncio.to_thread(
+            get_stocks_conviction_rows, settings=settings
+        )
         if published is not None:
             rows, _layer = published
             return rows
@@ -459,7 +462,9 @@ async def get_conviction_history_endpoint(
     ):
         from tyche.persistence.published_routes import get_stocks_history_payload
 
-        payload = get_stocks_history_payload(settings=settings)
+        payload = await asyncio.to_thread(
+            get_stocks_history_payload, settings=settings
+        )
         transitions_list: list = []
         snapshots: list[ConvictionSnapshotResponse] = []
         if payload is not None:
@@ -539,7 +544,9 @@ async def get_transitions_endpoint(
     if use_artifact_path:
         from tyche.persistence.published_routes import get_stocks_history_payload
 
-        payload = get_stocks_history_payload(settings=settings)
+        payload = await asyncio.to_thread(
+            get_stocks_history_payload, settings=settings
+        )
         if payload is not None:
             data, _layer = payload
             raw = data.get("transitions") or []
@@ -646,7 +653,9 @@ async def get_deep_dip_candidates(
         settings.data_backend == "gcs" and not settings.api_allow_curated_fallback
     )
     if use_artifact_path:
-        loaded = get_stocks_deep_dips_scan(settings=settings)
+        loaded = await asyncio.to_thread(
+            get_stocks_deep_dips_scan, settings=settings
+        )
         if loaded is not None:
             scan, _layer = loaded
             _deep_dip_cache[cache_key] = scan

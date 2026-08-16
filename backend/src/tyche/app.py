@@ -9,6 +9,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from tyche.api.cache_headers import PublishedCacheHeadersMiddleware
 from tyche.api.middleware import RequestTimingMiddleware, global_exception_handler
 from tyche.api.static_files import mount_spa
 from tyche.config import get_settings
@@ -1151,6 +1152,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.add_middleware(PublishedCacheHeadersMiddleware)
     app.add_middleware(RequestTimingMiddleware)
     # Only matters when the SPA is served from a different origin than the API
     # (the Vite dev server). The Cloud Run container serves both itself.

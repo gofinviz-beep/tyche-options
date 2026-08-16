@@ -88,9 +88,14 @@ export const api = {
 
   conviction: {
     getVersion: () =>
-      request<{ last_computed_at: string | null; as_of_date: string | null }>(
-        "/conviction/version",
-      ),
+      request<{
+        last_computed_at: string | null;
+        as_of_date: string | null;
+        // Publish run that produced the current artifacts. Null when the
+        // backend answered from conviction.db instead of a publish manifest.
+        run_id: string | null;
+        source: string;
+      }>("/conviction/version"),
     getStatus: () =>
       request<import("@/types").DataStoreStatus>("/conviction/status"),
     bootstrap: (days = 120) =>

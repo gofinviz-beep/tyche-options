@@ -230,7 +230,8 @@ async def scan_conviction(
     if use_artifact_read_path(settings) and not force:
         from tyche.persistence.published_routes import get_options_conviction_scan
 
-        loaded = get_options_conviction_scan(
+        loaded = await asyncio.to_thread(
+            get_options_conviction_scan,
             settings=settings,
             limit_per_path=limit_per_path,
             watchlist_set=watchlist_set,
@@ -535,7 +536,8 @@ async def get_ticker_conviction(
     if use_artifact_read_path(settings):
         from tyche.persistence.published_routes import get_options_conviction_scan
 
-        loaded = get_options_conviction_scan(
+        loaded = await asyncio.to_thread(
+            get_options_conviction_scan,
             settings=settings,
             specific_tickers=frozenset({ticker.upper()}),
             limit_per_path=1,

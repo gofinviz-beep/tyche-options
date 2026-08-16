@@ -35,7 +35,7 @@ async def list_news_signals(
     settings: TycheSettings = Depends(get_settings),
 ) -> list[NewsSignalResponse]:
     """Get all tickers with active news signals."""
-    published = get_intelligence_news_rows(settings=settings)
+    published = await asyncio.to_thread(get_intelligence_news_rows, settings=settings)
     if published is not None:
         rows, _layer = published
         threshold = settings.news_risk_threshold
