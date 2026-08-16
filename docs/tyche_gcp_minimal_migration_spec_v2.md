@@ -29,7 +29,7 @@ This is an infrastructure spec, separate from the Multi-Bagger Discovery Engine 
 
 **Demand manifest fields:** `guidance_tickers_fetched` (Benzinga returned records) vs `guidance_catalysts_written` (raise/cut rows persisted). `guidance` mirrors `guidance_catalysts_written`.
 
-**Demand gate schedule:** `tyche-run-demand-gate` is **morning only** (Tue–Sat 2:30 AM, not evening). Evening runs **Mon–Fri** `tyche-ingest-demand-data`; gate runs after flatfiles+alpha in the morning workflow. **Logical dependency:** gate does not block publish (only promotes sustained ML models). **Workflow bug (2026-06-27):** YAML waits on gate before stocks/options batches — publish ~12:30 PM PT vs **~7 AM PT target**; fix = parallel/async gate (`infra/gcp/README.md` § Morning SLA). **Memory, reuse, OOM:** see **§10.1**.
+**Demand gate schedule:** `tyche-run-demand-gate` is **weekly — Sat 8:00 AM PT** (own `tyche-sched-demand-gate` Cloud Scheduler job hitting the Cloud Run job's `:run` endpoint directly, no workflow wrapper). It is **not** in any scheduled pipeline. Evening runs **Mon–Fri** `tyche-ingest-demand-data`; the gate consumes a week of it each Saturday. **Logical dependency:** the gate does not block publish (only promotes sustained ML models). **Fixed 2026-08-15:** it previously sat sequentially in `morning-pipeline.yaml` and blocked stocks/options batches + publish (~5h; publish ~12:30 PM PT vs the **~7 AM PT target**) — removing it restored the SLA and cut ~5x of its cost. **Memory, reuse, OOM:** see **§10.1**.
 
 **Pacific ingest session dates:** `market_data/ingest_dates.py` + per-job `TYCHE_INGEST_WINDOW=evening|morning` in `deploy_jobs.sh`. Evening → Pacific **today**; morning → Pacific **yesterday**. Region-independent (UTC Cloud Run, any GCP region, local laptop).
 
@@ -503,7 +503,7 @@ Use **Cloud Workflows** to orchestrate **Cloud Run Jobs** (triggered by Cloud Sc
 | `tyche-ingest-edgar` | 2 | 4 GiB | 8h | Evening |
 | `tyche-ingest-options-flatfiles` | 2 | 4 GiB | 8h | Morning |
 | `tyche-alpha-batch` | 4 | 8 GiB | 8h | Morning |
-| `tyche-run-demand-gate` | **8** | **32 GiB** | 8h | Morning optional; see **§10.1** |
+| `tyche-run-demand-gate` | **8** | **32 GiB** | 8h | Weekly Sat 8 AM PT, standalone; see **§10.1** |
 | `tyche-publish-signals` | 2 | 4 GiB | 8h | Morning |
 | `tyche-audit-snapshots` | 1 | 2 GiB | 8h | Morning |
 | `tyche-nightly-pipeline` | 4 | 8 GiB | 8h | Manual fallback only |
@@ -528,7 +528,7 @@ Entry point: `backend/scripts/run_gcp_job.py` → `tyche/ops/gcp_jobs.py`. Runti
 
 ### 10.1 Demand gate — memory, reuse, troubleshooting
 
-`tyche-run-demand-gate` runs `scripts/run_demand_gate.py` via `gcp_jobs.run_demand_gate_job()`. It is **optional** for publish (retrains sustained XGBoost models only; does not block the Alpha page).
+`tyche-run-demand-gate` runs `scripts/run_demand_gate.py` via `gcp_jobs.run_demand_gate_job()`. It is **optional** for publish (retrains sustained XGBoost models only; does not block the Alpha page) and therefore runs on a **standalone weekly schedule — Sat 8:00 AM PT** rather than inside the morning pipeline.
 
 #### Two-phase memory profile
 
@@ -637,10 +637,12 @@ Sources available after market close: Polygon grouped daily, Finnhub estimates, 
 
 | Step | Jobs |
 |------|------|
+| Fire-and-forget | `tyche-stocks-deep-dive-batch` + `tyche-stocks-screener-index-batch` (started, never polled) |
 | Parallel | `tyche-ingest-options-flatfiles` + `tyche-alpha-batch` |
-| *(current YAML)* | `tyche-run-demand-gate` — **blocks** next steps until complete (~4–8h) |
 | Sequential | `tyche-stocks-conviction-batch` → `tyche-stocks-derived-batch` → `tyche-candidate-universe-batch` → `tyche-options-chain-prep-batch` → `tyche-options-scanner-batch` |
 | Sequential | `tyche-publish-signals` → `tyche-audit-snapshots` |
+
+`tyche-run-demand-gate` is **not** in this pipeline — it runs weekly (Sat 8 AM PT) on its own scheduler.
 
 Massive options flatfiles land ~2 AM PT; flatfile ingest often completes ~6:30 AM PT. **Target publish ~7 AM PT** — see `infra/gcp/README.md` § Morning SLA.
 
@@ -658,7 +660,7 @@ Massive options flatfiles land ~2 AM PT; flatfile ingest often completes ~6:30 A
 | `tyche-run-demand-gate` | **No (logical)** — retrains optional `big_move_sustained_*` XGBoost models | Fresh evening demand data; builds/reuses `ml/alpha_dataset.parquet` |
 | `tyche-ingest-options-flatfiles` | **Yes** for options scanner — IV/history for chain prep | Massive S3 flat file (~2 AM PT) |
 
-**Workflow mismatch:** gate is listed as optional for publish but the YAML **waits** on it before stocks/options batches — observed publish ~12:30 PM PT (2026-06-27). Recommended v2: run gate in parallel (evening or fire-and-forget) so UI path starts when flatfiles complete. Typical cloud runtime **4–8h** (see **§10.1**). Manual recovery: flatfiles+alpha done → skip/wait gate → stocks → universe → chain → scanner → publish.
+**Resolved 2026-08-15:** the YAML used to **wait** on the gate before the stocks/options batches even though it is logically optional for publish (observed publish ~12:30 PM PT, 2026-06-27). The gate is now decoupled onto a weekly Sat 8 AM PT schedule, so the UI path starts as soon as flatfiles complete. Typical cloud runtime **4–8h** (see **§10.1**). Manual recovery: flatfiles+alpha done → stocks → universe → chain → scanner → publish (the gate is never in this path).
 
 ### Schedule rationale
 

@@ -15,6 +15,7 @@ Cloud Scheduler (America/Los_Angeles)
       → GCS read/write + Secret Manager API keys
       → runs/{job}/{run_id}/manifest.json
     → publish_signals → published/routes/*.json
+  Sat 8:00 AM      → tyche-run-demand-gate (weekly, direct job trigger)
 ```
 
 ### Two-window schedule (Pacific)
@@ -33,7 +34,6 @@ Cloud Scheduler (America/Los_Angeles)
 | Step | Job | Outputs |
 |------|-----|---------|
 | Parallel | `tyche-ingest-options-flatfiles` + `tyche-alpha-batch` | options/IV/derived + `alpha_signals*.parquet` |
-| Optional | `tyche-run-demand-gate` | `ml/alpha_dataset.parquet`, `ml/alpha_results/`, optional `ml/models/big_move_sustained_*` (~4–8h) |
 | Sequential | `tyche-stocks-conviction-batch` | `signals/stocks/conviction.parquet` |
 | Sequential | `tyche-stocks-derived-batch` | `signals/stocks/deep_dips.parquet`, `signals/stocks/history_summary.parquet` |
 | Sequential | `tyche-candidate-universe-batch` | `signals/universe/options_candidates.parquet`, `signals/universe/csp_scan_tickers.parquet`, `signals/universe/stocks_candidates.parquet` |
@@ -42,34 +42,48 @@ Cloud Scheduler (America/Los_Angeles)
 | Sequential | `tyche-publish-signals` | `published/routes/*.json` |
 | Sequential | `tyche-audit-snapshots` | estimate snapshot audits |
 
-**Not in evening:** demand gate, flatfiles, alpha, publish. Evening `ingest-demand-data` ingests estimates; gate runs the next morning (optional).
+**Weekly Sat 8:00 AM** — the demand gate, on its own scheduler (`tyche-sched-demand-gate`),
+triggering the Cloud Run job directly rather than through a workflow:
 
-### Morning SLA (target vs current)
+| Job | Outputs |
+|-----|---------|
+| `tyche-run-demand-gate` | `ml/alpha_dataset.parquet`, `ml/alpha_results/demand_gate_verdict.json`, conditionally `ml/models/big_move_sustained_*` (~4–8h) |
+
+**Not in evening:** demand gate, flatfiles, alpha, publish. Evening `ingest-demand-data` ingests estimates; the gate consumes them on its weekly Saturday run.
+
+### Morning SLA
 
 **Product target:** prior-session computed signals in `published/routes/*.json` **ready by ~7 AM PT**
 so the laptop/Cloud Run app can load scanner, conviction, stocks, and alpha without inline scans.
 
-| Milestone | Target (PT) | Typical / observed |
-|-----------|-------------|----------------------|
-| Massive options flatfile available | ~2:00 AM | Vendor-dependent |
-| Scheduler fires `tyche-morning-pipeline` | 2:30 AM | ✓ |
-| Flatfile ingest complete | ~6:30 AM | ✓ (often ~4h after start) |
-| **Publish (UI-ready JSON)** | **~7:00 AM** | **~12:30 PM** (2026-06-27) ✗ |
+| Milestone | Target (PT) |
+|-----------|-------------|
+| Massive options flatfile available | ~2:00 AM (vendor-dependent) |
+| Scheduler fires `tyche-morning-pipeline` | 2:30 AM |
+| Flatfile ingest complete | ~6:30 AM (often ~4h after start) |
+| **Publish (UI-ready JSON)** | **~7:00 AM** |
 
-**Why publish is late:** `tyche-run-demand-gate` is wired **sequentially after** flatfiles+alpha
-and **blocks** stocks batches, options chain/scanner, and publish until it finishes (~4–8h;
-~5h observed). The UI path does **not** need gate output — publish uses alpha-batch + stocks
-conviction + options scanner artifacts, not gate-promoted `big_move_sustained_*` models.
+**The gate no longer gates publish.** Until Aug 2026 `tyche-run-demand-gate` sat sequentially
+after flatfiles+alpha and blocked the stocks batches, options chain/scanner, and publish until it
+finished (~4–8h; ~5h observed, publish at ~12:30 PM PT vs the ~7 AM target). Nothing on the UI
+path needs it — publish reads alpha-batch + stocks conviction + options scanner artifacts, never
+the gate-promoted `big_move_sustained_*` models — so it was removed from `morning-pipeline.yaml`
+and given a weekly Saturday 8 AM PT schedule, which also cuts its cost by ~5x (it was the most
+expensive job in the fleet at 8 CPU / 32 GiB for 4–8h, five mornings a week).
 
-**Recommended workflow v2 (TODO — not implemented):**
+Run it out-of-band any time (it is safe to run concurrently with the morning pipeline — it only
+writes under `ml/`):
 
-1. **Decouple gate from UI path** — run `tyche-run-demand-gate` in parallel (evening branch or
-   fire-and-forget second workflow) so conviction → scanner → publish starts when flatfiles
-   complete (~6:30 AM PT).
-2. **Evening stocks batches** — run `tyche-stocks-conviction-batch` + `tyche-stocks-derived-batch`
-   after evening OHLCV ingest (6 PM PT) so morning only waits on flatfiles + options chain.
-3. **`TYCHE_DEMAND_GATE_REUSE_DATASET=true`** — skip ~90 min dataset rebuild when
-   `ml/alpha_dataset.parquet` exists on GCS.
+```bash
+gcloud run jobs execute tyche-run-demand-gate --region us-central1 --project tyche-platform
+```
+
+Set `TYCHE_DEMAND_GATE_REUSE_DATASET=true` on the job to skip the ~90 min dataset rebuild when
+`ml/alpha_dataset.parquet` already exists on GCS — useful for ad-hoc reruns, but leave it off for
+the weekly run so the panel picks up a fresh week of demand data.
+
+**Still open:** move `tyche-stocks-conviction-batch` + `tyche-stocks-derived-batch` into the
+evening window (after 6 PM OHLCV ingest) so the morning only waits on flatfiles + options chain.
 
 See `docs/alpha/cloud_signals_slice67_completion_note.md` and spec §10.
 

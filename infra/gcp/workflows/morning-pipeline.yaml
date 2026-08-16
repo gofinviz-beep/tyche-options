@@ -1,5 +1,6 @@
 # Morning ingest — parallel compute then publish (GCP-G).
 # Tue–Sat 2:30 AM PT: prior-day options flatfiles + alpha batch in parallel, then publish.
+# The demand gate is not part of this pipeline (weekly Saturday schedule instead).
 
 main:
   params: [args]
@@ -76,23 +77,11 @@ main:
                         job_id: "tyche-alpha-batch"
                         optional: false
 
-    - run_optional_gate:
-        try:
-          call: run_cloud_run_job
-          args:
-            project_id: ${project_id}
-            region: ${region}
-            job_id: "tyche-run-demand-gate"
-            optional: true
-        except:
-          as: e
-          steps:
-            - log:
-                call: sys.log
-                args:
-                  text: '${"Optional demand gate failed - " + string(e)}'
-                  severity: "WARNING"
-
+    # NOTE: tyche-run-demand-gate is deliberately NOT in this pipeline. It runs
+    # 4-8h and only produces ML model promotions (big_move_sustained_*) that no
+    # published route reads, so blocking here pushed publish from ~7 AM to
+    # ~12:30 PM PT. It now runs on its own weekly Saturday schedule
+    # (tyche-sched-demand-gate) — see infra/gcp/deploy_scheduler.sh.
     - run_stocks_conviction:
         call: run_cloud_run_job
         args:
