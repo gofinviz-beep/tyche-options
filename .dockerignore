@@ -1,0 +1,40 @@
+# Build context for backend/Dockerfile.api is the REPO ROOT (the Node stage needs
+# frontend/), so this file keeps the context small. Without it, backend/data and
+# frontend/node_modules alone are multi-GB.
+
+.git
+.gitignore
+.cursor
+
+# Python
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/htmlcov
+**/.coverage
+
+# Secrets and local config — Cloud Run injects these via --set-env-vars/--set-secrets
+**/.env
+**/.env.*
+!**/.env.example
+
+# Local data + SQLite: the service reads GCS and Postgres, never these
+backend/data
+backend/db
+**/*.db
+**/*.parquet
+
+# Frontend: the Node stage runs its own `npm ci`, and a host-built dist would
+# shadow the image's fresh build
+frontend/node_modules
+frontend/dist
+
+# Docs and scratch. Last matching rule wins, so the negation re-includes the one
+# README the Python stage copies for the editable install.
+docs
+terminals
+**/*.md
+!backend/README.md

@@ -213,7 +213,8 @@ class TestInvalidation:
 
 
 class TestSchedulerGcsDefault:
-    def test_scheduler_disabled_when_data_backend_gcs(self, tmp_path: Path, monkeypatch) -> None:
+    @staticmethod
+    def _gcs_env(tmp_path: Path, monkeypatch) -> None:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("tyche.config._settings_cache", None)
         monkeypatch.setattr("tyche.config._config_store", None)
@@ -221,9 +222,43 @@ class TestSchedulerGcsDefault:
         monkeypatch.setenv("TYCHE_DATA_BACKEND", "gcs")
         monkeypatch.setenv("TYCHE_GCS_BUCKET", "tyche-data-prod")
 
+    def test_scheduler_disabled_when_data_backend_gcs(self, tmp_path: Path, monkeypatch) -> None:
+        self._gcs_env(tmp_path, monkeypatch)
+
         settings = get_settings()
         assert settings.data_backend == "gcs"
         assert settings.scheduler_enabled is False
+
+    def test_stored_scheduler_enabled_cannot_re_enable_it(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A config value must not start batch jobs inside a GCS reader.
+
+        Config is shared (Postgres on Cloud Run), so a scheduler_enabled=true
+        ever toggled in the Settings UI would otherwise make the API container
+        run the nightly batch jobs alongside Cloud Run Jobs.
+        """
+        self._gcs_env(tmp_path, monkeypatch)
+        get_config_store().set("scheduler_enabled", True)
+
+        assert get_settings().scheduler_enabled is False
+
+    def test_env_escape_hatch_re_enables_it(self, tmp_path: Path, monkeypatch) -> None:
+        self._gcs_env(tmp_path, monkeypatch)
+        monkeypatch.setenv("TYCHE_ALLOW_GCS_SCHEDULER", "true")
+
+        settings = get_settings()
+        assert settings.allow_gcs_scheduler is True
+        assert settings.scheduler_enabled is True
+
+    def test_local_backend_is_unaffected(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("tyche.config._settings_cache", None)
+        monkeypatch.setattr("tyche.config._config_store", None)
+        monkeypatch.setenv("TYCHE_DB_DIR", str(tmp_path))
+        monkeypatch.setenv("TYCHE_DATA_BACKEND", "local")
+
+        assert get_settings().scheduler_enabled is True
 
 
 class TestGcsEnvNormalization:

@@ -84,6 +84,9 @@ _ENV_ONLY_FIELDS: frozenset[str] = frozenset(
         "finnhub_api_key",
         "edgar_user_agent_email",
         "ingest_window",
+        "static_dir",
+        "cors_allow_origins",
+        "allow_gcs_scheduler",
     }
 )
 
@@ -132,6 +135,13 @@ class _EnvSettings(BaseSettings):
     load_gcp_secrets: bool = False
     # evening | morning — Cloud Run per-job env (Pacific session end date)
     ingest_window: str = ""
+    # Built SPA directory. Set to /app/static in the Cloud Run image; empty
+    # locally, where Vite serves the frontend on its own dev server.
+    static_dir: str = ""
+    # Comma-separated CORS origins. Irrelevant in the single-origin Cloud Run
+    # deployment; used by the Vite dev server on a different port.
+    cors_allow_origins: str = "http://localhost:5173,http://localhost:3000"
+    allow_gcs_scheduler: bool = False
 
     @field_validator("gcs_bucket", mode="before")
     @classmethod
@@ -214,15 +224,29 @@ class TycheSettings(BaseModel):
     ingest_window: str = ""
     db_dir: str = "db"
 
+    # --- Serving (env-only) ---
+    # Directory holding the built SPA. Set when the API also serves the
+    # frontend (the Cloud Run image); empty when Vite serves it in dev.
+    static_dir: str = ""
+    cors_allow_origins: str = "http://localhost:5173,http://localhost:3000"
+
     # --- Published signals API (GCS mode) ---
     api_prefer_published_signals: bool = True
     api_allow_curated_fallback: bool = False
     api_allow_local_db_fallback: bool = False
     allow_inline_scan: bool = False
     published_max_age_minutes: int = 180
+    # In-process cache for published route JSON, keyed on the publish run_id
+    # (see tyche.persistence.published_cache). The TTL only bounds how quickly a
+    # just-finished publish becomes visible; run_id equality is what evicts.
+    published_cache_enabled: bool = True
+    published_manifest_ttl_seconds: float = 30.0
 
     # --- Local APScheduler (disable when Cloud Run owns batch compute) ---
     scheduler_enabled: bool = True
+    # Escape hatch for the GCS-mode scheduler override in _build_settings.
+    # Env-only so a shared config database cannot flip it.
+    allow_gcs_scheduler: bool = False
 
     # --- Universe Filtering ---
     min_market_cap_millions: float = 4000.0
@@ -590,8 +614,12 @@ def _build_settings(env: _EnvSettings, db_values: dict[str, Any]) -> TycheSettin
             kwargs[field_name] = db_values[field_name]
 
     settings = TycheSettings(**kwargs)
-    # GCS view-only laptops should not duplicate Cloud Run nightly jobs.
-    if settings.data_backend == "gcs" and "scheduler_enabled" not in db_values:
+    # GCS readers (view-only laptops and the Cloud Run API container) must never
+    # duplicate Cloud Run batch jobs. This overrides a stored value on purpose:
+    # config lives in a shared database, so a scheduler_enabled=true ever toggled
+    # in the Settings UI would otherwise start APScheduler inside the web
+    # container. Set TYCHE_ALLOW_GCS_SCHEDULER=true to opt back in deliberately.
+    if settings.data_backend == "gcs" and not settings.allow_gcs_scheduler:
         settings = settings.model_copy(update={"scheduler_enabled": False})
     return settings
 

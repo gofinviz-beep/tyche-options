@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from tyche.api.middleware import RequestTimingMiddleware, global_exception_handler
+from tyche.api.static_files import mount_spa
 from tyche.config import get_settings
 from tyche.logging import configure_logging
 from tyche.models.backtest import (
@@ -1151,9 +1152,15 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(RequestTimingMiddleware)
+    # Only matters when the SPA is served from a different origin than the API
+    # (the Vite dev server). The Cloud Run container serves both itself.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://localhost:3000"],
+        allow_origins=[
+            origin.strip()
+            for origin in settings.cors_allow_origins.split(",")
+            if origin.strip()
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -1226,6 +1233,11 @@ def create_app() -> FastAPI:
             "database": db_ok,
             "mode": "sandbox" if settings.tradier_sandbox else "live",
         }
+
+    # LAST: the SPA catch-all claims every unmatched path, so it has to be
+    # registered after the API routers and health checks. No-op when
+    # static_dir is unset (local dev, where Vite serves the frontend).
+    mount_spa(app, settings.static_dir)
 
     return app
 

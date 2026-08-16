@@ -1,0 +1,75 @@
+# Tyche API + SPA image (single Cloud Run service).
+#
+# Serves the FastAPI backend and the built React SPA from one container, so the
+# browser talks to a single origin and `frontend/src/api/client.ts` keeps its
+# relative "/api/v1" base URL with no build-time configuration.
+#
+# NOTE: the build context is the REPO ROOT, not backend/, because the Node stage
+# needs frontend/. Build (MUST be linux/amd64 for Cloud Run):
+#   docker buildx build --platform linux/amd64 -f backend/Dockerfile.api \
+#     -t REGION-docker.pkg.dev/PROJECT/tyche/api:latest --push .
+#
+# Runtime uses workload identity (tyche-ui SA) — no JSON key mount.
+
+# --- Stage 1: build the SPA ------------------------------------------------
+# Pinned to the BUILD platform, not the target: the output is plain JS/CSS with no
+# native code, and emulating amd64 Node on Apple Silicon crashes esbuild
+# ("The service was stopped: write EPIPE") besides being far slower.
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS frontend
+
+WORKDIR /build
+
+# Install against the lockfile alone so dependency layers survive source edits.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+# --- Stage 2: Python runtime ----------------------------------------------
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/pyproject.toml backend/README.md ./
+COPY backend/src ./src
+COPY backend/scripts ./scripts
+COPY backend/alembic.ini ./
+COPY backend/alembic ./alembic
+
+# Deliberately WITHOUT the [ml] extra: xgboost + scikit-learn are only needed by
+# the model predictors, and every page reads published artifacts instead. Adding
+# them costs image size and cold-start time for code the UI never calls.
+RUN pip install --upgrade pip \
+    && pip install -e "."
+
+COPY --from=frontend /build/dist ./static
+
+ENV TYCHE_STATIC_DIR=/app/static
+
+# Cloud Run env (override at deploy time):
+#   TYCHE_DATA_BACKEND=gcs
+#   TYCHE_GCS_BUCKET=tyche-data-prod
+#   TYCHE_GCP_PROJECT_ID=tyche-platform
+#   TYCHE_RUN_ENV=prod
+
+EXPOSE 8080
+
+# Single worker on purpose: the published-artifact cache is per-process, so extra
+# workers would each hold their own copy of the ~7 MiB daily dataset and re-fetch
+# it from GCS independently. Concurrency comes from asyncio, not processes.
+#
+# JSON form (so Docker does not wrap it in an implicit shell) with an explicit
+# `sh -c exec`: the shell is needed to expand Cloud Run's injected $PORT, and
+# `exec` hands uvicorn PID 1 so it receives SIGTERM on shutdown.
+CMD ["sh", "-c", "exec uvicorn tyche.app:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1 --proxy-headers --forwarded-allow-ips='*'"]
+
