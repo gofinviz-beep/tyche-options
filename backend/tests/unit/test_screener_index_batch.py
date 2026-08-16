@@ -11,6 +11,7 @@ from tyche.market_data.screener_index_store import ScreenerIndexStore
 from tyche.storage.paths import StorageContext
 from tyche.workflow.screener_index_batch import (
     ScreenerIndexResult,
+    _quality_score,
     build_screener_row,
     clamp,
     compute_setup_label,
@@ -45,7 +46,8 @@ def _deep_dive(ticker: str, last_close: float = 100.0, **overrides) -> TickerDee
     result.last_close = last_close
     result.as_of_date = "2026-07-10"
     result.market_cap = overrides.get("market_cap", 15_000_000_000)
-    result.institutional_pct = overrides.get("institutional_pct", 60.0)
+    # 0-1 fraction, matching TickerMetaStore.get_institutional_pcts().
+    result.institutional_pct = overrides.get("institutional_pct", 0.60)
     result.name = f"{ticker} Inc"
     result.sector = "Technology"
     result.rsi = MultiTimeframeRSI(
@@ -79,6 +81,44 @@ class TestClamp:
         assert clamp(-10, 0, 100) == 0
 
 
+class TestInstitutionalOwnershipScale:
+    """``institutional_pct`` is a 0-1 fraction, not a 0-100 percent.
+
+    The Diamond Finder calibration is written on the percent scale ("full
+    credit at 60% held"), so the quality component must convert. Feeding the
+    raw fraction into a ``/ 60`` divisor collapsed all 7 institutional points
+    to ~0 for every ticker in the universe.
+    """
+
+    # Mega-cap above its 50-EMA: 8 cap points + 5 trend points.
+    _NON_INST_POINTS = 13.0
+
+    def _row(self, institutional_pct: float | None) -> dict:
+        return {
+            "market_cap": 15_000_000_000,
+            "institutional_pct": institutional_pct,
+            "last_close": 100.0,
+            "ema_50": 90.0,
+        }
+
+    def test_no_ownership_data_earns_no_institutional_points(self):
+        assert _quality_score(self._row(None)) == pytest.approx(self._NON_INST_POINTS)
+
+    def test_full_credit_at_the_60_pct_cap(self):
+        assert _quality_score(self._row(0.60)) == pytest.approx(self._NON_INST_POINTS + 7.0)
+
+    def test_half_credit_at_half_the_cap(self):
+        assert _quality_score(self._row(0.30)) == pytest.approx(self._NON_INST_POINTS + 3.5)
+
+    def test_typical_large_cap_ownership_is_capped_not_collapsed(self):
+        """A real value (82% held) must earn the full component, not ~0."""
+        earned = _quality_score(self._row(0.82)) - self._NON_INST_POINTS
+        assert earned == pytest.approx(7.0)
+
+    def test_quality_score_stays_within_its_0_20_budget(self):
+        assert _quality_score(self._row(1.0)) == pytest.approx(20.0)
+
+
 class TestPrimePullbackFixture:
     """The core diamond: strong quarterly structure + cooled daily timing."""
 
@@ -95,7 +135,7 @@ class TestPrimePullbackFixture:
             "pct_vs_ema_8": 1.0,
             "pct_vs_ema_21": 3.0,
             "market_cap": 15_000_000_000,
-            "institutional_pct": 70.0,
+            "institutional_pct": 0.70,
             "ret_3m": 15.0,
         }
 
@@ -135,7 +175,7 @@ class TestOverextendedWeakFixture:
             "pct_vs_ema_8": 15.0,
             "pct_vs_ema_21": 18.0,
             "market_cap": 5_000_000_000,
-            "institutional_pct": 40.0,
+            "institutional_pct": 0.40,
             "ret_3m": 50.0,
         }
 

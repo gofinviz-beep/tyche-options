@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ScreenerRow(BaseModel):
@@ -14,7 +14,10 @@ class ScreenerRow(BaseModel):
     as_of_date: str = ""
     last_close: float = 0.0
     market_cap: float | None = None
-    institutional_pct: float | None = None
+    institutional_pct: float | None = Field(
+        default=None,
+        description="Institutional ownership as a 0-1 fraction (0.82 = 82% held).",
+    )
     pct_off_52w_high: float | None = None
 
     rsi_daily: float = 50.0

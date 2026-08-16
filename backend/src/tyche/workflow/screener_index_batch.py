@@ -111,7 +111,9 @@ def _quality_score(row: dict[str, Any]) -> float:
     ema_50 = row.get("ema_50") or 0.0
 
     cap_pts = _market_cap_component(market_cap)
-    inst_pts = clamp(institutional_pct / 60) * 7
+    # institutional_pct is a 0-1 fraction (TickerMetaStore.get_institutional_pcts);
+    # the calibration is expressed on the 0-100 scale and tops out at 60% held.
+    inst_pts = clamp(institutional_pct * 100 / 60) * 7
     above_50_pts = 5.0 if (ema_50 > 0 and last_close > ema_50) else 0.0
     return cap_pts + inst_pts + above_50_pts
 

@@ -184,7 +184,7 @@ class TestExtractTickerFeatures:
         result = extract_ticker_features(
             ohlcv,
             market_cap=50e9,
-            institutional_pct=85.0,
+            institutional_pct=0.85,
             sector="Technology",
             sector_map=sector_map,
             min_bars=50,

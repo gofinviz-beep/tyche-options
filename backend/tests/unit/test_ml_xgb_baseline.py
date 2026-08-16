@@ -65,7 +65,7 @@ def _make_dataset(
                 "vrp": rng.normal(5, 10),
                 "rv_20d": rng.uniform(0.1, 0.4),
                 "log_market_cap": np.log1p(rng.uniform(4e9, 100e9)),
-                "institutional_pct": rng.uniform(50, 95),
+                "institutional_pct": rng.uniform(0.5, 0.95),
                 "sector_encoded": rng.integers(1, 6),
                 "sector_avg_rsi": rng.uniform(30, 70),
                 "sector_avg_ema8_slope": rng.normal(0, 0.3),

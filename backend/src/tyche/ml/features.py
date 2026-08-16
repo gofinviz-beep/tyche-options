@@ -362,7 +362,7 @@ def extract_ticker_features(
         ohlcv: OHLCV DataFrame with columns date, open, high, low, close, volume.
         derived: Optional DerivedMetricsStore DataFrame with date, iv_rank, etc.
         market_cap: Static market cap (from TickerMetaStore).
-        institutional_pct: Static institutional ownership %.
+        institutional_pct: Static institutional ownership as a 0-1 fraction.
         sector: Sector name string.
         sector_map: Mapping of sector name → integer encoding.
         min_bars: Minimum bars needed before producing features.

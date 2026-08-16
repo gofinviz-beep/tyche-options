@@ -828,7 +828,11 @@ class TickerMetaStore:
         return [t for t in tickers if types.get(t) == "CS"]
 
     def get_institutional_pcts(self, tickers: list[str] | None = None) -> dict[str, float]:
-        """Return a ticker -> institutional_pct mapping from persisted data."""
+        """Return a ticker -> institutional_pct mapping from persisted data.
+
+        Percentages are 0-1 fractions (0.82 = 82% held), matching yfinance's
+        ``heldPercentInstitutions`` and the ``min_institutional_pct`` gates.
+        """
         if not self.exists:
             return {}
 

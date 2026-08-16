@@ -30,7 +30,7 @@ def _row(ticker: str, **overrides) -> ScreenerRow:
         as_of_date="2026-07-10",
         last_close=100.0,
         market_cap=10_000_000_000,
-        institutional_pct=50.0,
+        institutional_pct=0.50,
         rsi_daily=45.0,
         rsi_weekly=55.0,
         rsi_monthly=55.0,

@@ -46,7 +46,7 @@ def _make_payload(ticker: str = "TEST") -> TickerDeepDiveResponse:
     meta_store.get_meta_batch.return_value = {
         ticker: {"name": "Test Inc.", "sector": "Technology", "market_cap": 50e9}
     }
-    meta_store.get_institutional_pcts.return_value = {ticker: 65.0}
+    meta_store.get_institutional_pcts.return_value = {ticker: 0.65}
 
     fundamentals_store = MagicMock()
     today = date.today()

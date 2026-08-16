@@ -376,19 +376,22 @@ function buildColumns(): DataTableColumn<ScreenerRow>[] {
       header: "Inst Own",
       align: "right",
       sortable: true,
+      /* Unlike the other percent columns here, this arrives as a 0-1 fraction. */
       accessor: (r) => r.institutional_pct ?? null,
       render: (r) =>
         r.institutional_pct == null ? (
           <span className="text-xs text-gray-400">—</span>
         ) : (
-          <span className="tabular-nums text-gray-600">{r.institutional_pct.toFixed(0)}%</span>
+          <span className="tabular-nums text-gray-600">
+            {(r.institutional_pct * 100).toFixed(0)}%
+          </span>
         ),
       filter: {
         type: "min",
         minOptions: [
-          { value: "30", label: "30%" },
-          { value: "50", label: "50%" },
-          { value: "70", label: "70%" },
+          { value: "0.3", label: "30%" },
+          { value: "0.5", label: "50%" },
+          { value: "0.7", label: "70%" },
         ],
       },
     },
@@ -435,7 +438,7 @@ function exportToExcel(rows: ScreenerRow[], asOfDate: string | null) {
     r.pct_off_52w_high != null ? r.pct_off_52w_high.toFixed(1) : "",
     r.last_close.toFixed(2),
     r.market_cap?.toFixed(0) ?? "",
-    r.institutional_pct != null ? r.institutional_pct.toFixed(0) : "",
+    r.institutional_pct != null ? (r.institutional_pct * 100).toFixed(0) : "",
     r.sector ?? "",
   ]);
 
