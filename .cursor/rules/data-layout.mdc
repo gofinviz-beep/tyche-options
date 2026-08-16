@@ -127,6 +127,7 @@ from tyche.market_data.data_store import TickerMetaStore
 |-----|---------|
 | `docs/tyche_gcp_minimal_migration_spec_v2.md` | GCP cloud-computed / locally-viewed architecture |
 | `docs/tyche_cloud_computed_signals_completion_spec_v1.md` | Cloud-computed UI signals (slices 1–7) |
+| `docs/tyche_cloud_run_hosting_spec_v1.md` | **Hosting** the API + SPA on Cloud Run behind IAP (phases 1–4, with a live implementation log) |
 | `docs/multibagger_discovery_engine_v8_cursor_composer_spec.md` | **Current** implementation spec (P2+ next) |
 | `docs/alpha/p1_completion_note.md` | P1 validation acceptance + artifact locations |
 | `docs/alpha/stocks_cloud_signals_slice12_note.md` | Slices 1–2 stocks cloud signals GCP verification |
