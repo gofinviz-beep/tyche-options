@@ -92,3 +92,56 @@ class AlphaBatchResponse(BaseModel):
     ml_available: bool = False
     as_of_date: str | None = None
     elapsed_s: float | None = None
+
+
+class AlphaTrendSeries(BaseModel):
+    """Per-ticker day-over-day trajectory for sparklines."""
+
+    dates: list[str] = []
+    alpha: list[float] = []
+    rank: list[int] = []
+    move_prob: list[float | None] = []
+
+
+class AlphaPersistenceGem(BaseModel):
+    """A consistently-ranked directional-alpha name with its stability metrics.
+
+    Persistence (0-100) blends alpha *level*, buy/top-100 *consistency*, rank
+    *stability*, and alpha *trend*, minus a signal-churn penalty. Complements the
+    single-day scan by surfacing names that stay strong across sessions rather
+    than one-day wonders.
+    """
+
+    ticker: str
+    persistence: float
+    mean_alpha: float
+    last_alpha: float
+    alpha_slope: float
+    mean_move_prob: float | None = None
+    pct_buy: float
+    pct_top100: float
+    mean_rank: float
+    std_rank: float
+    last_rank: int
+    signal_churn: int
+    last_signal: str
+    mean_demand_net: float | None = None
+    market_cap: float | None = None
+    sector: str | None = None
+    earnings_date: str | None = None
+    days_to_earnings: int | None = None
+    earnings_in_horizon: bool | None = None
+    trend: AlphaTrendSeries = AlphaTrendSeries()
+
+
+class AlphaPersistenceResponse(BaseModel):
+    """Ranked persistence read across the recent alpha-history window."""
+
+    generated_at: str
+    variant: str = "sustained"
+    sessions: int = 0
+    date_range: list[str] = []
+    universe_size: int = 0
+    total: int = 0
+    source: str = "computed"
+    gems: list[AlphaPersistenceGem] = []

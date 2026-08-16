@@ -385,9 +385,17 @@ def run_alpha_batch_job(
         status=summary.get("status", "ok"),
         signals=summary.get("signals", 0),
     )
+    # Latest snapshots + dated history (written by AlphaSignalStore.write).
+    as_of = summary.get("as_of_date")
+    history_paths: list[str] = []
+    for v in variants:
+        history_paths.append(f"alpha_history/{v}/_current.json")
+        if as_of:
+            history_paths.append(f"alpha_history/{v}/{as_of}.parquet")
     manifest.output_paths = [
         "alpha_signals.parquet",
         "alpha_signals_sustained.parquet",
+        *history_paths,
     ]
     manifest.extra = summary
     if summary.get("status") == "empty":
@@ -395,6 +403,27 @@ def run_alpha_batch_job(
         manifest.finish(status="failed")
         rel = manifest.write(ctx=ctx)
         return JobResult("alpha-batch", rid, "failed", rel, summary)
+
+    # Persistence read from the freshly-appended dated snapshots (best-effort).
+    if getattr(settings, "alpha_persistence_enabled", True):
+        try:
+            from tyche.workflow.alpha_persistence import run_alpha_persistence
+
+            log_job_phase("alpha-batch", "persistence", variants=variants)
+            pers = run_alpha_persistence(
+                settings,
+                variants=variants,
+                sessions=settings.alpha_persistence_sessions,
+                top=settings.alpha_persistence_top,
+            )
+            summary["persistence"] = pers.get("variants", {})
+            manifest.output_paths.extend(
+                f"signals/alpha/persistence_{v}.json" for v in variants
+            )
+            log_job_phase("alpha-batch", "persistence", status="complete")
+        except Exception as exc:  # noqa: BLE001 - persistence is best-effort
+            manifest.warnings.append(f"alpha_persistence_failed: {exc}")
+            log_job_phase("alpha-batch", "persistence", status="failed", error=str(exc))
 
     manifest.finish(status="success")
     rel = manifest.write(ctx=ctx)

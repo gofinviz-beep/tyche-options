@@ -244,3 +244,114 @@ class TestAlphaSignalStore:
         out, as_of, computed = store.read_latest()
         assert out == []
         assert as_of is None
+
+    @staticmethod
+    def _rec(ticker: str, score: float, horizon: str = "swing") -> dict:
+        return {
+            "ticker": ticker,
+            "alpha_score": score,
+            "signal": "strong_buy" if score >= 70 else "buy",
+            "horizon": horizon,
+            "factors": {"momentum": 0.8, "relative_strength": 0.7, "trend_quality": 0.9,
+                        "breakout": 0.6, "volume_thrust": 0.5},
+            "demand": {"net": 0.2},
+            "breakout_prob_swing": 0.85,
+            "breakout_prob_trend": 0.70,
+            "breakout_prob_thematic": None,
+            "market_cap": 5e9,
+            "last_close": 100.0,
+        }
+
+    def test_write_creates_dated_snapshot_and_marker(self, tmp_path):
+        from tyche.market_data.alpha_store import AlphaSignalStore
+
+        store = AlphaSignalStore(data_dir=str(tmp_path), variant="sustained")
+        store.write([self._rec("AAA", 75.0)], as_of=date(2026, 1, 15))
+
+        assert store.list_snapshot_dates() == ["2026-01-15"]
+        marker = store.current()
+        assert marker is not None
+        assert marker["latest_date"] == "2026-01-15"
+        assert marker["variant"] == "sustained"
+        assert marker["rows"] == 1
+        assert marker["rel_path"].endswith("alpha_history/sustained/2026-01-15.parquet")
+
+    def test_read_snapshot_round_trip(self, tmp_path):
+        from tyche.market_data.alpha_store import AlphaSignalStore
+
+        store = AlphaSignalStore(data_dir=str(tmp_path))
+        store.write([self._rec("AAA", 75.0)], as_of=date(2026, 1, 15))
+
+        out, as_of, computed = store.read_snapshot("2026-01-15")
+        assert as_of == "2026-01-15"
+        assert len(out) == 1 and out[0]["ticker"] == "AAA"
+        assert out[0]["factors"]["momentum"] == 0.8
+        assert out[0]["demand"]["net"] == 0.2
+
+        empty, _, _ = store.read_snapshot("2020-01-01")
+        assert empty == []
+
+    def test_read_history_concats_recent_sessions(self, tmp_path):
+        from tyche.market_data.alpha_store import AlphaSignalStore
+
+        store = AlphaSignalStore(data_dir=str(tmp_path), variant="sustained")
+        store.write([self._rec("AAA", 80.0), self._rec("BBB", 60.0)], as_of=date(2026, 1, 13))
+        store.write([self._rec("AAA", 78.0), self._rec("BBB", 62.0)], as_of=date(2026, 1, 14))
+        store.write([self._rec("AAA", 82.0), self._rec("BBB", 55.0)], as_of=date(2026, 1, 15))
+
+        assert store.list_snapshot_dates() == ["2026-01-13", "2026-01-14", "2026-01-15"]
+
+        panel = store.read_history(sessions=2)
+        assert "date" in panel.columns
+        assert set(panel["date"].unique()) == {"2026-01-14", "2026-01-15"}
+        assert len(panel) == 4  # 2 tickers x 2 sessions
+
+        full = store.read_history()
+        assert full["date"].nunique() == 3
+        assert set(full["ticker"].unique()) == {"AAA", "BBB"}
+
+    def test_read_history_empty_when_no_snapshots(self, tmp_path):
+        from tyche.market_data.alpha_store import AlphaSignalStore
+
+        store = AlphaSignalStore(data_dir=str(tmp_path))
+        assert store.read_history().empty
+        assert store.list_snapshot_dates() == []
+        assert store.current() is None
+
+    def test_backfill_current_to_history(self, tmp_path):
+        from tyche.market_data.alpha_store import AlphaSignalStore
+
+        # Simulate a legacy latest-only snapshot with no dated history.
+        store = AlphaSignalStore(data_dir=str(tmp_path))
+        store.write([self._rec("AAA", 75.0)], as_of=date(2026, 1, 15))
+        # Remove the dated history to emulate the pre-migration state.
+        hist = tmp_path / "alpha_history" / "peak"
+        for p in hist.glob("*"):
+            p.unlink()
+        assert store.list_snapshot_dates() == []
+
+        seeded = store.backfill_current_to_history()
+        assert seeded == "2026-01-15"
+        assert store.list_snapshot_dates() == ["2026-01-15"]
+        # Idempotent: a second call is a no-op.
+        assert store.backfill_current_to_history() is None
+
+    def test_same_day_rewrite_updates_snapshot_and_marker(self, tmp_path):
+        from tyche.market_data.alpha_store import AlphaSignalStore
+
+        store = AlphaSignalStore(data_dir=str(tmp_path), variant="sustained")
+        store.write([self._rec("AAA", 70.0)], as_of=date(2026, 1, 15))
+        store.write(
+            [self._rec("AAA", 80.0), self._rec("BBB", 60.0)],
+            as_of=date(2026, 1, 15),
+        )
+
+        assert store.list_snapshot_dates() == ["2026-01-15"]
+        out, as_of, _ = store.read_snapshot("2026-01-15")
+        assert as_of == "2026-01-15"
+        assert {r["ticker"] for r in out} == {"AAA", "BBB"}
+        assert next(r["alpha_score"] for r in out if r["ticker"] == "AAA") == 80.0
+        marker = store.current()
+        assert marker is not None
+        assert marker["rows"] == 2
+        assert marker["latest_date"] == "2026-01-15"

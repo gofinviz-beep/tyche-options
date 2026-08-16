@@ -21,8 +21,11 @@ With `TYCHE_DATA_BACKEND=gcs`, the same relative paths resolve under `gs://{buck
 | Daily OHLCV bars | `backend/data/ohlcv_daily/{TICKER}.parquet` | One Parquet per ticker |
 | Intraday 5-min bars | `backend/data/intraday_5min/{TICKER}.parquet` | One Parquet per ticker |
 | Ticker metadata | `backend/data/ticker_meta.parquet` | Single file (market cap, shares outstanding, type, exchange, sector, SIC, institutional ownership). `market_cap` is derived daily as `shares_outstanding × latest close` (Polygon's static field lags months). `EQUITY_TYPE_OVERRIDES` in `data_store.py` forces selected ADRs (e.g. ARM) to `type=CS` on every meta refresh. |
-| Directional alpha signals (peak) | `backend/data/alpha_signals.parquet` | Single file (big-move buy signals: alpha score, horizon, ML probabilities, demand dimensions, factors) |
-| Directional alpha signals (sustained) | `backend/data/alpha_signals_sustained.parquet` | Single file — `AlphaSignalStore(variant="sustained")`. Same schema, sustained big-move models |
+| Directional alpha signals (peak) | `backend/data/alpha_signals.parquet` | Latest snapshot (big-move buy signals: alpha score, horizon, ML probabilities, demand dimensions, factors) |
+| Directional alpha signals (sustained) | `backend/data/alpha_signals_sustained.parquet` | Latest snapshot — `AlphaSignalStore(variant="sustained")`. Same schema, sustained big-move models |
+| Directional alpha history (per day) | `backend/data/alpha_history/{variant}/{YYYY-MM-DD}.parquet` | One Parquet per session per variant (`peak` / `sustained`). Written alongside the latest snapshot by the nightly alpha batch. Cheap input for day-over-day trend / persistence |
+| Directional alpha current marker | `backend/data/alpha_history/{variant}/_current.json` | Points at the latest dated snapshot (`latest_date`, `rel_path`, `rows`, `written_at`) |
+| Alpha persistence artifact | `signals/alpha/persistence_{variant}.json` | Ranked "gems" + per-ticker trend series derived from dated history (written after alpha batch when `alpha_persistence_enabled`) |
 | Demand: fundamentals | `backend/data/fundamentals/{TICKER}.parquet` | One per ticker (Finnhub `/stock/financials` standardized, primary; as-reported quarterly/annual fallback; dual-class aliasing) |
 | Demand: estimates | `backend/data/estimates/{TICKER}.parquet` | One per ticker (Finnhub Estimates-1: tidy long format — surprises, recommendations, price targets, `eps_est_avg` / `rev_est_avg`) |
 | Demand: estimate snapshots | `backend/data/estimate_snapshots/{TICKER}.parquet` | Wide point-in-time EPS/revenue consensus per ingest day (`EstimateSnapshotStore`); append-only by `snapshot_date` for same-period revision velocity |

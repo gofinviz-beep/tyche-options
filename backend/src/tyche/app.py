@@ -536,6 +536,24 @@ async def _scheduled_alpha_batch() -> None:
         logger.info("scheduled_alpha_batch_complete", **{k: v for k, v in result.items() if k != "status"})
     except Exception:
         logger.error("scheduled_alpha_batch_failed", exc_info=True)
+        return
+
+    # Persistence read (day-over-day trend) from the freshly-appended snapshots.
+    if getattr(settings, "alpha_persistence_enabled", True):
+        try:
+            from tyche.workflow.alpha_persistence import run_alpha_persistence
+
+            variants = ["peak", "sustained"] if settings.alpha_sustained_enabled else ["peak"]
+            summary = await asyncio.to_thread(
+                run_alpha_persistence,
+                settings,
+                variants=variants,
+                sessions=settings.alpha_persistence_sessions,
+                top=settings.alpha_persistence_top,
+            )
+            logger.info("scheduled_alpha_persistence_complete", **summary.get("variants", {}))
+        except Exception:
+            logger.error("scheduled_alpha_persistence_failed", exc_info=True)
 
 
 async def _scheduled_bridge_tradier_iv() -> None:

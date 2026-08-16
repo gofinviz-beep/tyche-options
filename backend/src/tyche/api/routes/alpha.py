@@ -34,6 +34,7 @@ from tyche.schemas.alpha import (
     AlphaBatchResponse,
     AlphaDemandDimensions,
     AlphaFactorScores,
+    AlphaPersistenceResponse,
     AlphaScanResponse,
     AlphaSignalResponse,
 )
@@ -146,6 +147,74 @@ def _refilter_alpha_scan_cap(
         buy_count=buy,
         signals=kept,
     )
+
+
+@router.get("/persistence", response_model=AlphaPersistenceResponse)
+async def alpha_persistence(
+    variant: str = Query(
+        default="sustained",
+        description="Model variant: 'sustained' (default) or 'peak'.",
+    ),
+    sessions: int | None = Query(
+        default=None, ge=2, le=120,
+        description="Recent sessions used for persistence metrics (default: config).",
+    ),
+    top: int | None = Query(
+        default=None, ge=1, le=500,
+        description="Max gems to return (default: config).",
+    ),
+    min_persistence: float = Query(default=0.0, ge=0.0, le=100.0),
+    signal: str | None = Query(
+        default=None, description="Filter last_signal: strong_buy|buy|watch|avoid"
+    ),
+    force: bool = Query(
+        default=False,
+        description="Recompute from history instead of serving the published artifact.",
+    ),
+    settings: TycheSettings = Depends(get_settings),
+) -> AlphaPersistenceResponse:
+    """Day-over-day directional-alpha persistence (which names stay strong).
+
+    Serves ``signals/alpha/persistence_{variant}.json`` (written after the nightly
+    alpha batch). Falls back to an on-demand compute from the accumulated dated
+    snapshots when the artifact is absent or ``force=true``.
+    """
+    import asyncio
+
+    from tyche.workflow.alpha_persistence import compute_persistence, load_persisted
+
+    if variant not in _VALID_VARIANTS:
+        raise HTTPException(status_code=400, detail=f"Invalid variant: {variant}")
+
+    sess = sessions or settings.alpha_persistence_sessions
+    top_n = top or settings.alpha_persistence_top
+
+    resp: AlphaPersistenceResponse | None = None
+    if not force:
+        resp = await asyncio.to_thread(load_persisted, settings, variant)
+    if resp is None:
+        resp = await asyncio.to_thread(
+            compute_persistence,
+            settings,
+            variant=variant,
+            sessions=sess,
+            top=top_n,
+        )
+    if resp is None:
+        return AlphaPersistenceResponse(
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            variant=variant,
+        )
+
+    gems = resp.gems
+    if min_persistence > 0:
+        gems = [g for g in gems if g.persistence >= min_persistence]
+    if signal and signal in _VALID_SIGNALS:
+        gems = [g for g in gems if g.last_signal == signal]
+    if top is not None:
+        gems = gems[:top_n]
+
+    return resp.model_copy(update={"gems": gems, "total": len(gems)})
 
 
 @router.get("/signal/{ticker}", response_model=AlphaSignalResponse)

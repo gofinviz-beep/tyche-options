@@ -60,6 +60,7 @@ def build_dataset(
     include_momentum: bool = True,
     include_demand: bool = True,
     max_tickers: int | None = None,
+    tickers: list[str] | None = None,
     job_name: str | None = None,
 ) -> pd.DataFrame:
     """Build the full tabular dataset from on-disk stores.
@@ -91,9 +92,13 @@ def build_dataset(
     inst_pcts = meta_store.get_institutional_pcts()
     sector_map = build_sector_map(sectors)
 
-    equity_tickers = _filter_equity(
-        all_tickers, market_caps, min_market_cap,
-    )
+    if tickers is not None:
+        avail = set(all_tickers)
+        equity_tickers = [t.upper() for t in tickers if t.upper() in avail]
+    else:
+        equity_tickers = _filter_equity(
+            all_tickers, market_caps, min_market_cap,
+        )
     if max_tickers:
         equity_tickers = equity_tickers[:max_tickers]
 

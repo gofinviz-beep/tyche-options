@@ -440,6 +440,13 @@ class TycheSettings(BaseModel):
     alpha_discovery_train_min_market_cap_millions: float = 250.0
     alpha_demand_mult_ceil_discovery: float = 1.45
     alpha_discovery_snapshot_enabled: bool = False
+    # --- Directional Alpha PERSISTENCE (day-over-day trend read) ---
+    # After the nightly alpha batch, compute a per-ticker persistence score from
+    # the accumulated dated snapshots (alpha_history/{variant}/{date}.parquet) and
+    # publish signals/alpha/persistence_{variant}.json for the Persistence page.
+    alpha_persistence_enabled: bool = True
+    alpha_persistence_sessions: int = 30
+    alpha_persistence_top: int = 100
     bridge_tradier_iv_enabled: bool = True
     correlation_refresh_enabled: bool = True
     etf_refresh_enabled: bool = True

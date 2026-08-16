@@ -1,11 +1,14 @@
 """Nightly directional Alpha batch.
 
 Builds the latest-date feature row per ticker, runs the ML big-move predictor,
-scores every name through the deterministic AlphaScoreEngine, and persists the
-ranked snapshot to ``data/alpha_signals.parquet`` for instant page loads.
+scores every name through the deterministic AlphaScoreEngine, and persists:
+
+1. the latest snapshot (``alpha_signals.parquet`` / ``alpha_signals_{variant}.parquet``)
+2. a dated history file (``alpha_history/{variant}/{YYYY-MM-DD}.parquet``)
+3. a ``current`` marker (``alpha_history/{variant}/_current.json``)
 
 Mirrors the conviction batch: heavy computation runs once after market close;
-the API just reads the snapshot.
+the API just reads the snapshot. History feeds the persistence / trend layer.
 """
 
 from __future__ import annotations
@@ -66,6 +69,7 @@ def _score_variant(
     predictor: Any | None,
     persist: bool,
     settings: TycheSettings | None = None,
+    ctx: StorageContext | None = None,
 ) -> dict[str, Any]:
     """Score the pre-built feature frame for one model variant and persist it."""
     probs = predictor.predict_proba_batch(features) if predictor is not None else {}
@@ -77,7 +81,7 @@ def _score_variant(
 
     as_of = _resolve_as_of(features, settings=settings)
     if persist:
-        AlphaSignalStore(data_dir=data_dir, variant=variant).write(
+        AlphaSignalStore(data_dir=data_dir, variant=variant, ctx=ctx).write(
             [s.to_dict() for s in signals], as_of=as_of
         )
 
@@ -172,6 +176,7 @@ def run_alpha_batch(
             predictor=var_pred,
             persist=persist,
             settings=settings,
+            ctx=ctx,
         )
         log_job_phase(
             JOB_NAME,
