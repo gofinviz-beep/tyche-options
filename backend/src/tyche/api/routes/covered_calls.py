@@ -111,6 +111,7 @@ async def analyze_batch(
         settings,
         operation="covered call analysis",
         job_hint="tyche-options-covered-calls-batch (not yet scheduled)",
+        bounded=True,
     )
     engine = _get_engine(settings)
 
@@ -155,6 +156,7 @@ async def analyze_ticker(
         settings,
         operation="covered call analysis",
         job_hint="tyche-options-covered-calls-batch (not yet scheduled)",
+        bounded=True,
     )
     engine = _get_engine(settings)
 

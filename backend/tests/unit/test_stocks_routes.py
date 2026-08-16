@@ -14,6 +14,22 @@ from tyche.api.routes.stocks import (
     _snapshot_to_response,
     _transition_to_response,
 )
+from tyche.schemas.stocks import ConvictionSnapshotResponse
+
+
+def _local_db_settings() -> MagicMock:
+    """Settings for a local, database-backed deployment.
+
+    A bare MagicMock makes every flag truthy, which sends these routes down the
+    published-artifact path instead of the database path under test.
+    """
+    settings = MagicMock()
+    settings.min_institutional_pct_stock_buy = 0.50
+    settings.data_backend = "local"
+    settings.api_prefer_published_signals = False
+    settings.api_allow_local_db_fallback = True
+    settings.watchlist_symbols = []
+    return settings
 
 
 def _make_snapshot_model(
@@ -622,8 +638,7 @@ class TestRecommendationsEndpointUnit:
 
         from tyche.api.routes.stocks import get_stock_recommendations_endpoint
 
-        settings = MagicMock()
-        settings.min_institutional_pct_stock_buy = 0.50
+        settings = _local_db_settings()
 
         meta_store = MagicMock()
         meta_store.exists = False
@@ -640,8 +655,7 @@ class TestRecommendationsEndpointUnit:
 
         from tyche.api.routes.stocks import get_stock_recommendations_endpoint
 
-        settings = MagicMock()
-        settings.min_institutional_pct_stock_buy = 0.50
+        settings = _local_db_settings()
 
         meta_store = MagicMock()
         meta_store.exists = False
@@ -689,3 +703,170 @@ class TestCspExpiryEndpoints:
         resp = await remove_csp_expiry("aapl", expiry_tracker=tracker)
         assert resp["ticker"] == "AAPL"
         assert resp["removed"] == 1
+
+
+def _make_published_row(
+    ticker: str = "AAPL",
+    trend_state: str = "pullback_to_8ema",
+    ema_8_slope: float = 0.4,
+    ema_21_slope: float = 0.3,
+    institutional_pct: float | None = 0.75,
+) -> ConvictionSnapshotResponse:
+    """A row shaped like the published conviction artifact."""
+    return ConvictionSnapshotResponse(
+        ticker=ticker,
+        as_of_date="2026-08-14",
+        trend_state=trend_state,
+        conviction_level="high",
+        raw_conviction="high",
+        csp_eligible=True,
+        last_close=183.0,
+        ema_8=184.0,
+        ema_21=182.0,
+        ema_8_slope=ema_8_slope,
+        ema_21_slope=ema_21_slope,
+        price_to_8ema_pct=-0.54,
+        price_to_21ema_pct=0.55,
+        volume_declining=True,
+        days_above_both_emas=7,
+        prior_streak=6,
+        avg_volume_20d=50_000_000,
+        latest_volume=40_000_000,
+        market_cap=2.8e12,
+        institutional_pct=institutional_pct,
+        sector="Technology",
+        computed_at="2026-08-14T20:10:00+00:00",
+    )
+
+
+def _cloud_settings() -> MagicMock:
+    settings = MagicMock()
+    settings.min_institutional_pct_stock_buy = 0.50
+    settings.data_backend = "gcs"
+    settings.api_prefer_published_signals = True
+    settings.api_allow_local_db_fallback = False
+    settings.watchlist_symbols = ["AAPL"]
+    return settings
+
+
+class TestPullbacksArtifactPath:
+    """Cloud mode serves pullbacks from the published conviction artifact.
+
+    Batch jobs publish to GCS and never populate the API container's
+    conviction.db, so the database path returns nothing there.
+    """
+
+    @pytest.mark.asyncio
+    @patch("tyche.persistence.published_routes.get_stocks_conviction_rows")
+    @patch("tyche.api.routes.stocks.get_active_pullbacks", new_callable=AsyncMock)
+    async def test_serves_published_rows_without_touching_db(
+        self, mock_db, mock_published
+    ) -> None:
+        from tyche.api.routes.stocks import get_active_pullbacks_endpoint
+
+        mock_published.return_value = ([_make_published_row()], "published")
+
+        resp = await get_active_pullbacks_endpoint(
+            _cloud_settings(), MagicMock(exists=False)
+        )
+
+        assert [a.ticker for a in resp.watchlist] == ["AAPL"]
+        assert resp.universe == []
+        assert resp.as_of_date == "2026-08-14"
+        mock_db.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("tyche.persistence.published_routes.get_stocks_conviction_rows")
+    async def test_carries_published_metadata_through(self, mock_published) -> None:
+        """market_cap, sector and institutional_pct come from the artifact."""
+        from tyche.api.routes.stocks import get_active_pullbacks_endpoint
+
+        mock_published.return_value = ([_make_published_row()], "published")
+
+        resp = await get_active_pullbacks_endpoint(
+            _cloud_settings(), MagicMock(exists=False)
+        )
+
+        alert = resp.watchlist[0]
+        assert alert.market_cap == 2.8e12
+        assert alert.sector == "Technology"
+        assert alert.institutional_pct == 0.75
+        assert alert.detected_at == "2026-08-14T20:10:00+00:00"
+
+    @pytest.mark.asyncio
+    @patch("tyche.persistence.published_routes.get_stocks_conviction_rows")
+    async def test_applies_the_same_filter_as_the_sql_predicate(
+        self, mock_published
+    ) -> None:
+        from tyche.api.routes.stocks import get_active_pullbacks_endpoint
+
+        mock_published.return_value = (
+            [
+                _make_published_row(ticker="KEEP"),
+                _make_published_row(ticker="NOTPULLBACK", trend_state="uptrend"),
+                _make_published_row(ticker="FALLING8", ema_8_slope=-0.1),
+                _make_published_row(ticker="FALLING21", ema_21_slope=-0.1),
+            ],
+            "published",
+        )
+
+        settings = _cloud_settings()
+        settings.watchlist_symbols = []
+        resp = await get_active_pullbacks_endpoint(settings, MagicMock(exists=False))
+
+        assert [a.ticker for a in resp.universe] == ["KEEP"]
+
+    @pytest.mark.asyncio
+    @patch("tyche.persistence.published_routes.get_stocks_conviction_rows")
+    async def test_empty_when_no_artifact_and_no_db_fallback(
+        self, mock_published
+    ) -> None:
+        from tyche.api.routes.stocks import get_active_pullbacks_endpoint
+
+        mock_published.return_value = None
+
+        resp = await get_active_pullbacks_endpoint(
+            _cloud_settings(), MagicMock(exists=False)
+        )
+
+        assert resp.watchlist == []
+        assert resp.universe == []
+
+
+class TestRecommendationsArtifactPath:
+    @pytest.mark.asyncio
+    @patch("tyche.persistence.published_routes.get_stocks_conviction_rows")
+    @patch("tyche.api.routes.stocks.get_active_pullbacks", new_callable=AsyncMock)
+    async def test_serves_published_rows_without_touching_db(
+        self, mock_db, mock_published
+    ) -> None:
+        from tyche.api.routes.stocks import get_stock_recommendations_endpoint
+
+        mock_published.return_value = ([_make_published_row()], "published")
+
+        resp = await get_stock_recommendations_endpoint(
+            _cloud_settings(), MagicMock(exists=False)
+        )
+
+        assert [r.ticker for r in resp.recommendations] == ["AAPL"]
+        assert resp.as_of_date == "2026-08-14"
+        mock_db.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("tyche.persistence.published_routes.get_stocks_conviction_rows")
+    async def test_institutional_floor_uses_published_fraction(
+        self, mock_published
+    ) -> None:
+        """Ownership is a 0-1 fraction, compared against the fractional floor."""
+        from tyche.api.routes.stocks import get_stock_recommendations_endpoint
+
+        mock_published.return_value = (
+            [_make_published_row(institutional_pct=0.20)],
+            "published",
+        )
+
+        resp = await get_stock_recommendations_endpoint(
+            _cloud_settings(), MagicMock(exists=False)
+        )
+
+        assert resp.recommendations == []

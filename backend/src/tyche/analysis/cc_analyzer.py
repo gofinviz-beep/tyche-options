@@ -8,6 +8,7 @@ for the core analysis path.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -1094,7 +1095,11 @@ class CCAnalysisEngine:
         the real-time price and recalculates extension, signal, and strike
         before overlaying the live options chain premium.
         """
-        result = self.analyze(
+        # analyze() reads OHLCV + options history synchronously, which is a
+        # network round trip against GCS. Off the loop so a batch of positions
+        # actually runs concurrently under asyncio.gather.
+        result = await asyncio.to_thread(
+            self.analyze,
             ticker=ticker,
             shares=shares,
             cost_basis=cost_basis,
@@ -1130,8 +1135,6 @@ class CCAnalysisEngine:
         broker=None,
     ) -> CCPortfolioAnalysis:
         """Analyze multiple positions with live premium data."""
-        import asyncio
-
         tasks = [
             self.analyze_with_live_chain(
                 ticker=pos["ticker"],

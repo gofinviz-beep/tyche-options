@@ -8,6 +8,7 @@ from datetime import date, timedelta
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from tyche.api.cloud_mode import use_artifact_read_path
 from tyche.api.deps import (
     get_conviction_engine,
     get_data_store,
@@ -168,6 +169,20 @@ def _profile_to_bounce_stats(profile) -> HistoricalBounceStats:
     )
 
 
+def _computed_at_iso(snap) -> str:
+    """Render ``computed_at`` as ISO text for either row shape.
+
+    Database snapshots carry a datetime; published artifact rows have already
+    been serialized to a string.
+    """
+    computed_at = getattr(snap, "computed_at", None)
+    if not computed_at:
+        return ""
+    if isinstance(computed_at, str):
+        return computed_at
+    return computed_at.isoformat()
+
+
 def _snapshot_to_pullback_alert(
     snap,
     inst_pct: float | None = None,
@@ -222,7 +237,7 @@ def _snapshot_to_pullback_alert(
         suggested_action=action,
         position_size_hint=position_size_hint,
         stop_loss_level=_compute_stop_loss(alert_type, snap.ema_21),
-        detected_at=snap.computed_at.isoformat() if snap.computed_at else "",
+        detected_at=_computed_at_iso(snap),
         market_cap=round(raw_cap, 2) if raw_cap is not None else None,
         market_cap_label=_market_cap_label(raw_cap),
         exchange=meta.get("exchange", ""),
@@ -239,6 +254,81 @@ def _snapshot_to_pullback_alert(
 
 # ── Active pullbacks (from persisted snapshots) ───────────────────────
 
+# Mirrors the SQL predicate in conviction_repository.get_active_pullbacks so the
+# artifact and database paths select the same rows.
+_PULLBACK_STATES = frozenset({"pullback_to_8ema", "pullback_to_21ema"})
+
+
+def _is_active_pullback(row: ConvictionSnapshotResponse) -> bool:
+    """True when a conviction row is a pullback with both EMAs still rising."""
+    return (
+        row.trend_state in _PULLBACK_STATES
+        and row.ema_8_slope > 0
+        and row.ema_21_slope > 0
+    )
+
+
+async def _published_active_pullbacks(
+    settings: TycheSettings,
+) -> tuple[list[ConvictionSnapshotResponse], str] | None:
+    """Load active pullbacks from the published conviction artifact.
+
+    Returns the matching rows plus their as-of date, or ``None`` when no
+    artifact is available so the caller can fall back to the database.
+
+    Cloud batch jobs publish conviction to GCS and never populate the API
+    container's conviction.db, so this is the only path that yields rows there.
+    """
+    from tyche.persistence.published_routes import get_stocks_conviction_rows
+
+    published = await asyncio.to_thread(
+        get_stocks_conviction_rows, settings=settings
+    )
+    if published is None:
+        return None
+
+    rows, _layer = published
+    pullbacks = [row for row in rows if _is_active_pullback(row)]
+    as_of = next(
+        (row.as_of_date for row in pullbacks if row.as_of_date),
+        date.today().isoformat(),
+    )
+    return pullbacks, as_of
+
+
+def _build_pullbacks_response(
+    snapshots,
+    *,
+    watchlist_symbols: set[str],
+    as_of_date: str,
+    inst_map: dict[str, float],
+    meta_map: dict[str, dict],
+    bounce_profiles: dict[str, dict],
+    transitions,
+) -> ActivePullbacksResponse:
+    """Split pullback rows into watchlist vs universe and serialize them."""
+    watchlist_alerts: list[PullbackAlertResponse] = []
+    universe_alerts: list[PullbackAlertResponse] = []
+
+    for snap in snapshots:
+        alert = _snapshot_to_pullback_alert(
+            snap,
+            inst_map.get(snap.ticker),
+            meta_map.get(snap.ticker, {}),
+            bounce_profiles,
+        )
+        if snap.ticker in watchlist_symbols:
+            watchlist_alerts.append(alert)
+        else:
+            universe_alerts.append(alert)
+
+    return ActivePullbacksResponse(
+        watchlist=watchlist_alerts,
+        universe=universe_alerts,
+        transitions_today=[_transition_to_response(t) for t in transitions],
+        as_of_date=as_of_date,
+    )
+
 
 @router.get("/pullbacks/active", response_model=ActivePullbacksResponse)
 async def get_active_pullbacks_endpoint(
@@ -249,6 +339,33 @@ async def get_active_pullbacks_endpoint(
 
     Returns two sections: watchlist pullbacks (highlighted) and universe pullbacks.
     """
+    watchlist_symbols = set(s.upper() for s in settings.watchlist_symbols)
+
+    if use_artifact_read_path(settings):
+        published = await _published_active_pullbacks(settings)
+        if published is not None:
+            rows, as_of = published
+            return _build_pullbacks_response(
+                rows,
+                watchlist_symbols=watchlist_symbols,
+                as_of_date=as_of,
+                # The publishing batch already resolved metadata per row, and
+                # transitions are not part of the artifact.
+                inst_map={r.ticker: r.institutional_pct for r in rows
+                          if r.institutional_pct is not None},
+                meta_map={r.ticker: {"market_cap": r.market_cap,
+                                     "sector": r.sector} for r in rows},
+                bounce_profiles={},
+                transitions=[],
+            )
+        if not settings.api_allow_local_db_fallback:
+            return ActivePullbacksResponse(
+                watchlist=[],
+                universe=[],
+                transitions_today=[],
+                as_of_date=date.today().isoformat(),
+            )
+
     today = date.today()
     snapshots = await get_active_pullbacks(today)
 
@@ -258,8 +375,6 @@ async def get_active_pullbacks_endpoint(
             yesterday -= timedelta(days=1)
         snapshots = await get_active_pullbacks(yesterday)
         today = yesterday
-
-    watchlist_symbols = set(s.upper() for s in settings.watchlist_symbols)
 
     inst_tickers = [s.ticker for s in snapshots]
     inst_map: dict[str, float] = {}
@@ -283,28 +398,18 @@ async def get_active_pullbacks_endpoint(
     except Exception:
         logger.debug("backtest_profiles_not_available")
 
-    watchlist_alerts: list[PullbackAlertResponse] = []
-    universe_alerts: list[PullbackAlertResponse] = []
-
-    for snap in snapshots:
-        inst_pct = inst_map.get(snap.ticker)
-        meta = meta_map.get(snap.ticker, {})
-        alert = _snapshot_to_pullback_alert(snap, inst_pct, meta, bounce_profiles)
-
-        if snap.ticker in watchlist_symbols:
-            watchlist_alerts.append(alert)
-        else:
-            universe_alerts.append(alert)
-
     today_transitions = await get_transitions(
         from_date=today, to_date=today
     )
 
-    return ActivePullbacksResponse(
-        watchlist=watchlist_alerts,
-        universe=universe_alerts,
-        transitions_today=[_transition_to_response(t) for t in today_transitions],
+    return _build_pullbacks_response(
+        snapshots,
+        watchlist_symbols=watchlist_symbols,
         as_of_date=today.isoformat(),
+        inst_map=inst_map,
+        meta_map=meta_map,
+        bounce_profiles=bounce_profiles,
+        transitions=today_transitions,
     )
 
 
@@ -317,27 +422,47 @@ async def get_stock_recommendations_endpoint(
     ticker_meta_store: TickerMetaStore = Depends(get_ticker_meta_store),
 ) -> StockRecommendationsResponse:
     """Get stock buy recommendations from persisted pullback snapshots."""
-    today = date.today()
-    snapshots = await get_active_pullbacks(today)
+    as_of = date.today().isoformat()
+    snapshots: list = []
+    inst_map: dict[str, float] = {}
+    resolved = False
 
-    if not snapshots:
-        yesterday = today - timedelta(days=1)
-        while yesterday.weekday() >= 5:
-            yesterday -= timedelta(days=1)
-        snapshots = await get_active_pullbacks(yesterday)
-        today = yesterday
+    if use_artifact_read_path(settings):
+        published = await _published_active_pullbacks(settings)
+        if published is not None:
+            snapshots, as_of = published
+            inst_map = {
+                r.ticker: r.institutional_pct
+                for r in snapshots
+                if r.institutional_pct is not None
+            }
+            resolved = True
+        elif not settings.api_allow_local_db_fallback:
+            return StockRecommendationsResponse(
+                recommendations=[], as_of_date=as_of
+            )
+
+    if not resolved:
+        today = date.today()
+        snapshots = list(await get_active_pullbacks(today))
+
+        if not snapshots:
+            yesterday = today - timedelta(days=1)
+            while yesterday.weekday() >= 5:
+                yesterday -= timedelta(days=1)
+            snapshots = list(await get_active_pullbacks(yesterday))
+            today = yesterday
+
+        as_of = today.isoformat()
+        tickers = [s.ticker for s in snapshots]
+        if ticker_meta_store.exists:
+            inst_map = ticker_meta_store.get_institutional_pcts(tickers)
+        inst_map = {**inst_map, **get_cached_ownership_batch(tickers)}
 
     if not snapshots:
         return StockRecommendationsResponse(
-            recommendations=[], as_of_date=today.isoformat()
+            recommendations=[], as_of_date=as_of
         )
-
-    tickers = [s.ticker for s in snapshots]
-    inst_map: dict[str, float] = {}
-    if ticker_meta_store.exists:
-        inst_map = ticker_meta_store.get_institutional_pcts(tickers)
-    inst_cached = get_cached_ownership_batch(tickers)
-    inst_map = {**inst_map, **inst_cached}
 
     filtered = []
     for snap in snapshots:
@@ -348,7 +473,7 @@ async def get_stock_recommendations_endpoint(
 
     if not filtered:
         return StockRecommendationsResponse(
-            recommendations=[], as_of_date=today.isoformat()
+            recommendations=[], as_of_date=as_of
         )
 
     recs = generate_recommendations_from_snapshots(
@@ -357,7 +482,7 @@ async def get_stock_recommendations_endpoint(
 
     return StockRecommendationsResponse(
         recommendations=[StockBuyRecommendationResponse(**r.to_dict()) for r in recs],
-        as_of_date=today.isoformat(),
+        as_of_date=as_of,
     )
 
 

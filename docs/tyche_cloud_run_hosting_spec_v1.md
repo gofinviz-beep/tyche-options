@@ -159,7 +159,8 @@ Called out before approval because they are not bugs, they are consequences:
 - **Scanner "Scan Now", Options Explore, and Covered Calls "Analyze" return 409
   in GCS mode today.** The guard keys off `data_backend == "gcs"` wholesale, but
   Explore and CC-analyze are bounded per-ticker live-Tradier calls, not
-  full-universe scans. Phase 4 restores the bounded two.
+  full-universe scans. Phase 4 restores the bounded two. *(Resolved — see the
+  Phase 4 log. "Scan Now" still 409s, by design.)*
 - **`scheduler_enabled` is a footgun.** It auto-disables when the backend is GCS,
   but only if the key is not explicitly stored in `config.db`. Moving config to
   shared Postgres means a value ever toggled in the Settings UI would make the
@@ -251,6 +252,35 @@ storage-context fingerprint in the key, with `TestContextIsolation` pinning it.
 
 | Item | Status | Notes |
 |---|---|---|
-| Split the inline-compute guard | pending | |
-| Repoint pullbacks/recommendations | pending | |
+| Split the inline-compute guard | done | `cloud_mode.py` now separates **bounded** work (scoped to caller-named tickers) from universe scans. Options Explore and Covered Calls Analyze work in cloud mode again; `POST /scanner/scan` and the ingest/refresh endpoints still 409. New `allow_bounded_inline_compute` (default true) can turn the bounded tier off. |
+| Repoint pullbacks/recommendations | done | `/stocks/pullbacks/active` and `/stocks/recommendations` read the published conviction artifact when `use_artifact_read_path()`, filtering with `_is_active_pullback()` — a literal mirror of the SQL predicate in `get_active_pullbacks`. |
 | Exit monitor decision | pending | Needs a product call, not just code. |
+
+The two downstream consumers turned out to need no adaptation: both
+`_snapshot_to_pullback_alert()` and `generate_recommendations_from_snapshots()`
+are duck-typed over the snapshot, and every field they read exists on the
+published `ConvictionSnapshotResponse` under the same name. The only mismatch was
+`computed_at`, a datetime on the ORM row and a string in the artifact, handled by
+`_computed_at_iso()`. Metadata (market cap, sector, institutional ownership) is
+taken straight from the artifact instead of re-reading `ticker_meta.parquet`,
+since the publishing batch already resolved it.
+
+**A blocked route should not need working infrastructure to say "no".**
+`POST /scanner/scan` declares ten heavy `Depends()`, all constructed before the
+handler body ran — so a 409 in cloud mode still built a conviction engine and
+loaded the XGBoost model from GCS. The guard is now also a route-level
+dependency (`inline_compute_guard()`), which FastAPI solves first. The in-body
+call is deliberately kept as well, because the decorator is bypassed when a
+handler is invoked directly, as several tests do. Evidence: the cloud-mode route
+tests configure **no** `gcs_bucket`, so any store construction raises — and the
+`test_cloud_mode.py` runtime fell from 53 s to 5 s once nothing was built.
+
+`CCAnalysisEngine.analyze_with_live_chain()` also called synchronous
+`analyze()` inside its coroutine, which blocked the loop on a GCS read and
+serialized the `asyncio.gather` over positions. Now offloaded with
+`asyncio.to_thread`.
+
+Test note: `TestRecommendationsEndpointUnit` passed a bare `MagicMock()` as
+settings, which makes every flag truthy and silently routed the DB-path tests
+onto the new artifact path. `_local_db_settings()` now states the deployment
+shape those tests mean to exercise.

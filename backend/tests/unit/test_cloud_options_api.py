@@ -184,10 +184,35 @@ class TestOptionsScannerReadPath:
         assert exc.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_explore_blocked_in_cloud_mode(self, tmp_path: Path) -> None:
+    async def test_explore_allowed_in_cloud_mode(self, tmp_path: Path) -> None:
+        """Explore is bounded to the tickers asked for, so cloud mode allows it.
+
+        Unlike a full scan it never touches the universe: one quote plus one
+        chain per requested symbol, straight from the broker.
+        """
         from tyche.api.routes.scanner import explore_options
+        from tyche.broker.mock import MockBroker
 
         settings = _gcs_settings(tmp_path)
+
+        result = await explore_options(
+            symbols="AAPL",
+            available_capital=None,
+            broker=MockBroker(),
+            settings=settings,
+        )
+
+        assert result["symbols_requested"] == 1
+
+    @pytest.mark.asyncio
+    async def test_explore_blocked_when_bounded_compute_disabled(
+        self, tmp_path: Path
+    ) -> None:
+        from tyche.api.routes.scanner import explore_options
+
+        settings = _gcs_settings(tmp_path).model_copy(
+            update={"allow_bounded_inline_compute": False}
+        )
 
         with pytest.raises(HTTPException) as exc:
             await explore_options(
@@ -298,20 +323,49 @@ class TestOptionsConvictionReadPath:
 
 
 class TestCoveredCallsCloudMode:
-    @pytest.mark.asyncio
-    async def test_analyze_batch_blocked_in_cloud_mode(self, tmp_path: Path) -> None:
-        from tyche.api.routes.covered_calls import analyze_batch
+    @staticmethod
+    def _body():
         from tyche.schemas.cc_schemas import CCBatchRequest, CCPositionRequest
 
-        settings = _gcs_settings(tmp_path)
-        body = CCBatchRequest(
+        return CCBatchRequest(
             positions=[CCPositionRequest(ticker="AAPL", shares=100, cost_basis=150.0)],
             target_dte=14,
         )
 
+    @pytest.mark.asyncio
+    async def test_analyze_batch_allowed_in_cloud_mode(self, tmp_path: Path) -> None:
+        """Analysis is scoped to the caller's own positions, so it is allowed.
+
+        Cost is one per-ticker read plus one chain fetch, not a universe scan.
+        """
+        from tyche.api.routes.covered_calls import analyze_batch
+
+        settings = _gcs_settings(tmp_path)
+
+        result = await analyze_batch(
+            body=self._body(),
+            settings=settings,
+            broker=MagicMock(),
+        )
+
+        # No OHLCV exists under tmp_path, so the analysis degrades to WAIT. The
+        # assertion that matters is that it returned instead of raising 409.
+        assert [a.signal.ticker for a in result.analyses] == ["AAPL"]
+        assert result.analyses[0].signal.signal == "WAIT"
+
+    @pytest.mark.asyncio
+    async def test_analyze_batch_blocked_when_bounded_compute_disabled(
+        self, tmp_path: Path
+    ) -> None:
+        from tyche.api.routes.covered_calls import analyze_batch
+
+        settings = _gcs_settings(tmp_path).model_copy(
+            update={"allow_bounded_inline_compute": False}
+        )
+
         with pytest.raises(HTTPException) as exc:
             await analyze_batch(
-                body=body,
+                body=self._body(),
                 settings=settings,
                 broker=MagicMock(),
             )

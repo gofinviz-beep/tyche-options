@@ -21,7 +21,11 @@ from tyche.api.deps import (
     get_ticker_meta_store,
     get_universe_builder,
 )
-from tyche.api.cloud_mode import require_inline_compute_allowed, use_artifact_read_path
+from tyche.api.cloud_mode import (
+    inline_compute_guard,
+    require_inline_compute_allowed,
+    use_artifact_read_path,
+)
 from tyche.analysis.agent import AnalysisAgent
 from tyche.broker.base import BrokerClient
 from tyche.config import TycheSettings
@@ -85,6 +89,7 @@ async def explore_options(
         settings,
         operation="options explore",
         job_hint="tyche-options-explore-batch (not yet scheduled)",
+        bounded=True,
     )
     import time as _time
     from datetime import date as _date
@@ -201,7 +206,19 @@ async def explore_options(
     }
 
 
-@router.post("/scan", response_model=dict[str, Any])
+@router.post(
+    "/scan",
+    response_model=dict[str, Any],
+    # Guard runs before the ten heavy Depends() below are constructed.
+    dependencies=[
+        Depends(
+            inline_compute_guard(
+                operation="morning scanner",
+                job_hint="tyche-options-scanner-batch",
+            )
+        )
+    ],
+)
 async def trigger_scan(
     top_n: int = Query(default=10, ge=1, le=200),
     symbols: str | None = Query(default=None, description="Comma-separated symbols override"),
@@ -229,6 +246,9 @@ async def trigger_scan(
 
     Pass ``force_refresh=true`` to clear the cache before scanning.
     """
+    # Also enforced as a route dependency so the 409 short-circuits before the
+    # heavy Depends() above are built. Repeated here because that dependency is
+    # bypassed when the handler is invoked directly rather than served.
     require_inline_compute_allowed(
         settings,
         operation="morning scanner",

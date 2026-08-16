@@ -235,6 +235,9 @@ class TycheSettings(BaseModel):
     api_allow_curated_fallback: bool = False
     api_allow_local_db_fallback: bool = False
     allow_inline_scan: bool = False
+    # Bounded live work (one broker call per caller-named ticker) is allowed in
+    # cloud mode; only universe-wide scans are gated by allow_inline_scan.
+    allow_bounded_inline_compute: bool = True
     published_max_age_minutes: int = 180
     # In-process cache for published route JSON, keyed on the publish run_id
     # (see tyche.persistence.published_cache). The TTL only bounds how quickly a
