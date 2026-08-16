@@ -11,9 +11,11 @@ import {
   ArrowUp,
   ArrowDown,
   Minus,
+  FileDown,
   LineChart as LineChartIcon,
 } from "lucide-react";
 import { useTickerDeepDive } from "@/hooks/useApi";
+import { isoToday, printReport } from "@/lib/printReport";
 import type {
   TickerDeepDive,
   FundamentalsPeriod,
@@ -147,14 +149,50 @@ function FundamentalsTable({ periods }: { periods: FundamentalsPeriod[] }) {
   );
 }
 
-function Section({ title, icon: Icon, children }: { title: string; icon: typeof TrendingUp; children: React.ReactNode }) {
+function Section({
+  title,
+  icon: Icon,
+  children,
+  allowPrintBreak = false,
+}: {
+  title: string;
+  icon: typeof TrendingUp;
+  children: React.ReactNode;
+  /** Set for sections taller than one printed page so they split in place. */
+  allowPrintBreak?: boolean;
+}) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+    <div
+      className="bg-white rounded-xl border border-gray-200 shadow-sm"
+      data-print-section
+      data-print-allow-break={allowPrintBreak || undefined}
+    >
       <div className="flex items-center gap-2 px-5 py-3 border-b border-gray-100">
         <Icon className="w-4 h-4 text-gray-400" />
         <h3 className="text-sm font-semibold text-gray-700">{title}</h3>
       </div>
       <div className="p-5">{children}</div>
+    </div>
+  );
+}
+
+/** Masthead that only appears in the exported PDF, where the nav/search chrome is hidden. */
+function PrintMasthead({ data }: { data: TickerDeepDive }) {
+  return (
+    <div data-print-only className="mb-4 border-b-2 border-gray-800 pb-2">
+      <div className="flex items-baseline justify-between">
+        <div>
+          <div className="text-[10px] uppercase tracking-widest text-gray-500">Tyche · Stock Deep Dive</div>
+          <div className="text-xl font-bold text-gray-900">
+            {data.ticker}
+            {data.name ? ` — ${data.name}` : ""}
+          </div>
+        </div>
+        <div className="text-right text-[10px] text-gray-500">
+          <div>Data as of {data.as_of_date}</div>
+          <div>Generated {new Date().toLocaleString()}</div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -268,8 +306,10 @@ function DeepDiveContent({ data }: { data: TickerDeepDive }) {
 
   return (
     <div className="space-y-6">
+      <PrintMasthead data={data} />
+
       {/* Header */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5" data-print-section>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-3">
@@ -296,7 +336,8 @@ function DeepDiveContent({ data }: { data: TickerDeepDive }) {
         </div>
         <div className="flex flex-wrap gap-4 mt-3 pt-3 border-t border-gray-100 text-sm text-gray-600">
           <span>Mkt Cap: <strong>{formatLargeNumber(data.market_cap)}</strong></span>
-          <span>Inst Own: <strong>{data.institutional_pct != null ? `${data.institutional_pct.toFixed(0)}%` : "—"}</strong></span>
+          {/* Stored as a 0–1 fraction (TickerMetaStore.get_institutional_pcts). */}
+          <span>Inst Own: <strong>{data.institutional_pct != null ? `${(data.institutional_pct * 100).toFixed(0)}%` : "—"}</strong></span>
           {Object.entries(data.returns).map(([label, val]) => (
             <span key={label}>
               {label}: <strong className={val >= 0 ? "text-emerald-600" : "text-red-600"}>{formatPct(val)}</strong>
@@ -317,14 +358,14 @@ function DeepDiveContent({ data }: { data: TickerDeepDive }) {
       )}
 
       {/* Multi-Timeframe RSI */}
-      <Section title="Multi-Timeframe RSI" icon={Activity}>
+      <Section title="Multi-Timeframe RSI" icon={Activity} allowPrintBreak>
         <div className="grid grid-cols-4 gap-3 mb-4">
           <RSICard label="Daily" value={data.rsi.daily} />
           <RSICard label="Weekly" value={data.rsi.weekly} />
           <RSICard label="Monthly" value={data.rsi.monthly} />
           <RSICard label="Quarterly" value={data.rsi.quarterly} />
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4" data-print-stack>
           <div>
             <div className="text-xs font-medium text-gray-500 mb-1">Weekly RSI History</div>
             <LineChartCard
@@ -488,10 +529,10 @@ function DeepDiveContent({ data }: { data: TickerDeepDive }) {
       </div>
 
       {/* Fundamentals */}
-      <Section title="Quarterly Fundamentals" icon={DollarSign}>
+      <Section title="Quarterly Fundamentals" icon={DollarSign} allowPrintBreak>
         {data.fundamentals.length > 0 ? (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5" data-print-stack>
               <div>
                 <div className="text-xs font-medium text-gray-500 mb-1">Revenue</div>
                 <BarChartCard
@@ -658,17 +699,31 @@ export function StockDeepDive() {
     }
   };
 
+  const handleExportPdf = () => {
+    if (!data) return;
+    void printReport({ filename: `${data.ticker}_deep_dive_${data.as_of_date || isoToday()}` });
+  };
+
   return (
-    <div className="max-w-6xl mx-auto px-4 py-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="max-w-6xl mx-auto px-4 py-6" data-print-root>
+      <div className="flex items-center justify-between mb-6" data-print="hide">
         <div>
           <h1 className="text-lg font-bold text-gray-900">Stock Deep Dive</h1>
           <p className="text-sm text-gray-500">Multi-timeframe technical + fundamental analysis</p>
         </div>
+        <button
+          onClick={handleExportPdf}
+          disabled={!data}
+          title={data ? `Export ${data.ticker} report as PDF` : "Run an analysis first"}
+          className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          <FileDown className="w-4 h-4" />
+          Export PDF
+        </button>
       </div>
 
       {/* Search bar */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-6" data-print="hide">
         <div className="relative flex-1 max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input

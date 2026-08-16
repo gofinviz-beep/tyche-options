@@ -9,3 +9,120 @@ body {
   -moz-osx-font-smoothing: grayscale;
   background-color: #f9fafb;
 }
+
+/* Blocks that exist only in the printed/exported PDF. */
+[data-print-only] {
+  display: none;
+}
+
+/*
+ * Recharts sizes its SVG from a pixel measurement of its container, so an
+ * on-screen chart is far wider than a printed page and cannot be rescaled by
+ * CSS alone. `printReport()` pins the report to the printable width just before
+ * printing, which lets ResponsiveContainer re-render at that width.
+ * 8.5in paper - 24mm of horizontal margin ~= 720px at 96dpi.
+ */
+body.print-preparing [data-print-root] {
+  width: 720px !important;
+  max-width: 720px !important;
+}
+
+/*
+ * PDF export (Export PDF button -> window.print() -> "Save as PDF").
+ * The app shell is a fixed-height flex column with an internally scrolling
+ * <main>, which would otherwise clip the export to a single page.
+ */
+@media print {
+  @page {
+    size: letter portrait;
+    margin: 12mm 12mm 14mm;
+  }
+
+  html,
+  body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+
+  /* Preserve badge/callout/threshold colors instead of printing them flat. */
+  *,
+  *::before,
+  *::after {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  [data-print-shell] {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  [data-print-main] {
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Drop the app shell's centering/padding; pin the report to the page width. */
+  [data-print-content] {
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  [data-print-root] {
+    width: 720px !important;
+    max-width: 720px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  aside,
+  [data-print="hide"] {
+    display: none !important;
+  }
+
+  [data-print-only] {
+    display: block !important;
+  }
+
+  /* Keep cards/sections from splitting across a page boundary. */
+  [data-print-section] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    box-shadow: none !important;
+  }
+
+  /*
+   * Sections that are inherently taller than a page opt out: an unsatisfiable
+   * `break-inside: avoid` makes the browser push the block to the next page
+   * before splitting it anyway, leaving a half-empty page behind.
+   */
+  [data-print-allow-break] {
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  /* A split chart is unreadable; a split table just continues. */
+  .recharts-responsive-container,
+  tr,
+  img,
+  svg {
+    break-inside: avoid;
+  }
+
+  /* Side-by-side charts crowd their axis labels at page width — stack them. */
+  [data-print-stack] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Tooltips are hover-only chrome. */
+  .recharts-tooltip-wrapper {
+    display: none !important;
+  }
+}

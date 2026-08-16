@@ -254,6 +254,8 @@ class TickerDeepDiveEngine:
         result.rsi.weekly = round(self._rsi_series(weekly), 1)
         w_rsi = self._rsi_full_series(weekly)
         for dt, val in w_rsi.tail(12).items():
+            if np.isnan(val):
+                continue
             result.rsi.weekly_history.append(
                 RSIReading(date=str(dt.date()), value=round(val, 1), close=round(weekly.loc[dt], 2))
             )
@@ -262,6 +264,8 @@ class TickerDeepDiveEngine:
         result.rsi.monthly = round(self._rsi_series(monthly), 1)
         m_rsi = self._rsi_full_series(monthly)
         for dt, val in m_rsi.tail(12).items():
+            if np.isnan(val):
+                continue
             result.rsi.monthly_history.append(
                 RSIReading(date=str(dt.date()), value=round(val, 1), close=round(monthly.loc[dt], 2))
             )

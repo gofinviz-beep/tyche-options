@@ -14,6 +14,7 @@
 - `types/index.ts` — TypeScript types matching backend response shapes exactly
 - `lib/telemetry.ts` — batches error/timing/crash events, flushes to `POST /api/v1/telemetry/events` every 10s
 - `components/ErrorBoundary.tsx` — class component wrapping `<App />`, catches render crashes
+- `lib/printReport.ts` — PDF export via the browser print pipeline (selectable text + vector charts, no extra deps). Pins the report to page width and waits for Recharts to re-measure before `window.print()`. Print rules + the `data-print*` attribute contract live in `index.css` under `@media print`.
 
 ## Navigation
 

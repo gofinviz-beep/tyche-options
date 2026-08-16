@@ -2,17 +2,37 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from tyche.analysis.ticker_deep_dive import TickerDeepDive
 
 
+def _rsi_history(readings: list) -> list["RSIReadingResponse"]:
+    """Serialize RSI history, dropping points whose value is undefined.
+
+    RSI is undefined during its warmup window; short-history tickers (recent
+    IPOs) can produce ``NaN``/``None`` values that serialize to ``null`` and
+    break the read schema. Drop them so payloads stay clean and round-trip.
+    """
+    out: list[RSIReadingResponse] = []
+    for r in readings:
+        value = getattr(r, "value", None)
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            continue
+        out.append(RSIReadingResponse(**r.__dict__))
+    return out
+
+
 class RSIReadingResponse(BaseModel):
     date: str
-    value: float
+    # Nullable: RSI is undefined during the warmup window (e.g. recent IPOs
+    # without enough weekly/monthly bars). Tolerate legacy payloads that
+    # persisted a null value; fresh payloads drop these points entirely.
+    value: float | None = None
     close: float
 
 
@@ -114,7 +134,10 @@ class TickerDeepDiveResponse(BaseModel):
     sector: str = ""
     last_close: float = 0.0
     market_cap: float | None = None
-    institutional_pct: float | None = None
+    institutional_pct: float | None = Field(
+        default=None,
+        description="Institutional ownership as a 0-1 fraction (0.82 = 82% held).",
+    )
     high_52w: float = 0.0
     low_52w: float = 0.0
     pct_off_52w_high: float = 0.0
@@ -158,15 +181,9 @@ def to_response(result: "TickerDeepDive") -> TickerDeepDiveResponse:
             weekly=result.rsi.weekly,
             monthly=result.rsi.monthly,
             quarterly=result.rsi.quarterly,
-            weekly_history=[
-                RSIReadingResponse(**r.__dict__) for r in result.rsi.weekly_history
-            ],
-            monthly_history=[
-                RSIReadingResponse(**r.__dict__) for r in result.rsi.monthly_history
-            ],
-            quarterly_history=[
-                RSIReadingResponse(**r.__dict__) for r in result.rsi.quarterly_history
-            ],
+            weekly_history=_rsi_history(result.rsi.weekly_history),
+            monthly_history=_rsi_history(result.rsi.monthly_history),
+            quarterly_history=_rsi_history(result.rsi.quarterly_history),
         ),
         ema_stack=EMAStackResponse(**result.ema_stack.__dict__),
         macd=MACDResponse(**result.macd.__dict__),

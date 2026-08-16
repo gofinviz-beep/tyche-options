@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 from unittest.mock import MagicMock
 
@@ -10,6 +11,11 @@ import pandas as pd
 import pytest
 
 from tyche.analysis.ticker_deep_dive import TickerDeepDiveEngine, TickerDeepDive
+from tyche.schemas.deep_dive import (
+    RSIReadingResponse,
+    TickerDeepDiveResponse,
+    to_response,
+)
 
 
 def _make_ohlcv(n: int = 300, base_price: float = 100.0) -> pd.DataFrame:
@@ -51,7 +57,7 @@ def meta_store():
             "market_cap": 50e9,
         }
     }
-    store.get_institutional_pcts.return_value = {"TEST": 72.0}
+    store.get_institutional_pcts.return_value = {"TEST": 0.72}
     return store
 
 
@@ -134,7 +140,7 @@ class TestBasicAnalysis:
         assert result.name == "Test Inc."
         assert result.sector == "Technology"
         assert result.market_cap == 50e9
-        assert result.institutional_pct == 72.0
+        assert result.institutional_pct == 0.72
 
     def test_52w_stats(self, engine):
         result = engine.analyze("TEST")
@@ -356,3 +362,42 @@ class TestGracefulDegradation:
         engine = TickerDeepDiveEngine(ohlcv_store=ohlcv_store, catalyst_store=catalyst_store)
         result = engine.analyze("TEST")
         assert result.catalysts == []
+
+
+class TestShortHistoryRSISerialization:
+    """Regression: recent-IPO / short-history tickers (e.g. NTSK) whose weekly/
+    monthly RSI warmup produces undefined values must still serialize + round-trip.
+    Previously these emitted null RSI values that broke the read schema -> 404.
+    """
+
+    def _short_history_response(self, ohlcv_store):
+        # ~4 months of bars: not enough weekly/monthly bars for a valid RSI(14),
+        # so the warmup window would otherwise emit NaN/None history points.
+        ohlcv_store.read_ticker.return_value = _make_ohlcv(n=80)
+        engine = TickerDeepDiveEngine(ohlcv_store=ohlcv_store)
+        result = engine.analyze("NTSK")
+        assert result.last_close > 0  # not insufficient-data
+        return to_response(result)
+
+    def test_no_null_or_nan_rsi_history_points(self, ohlcv_store):
+        resp = self._short_history_response(ohlcv_store)
+        for history in (
+            resp.rsi.weekly_history,
+            resp.rsi.monthly_history,
+            resp.rsi.quarterly_history,
+        ):
+            for point in history:
+                assert point.value is not None
+                assert not math.isnan(point.value)
+
+    def test_response_json_round_trips(self, ohlcv_store):
+        resp = self._short_history_response(ohlcv_store)
+        # The failure mode was a ValidationError on read (null RSI value).
+        restored = TickerDeepDiveResponse.model_validate_json(resp.model_dump_json())
+        assert restored.ticker == "NTSK"
+
+    def test_schema_tolerates_legacy_null_value(self):
+        # Legacy payloads already persisted in GCS may contain a null RSI value;
+        # the nullable field lets them parse instead of 404ing.
+        point = RSIReadingResponse.model_validate({"date": "2025-01-31", "value": None, "close": 12.3})
+        assert point.value is None
