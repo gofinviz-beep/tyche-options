@@ -18,6 +18,11 @@ import structlog
 logger = structlog.get_logger()
 
 # Secret Manager secret id -> TYCHE_ env var
+#
+# The Cloud Run API service gets these via `gcloud run deploy --set-secrets`
+# rather than this module, so it needs no extra call at startup. They stay
+# mapped here so the batch jobs (which do hydrate at process start) and the
+# seed script share one list.
 SECRET_TO_ENV: Final[dict[str, str]] = {
     "POLYGON_API_KEY": "TYCHE_POLYGON_API_KEY",
     "FINNHUB_API_KEY": "TYCHE_FINNHUB_API_KEY",
@@ -25,6 +30,9 @@ SECRET_TO_ENV: Final[dict[str, str]] = {
     "MASSIVE_S3_SECRET_KEY": "TYCHE_MASSIVE_S3_SECRET_KEY",
     "GEMINI_API_KEY": "TYCHE_GEMINI_API_KEY",
     "EDGAR_USER_AGENT_EMAIL": "TYCHE_EDGAR_USER_AGENT_EMAIL",
+    # Live broker calls (quotes, chains, account) — needed by the API service.
+    "TRADIER_API_TOKEN": "TYCHE_TRADIER_API_TOKEN",
+    "TRADIER_ACCOUNT_ID": "TYCHE_TRADIER_ACCOUNT_ID",
 }
 
 

@@ -31,6 +31,9 @@ SECRET_IDS=(
   MASSIVE_S3_SECRET_KEY
   GEMINI_API_KEY
   EDGAR_USER_AGENT_EMAIL
+  # Consumed by the Cloud Run API service via --set-secrets (deploy_service.sh).
+  TRADIER_API_TOKEN
+  TRADIER_ACCOUNT_ID
 )
 
 env_var_for_secret() {
@@ -41,6 +44,8 @@ env_var_for_secret() {
     MASSIVE_S3_SECRET_KEY) echo TYCHE_MASSIVE_S3_SECRET_KEY ;;
     GEMINI_API_KEY) echo TYCHE_GEMINI_API_KEY ;;
     EDGAR_USER_AGENT_EMAIL) echo TYCHE_EDGAR_USER_AGENT_EMAIL ;;
+    TRADIER_API_TOKEN) echo TYCHE_TRADIER_API_TOKEN ;;
+    TRADIER_ACCOUNT_ID) echo TYCHE_TRADIER_ACCOUNT_ID ;;
     *) echo "" ;;
   esac
 }
