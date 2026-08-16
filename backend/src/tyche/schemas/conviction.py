@@ -174,10 +174,14 @@ class OrderIntentListResponse(BaseModel):
 
 
 class ConvictionVersionResponse(BaseModel):
-    """Cache version info — cheap query for frontend staleness checks."""
+    """Freshness token the frontend polls for staleness checks."""
 
     last_computed_at: str | None = None
     as_of_date: str | None = None
+    # Publish run that produced the current artifacts. None when the value came
+    # from conviction.db rather than a publish manifest.
+    run_id: str | None = None
+    source: str = "conviction_db"
 
 
 class DataStoreStatusResponse(BaseModel):

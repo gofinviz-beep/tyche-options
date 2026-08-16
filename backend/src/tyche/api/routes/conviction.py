@@ -10,6 +10,7 @@ checks.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -33,6 +34,8 @@ from tyche.persistence.conviction_repository import (
     get_latest_snapshot_date,
     get_snapshots_for_date,
 )
+from tyche.persistence.published_cache import PublishedManifest, get_published_cache
+from tyche.storage.paths import storage_context_from_settings
 from tyche.schemas.conviction import (
     BootstrapRequest,
     BootstrapResponse,
@@ -74,14 +77,46 @@ def invalidate_conviction_cache(clear_engine: bool = True) -> None:
 
 
 @router.get("/version", response_model=ConvictionVersionResponse)
-async def get_version() -> ConvictionVersionResponse:
-    """Return the cache version — last_computed_at and as_of_date.
+async def get_version(
+    settings: TycheSettings = Depends(get_settings),
+) -> ConvictionVersionResponse:
+    """Return the freshness token the frontend polls to invalidate its caches.
 
-    Frontend polls this to decide whether its cached data is stale.
-    Extremely cheap: single SQL query against conviction.db.
+    Prefers ``published/manifest.json``, which covers every daily route rather
+    than just conviction. This matters in GCS mode: the cloud batch jobs pass
+    ``persist_sqlite=False``, so ``conviction.db`` is never written there and the
+    SQL version would sit frozen forever — the invalidation signal was dead.
+
+    Falls back to the conviction.db query for local mode, where the scheduled
+    batch does write snapshots and no publish run may have happened.
     """
+    ctx = storage_context_from_settings(settings)
+    manifest = await asyncio.to_thread(
+        get_published_cache(
+            manifest_ttl_seconds=settings.published_manifest_ttl_seconds,
+        ).manifest,
+        ctx,
+    )
+    if manifest is not None:
+        return ConvictionVersionResponse(
+            last_computed_at=manifest.generated_at or None,
+            as_of_date=_manifest_as_of(manifest),
+            run_id=manifest.run_id,
+            source="published_manifest",
+        )
+
     version = await get_conviction_version()
-    return ConvictionVersionResponse(**version)
+    return ConvictionVersionResponse(**version, source="conviction_db")
+
+
+def _manifest_as_of(manifest: PublishedManifest) -> str | None:
+    """Return the newest ``as_of`` across published routes."""
+    dates = [
+        str(route["as_of"])
+        for route in manifest.routes
+        if route.get("as_of")
+    ]
+    return max(dates) if dates else None
 
 
 @router.get("/status", response_model=DataStoreStatusResponse)

@@ -712,6 +712,12 @@ def reset_all() -> None:
     from tyche.api.routes.deep_dive import invalidate_deep_dive_cache
     invalidate_deep_dive_cache()
 
+    # Published artifacts are keyed on the publish run_id, so they survive a
+    # config change on their own. Dropped anyway because a changed data_backend
+    # or bucket points at an entirely different set of artifacts.
+    from tyche.persistence.published_cache import invalidate_published_cache
+    invalidate_published_cache()
+
     _breakout_predictor = None
     _alpha_engine = None
 

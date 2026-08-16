@@ -16,6 +16,7 @@ import structlog
 from tyche.config import TycheSettings, get_settings
 from tyche.market_data.alpha_store import AlphaSignalStore
 from tyche.market_data.data_store import TickerMetaStore
+from tyche.persistence.published_cache import get_published_cache
 from tyche.persistence.published_route_registry import (
     ALPHA_PEAK_SOURCE_CANDIDATES,
     ALPHA_SUSTAINED_SOURCE_CANDIDATES,
@@ -90,12 +91,37 @@ def load_published_route(
     settings: TycheSettings | None = None,
     ctx: StorageContext | None = None,
 ) -> PublishedRouteEnvelope | None:
-    """Load a route artifact when present; return ``None`` if missing."""
+    """Load a route artifact when present; return ``None`` if missing.
+
+    Reads go through the in-process artifact cache, so a given route is fetched
+    from storage at most once per publish run. See
+    :mod:`tyche.persistence.published_cache`.
+    """
     if route_key not in ROUTE_FILES:
         raise ValueError(f"Unknown route key: {route_key}")
 
     settings = settings or get_settings()
     ctx = ctx or storage_context_from_settings(settings)
+
+    if not settings.published_cache_enabled:
+        return _read_published_route(route_key, ctx=ctx)
+
+    cache = get_published_cache(
+        manifest_ttl_seconds=settings.published_manifest_ttl_seconds,
+    )
+    return cache.get_or_load(
+        f"route:{route_key}",
+        lambda: _read_published_route(route_key, ctx=ctx),
+        ctx=ctx,
+    )
+
+
+def _read_published_route(
+    route_key: str,
+    *,
+    ctx: StorageContext,
+) -> PublishedRouteEnvelope | None:
+    """Fetch and parse a route artifact from storage (uncached)."""
     rel = route_rel_path(route_key)
     if not storage_exists(rel, ctx=ctx):
         return None
