@@ -182,10 +182,24 @@ spend, so it is not run autonomously.
 | `backend/Dockerfile.api` | done | Multi-stage Node 24 → Python 3.12. **Build context is the repo root**, not `backend/`, because the Node stage needs `frontend/`. Installs without `[ml]`. Single uvicorn worker on purpose so one process owns the artifact cache. |
 | Root `.dockerignore` | done | New file. Required: the root context would otherwise ship `backend/data`, `backend/db`, and `frontend/node_modules`. |
 | `static_dir` / `cors_allow_origins` settings | done | Env-only infra fields in `config.py` (`_ENV_ONLY_FIELDS`, `_EnvSettings`, `TycheSettings`). Image sets `TYCHE_STATIC_DIR=/app/static`; empty locally so Vite keeps serving the dev SPA. |
-| Serve the SPA + favicon | pending | |
-| Secret Manager + `tyche-ui` SA | operator | Script prepared; needs project write access. |
-| `infra/gcp/deploy_service.sh` | pending | |
-| Enable IAP | operator | OAuth client cannot be created programmatically. |
+| Serve the SPA + favicon | done | New `api/static_files.py` `mount_spa()`, registered last in `create_app()`. One code path serves hashed assets (immutable) and the index fallback (`no-cache`); API prefixes 404 rather than returning HTML. Added the missing `frontend/public/favicon.svg`. |
+| Secret Manager + `tyche-ui` SA | code done / operator run | `TRADIER_API_TOKEN` + `TRADIER_ACCOUNT_ID` added to `SECRET_TO_ENV` and `seed_secrets.sh`; new `setup_service_iam.sh` creates the SA with `objectViewer` (not `objectAdmin` — the service never writes artifacts). Running it needs project IAM access. |
+| `infra/gcp/deploy_service.sh` | done | Mirrors `deploy_jobs.sh`. Defaults to `--no-allow-unauthenticated`; `--public` exists but warns. Prints the exact IAP follow-up commands. |
+| Enable IAP | operator | OAuth client cannot be created programmatically. Re-run with `IAP_ENABLED=true` afterwards. |
+
+Verified by building the image and running it:
+
+- amd64 image builds clean (847 MB) and an arm64 build of the same Dockerfile
+  serves `/`, a deep link (`/stocks/screener` → same document), `/favicon.svg`,
+  the hashed asset with `immutable`, `/api/v1/system/config`, `/docs`, and 404s
+  `/api/v1/nope`. Healthy 4 s after start.
+- **The frontend stage must be pinned to `$BUILDPLATFORM`.** Building it for
+  amd64 on Apple Silicon crashes esbuild under QEMU (`The service was stopped:
+  write EPIPE`). The bundle has no native code, so building it natively is both
+  correct and much faster.
+- **An amd64 image cannot be smoke-tested locally on Apple Silicon.** pandas/
+  pyarrow segfault under QEMU (`uncaught target signal 11`). Build arm64 for
+  local runs; amd64 is what ships.
 
 ## Phase 2
 
@@ -196,15 +210,21 @@ spend, so it is not run autonomously.
 | `ConfigStore` → sync SQLAlchemy | pending | |
 | `expired_csps.json` → table | pending | |
 | Alembic baseline | pending | |
-| Hard-disable scheduler in GCS mode | pending | |
+| Hard-disable scheduler in GCS mode | done | `_build_settings` now overrides a **stored** `scheduler_enabled` instead of deferring to it, with `TYCHE_ALLOW_GCS_SCHEDULER` as an env-only escape hatch. Confirmed in-container: GCS mode logs `local_scheduler_disabled` and registers no jobs. |
 
 ## Phase 3
 
 | Item | Status | Notes |
 |---|---|---|
-| `PublishedArtifactCache` + `/conviction/version` | pending | |
-| `asyncio.to_thread` + ETag/Cache-Control | pending | |
-| Frontend invalidation + lazy chunks | pending | |
+| `PublishedArtifactCache` | done | New `persistence/published_cache.py`, wired into `load_published_route()` — the single choke point every published route already goes through, so all routes benefit without touching each one. Keyed on `(storage context, run_id)`. Passes through uncached when no manifest exists, so local dev and tests are unaffected. |
+| `/conviction/version` on the manifest | done | Was reading `conviction.db`, which cloud batch never writes (`persist_sqlite=False`) — the invalidation signal was **dead in cloud**. Now prefers the manifest and reports `run_id` + `source`; falls back to SQL for local mode. |
+| `asyncio.to_thread` + ETag/Cache-Control | pending | `/conviction/version` already offloads its manifest read. |
+| Frontend invalidation + lazy chunks | pending | Confirmed the need: the production bundle is a single eager **1,010 kB** chunk (272 kB gzipped). |
+
+Cache design note worth keeping: the first version keyed entries on `route_key`
+alone. That let one storage root serve another root's artifacts — it surfaced as
+two tests passing alone but failing in the full suite. Fixed by including a
+storage-context fingerprint in the key, with `TestContextIsolation` pinning it.
 
 ## Phase 4
 
